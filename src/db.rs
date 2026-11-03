@@ -85,67 +85,13 @@ pub fn verify_db_page1(enc_key: &[u8; 32], page1: &[u8]) -> bool {
 
 
 #[cfg(target_os = "windows")]
-fn scan_weixin_dll_for_internal_keys(dll_bytes: &[u8]) -> Vec<[u8; 32]> {
-    let mut candidates = Vec::new();
-    if dll_bytes.len() < 0x40 || &dll_bytes[..2] != b"MZ" {
-        return candidates;
-    }
-    let e_lfanew = u32::from_le_bytes(dll_bytes[0x3c..0x40].try_into().unwrap_or([0; 4])) as usize;
-    if e_lfanew + 0x18 > dll_bytes.len() || &dll_bytes[e_lfanew..e_lfanew + 4] != b"PE\0\0" {
-        return candidates;
-    }
-    let num_sections = u16::from_le_bytes(dll_bytes[e_lfanew + 6..e_lfanew + 8].try_into().unwrap_or([0; 2])) as usize;
-    let opt_hdr_size = u16::from_le_bytes(dll_bytes[e_lfanew + 0x14..e_lfanew + 0x16].try_into().unwrap_or([0; 2])) as usize;
-    let sec_table_offset = e_lfanew + 0x18 + opt_hdr_size;
-
-    for i in 0..num_sections {
-        let sec_offset = sec_table_offset + i * 40;
-        if sec_offset + 40 > dll_bytes.len() { break; }
-        let chars = u32::from_le_bytes(dll_bytes[sec_offset + 36..sec_offset + 40].try_into().unwrap_or([0; 4]));
-        // IMAGE_SCN_MEM_EXECUTE (0x20000000)
-        if chars & 0x2000_0000 != 0 {
-            let virt_size = u32::from_le_bytes(dll_bytes[sec_offset + 8..sec_offset + 12].try_into().unwrap_or([0; 4])) as usize;
-            let raw_data_ptr = u32::from_le_bytes(dll_bytes[sec_offset + 20..sec_offset + 24].try_into().unwrap_or([0; 4])) as usize;
-            let raw_data_size = u32::from_le_bytes(dll_bytes[sec_offset + 16..sec_offset + 20].try_into().unwrap_or([0; 4])) as usize;
-            let sec_size = virt_size.min(raw_data_size);
-            if raw_data_ptr + sec_size <= dll_bytes.len() {
-                let sec_bytes = &dll_bytes[raw_data_ptr..raw_data_ptr + sec_size];
-                let mut idx = 0;
-                while idx + 45 <= sec_bytes.len() {
-                    if sec_bytes[idx] == 0x48 && sec_bytes[idx + 1] == 0xba {
-                        for o2 in 10..=24 {
-                            let idx2 = idx + o2;
-                            if idx2 + 30 <= sec_bytes.len() && sec_bytes[idx2] == 0x48 && sec_bytes[idx2 + 1] == 0xba {
-                                for o3 in 10..=24 {
-                                    let idx3 = idx2 + o3;
-                                    if idx3 + 20 <= sec_bytes.len() && sec_bytes[idx3] == 0x48 && sec_bytes[idx3 + 1] == 0xba {
-                                        for o4 in 10..=24 {
-                                            let idx4 = idx3 + o4;
-                                            if idx4 + 10 <= sec_bytes.len() && sec_bytes[idx4] == 0x48 && sec_bytes[idx4 + 1] == 0xba {
-                                                let mut cand = [0u8; 32];
-                                                cand[0..8].copy_from_slice(&sec_bytes[idx + 2..idx + 10]);
-                                                cand[8..16].copy_from_slice(&sec_bytes[idx2 + 2..idx2 + 10]);
-                                                cand[16..24].copy_from_slice(&sec_bytes[idx3 + 2..idx3 + 10]);
-                                                cand[24..32].copy_from_slice(&sec_bytes[idx4 + 2..idx4 + 10]);
-                                                candidates.push(cand);
-                                                break;
-                                            }
-                                        }
-                                        break;
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    idx += 1;
-                }
-            }
-        }
-    }
-    candidates.dedup();
-    candidates
-}
+const WINDOWS_CONFIG_CIPHER_NAME: &[u8] = b"com.Tencent.WCDB.Config.Cipher";
+#[cfg(target_os = "windows")]
+const WINDOWS_CONFIG_XOR_MASK: &[u8; 32] = &[
+    0xd2, 0xc7, 0x44, 0x24, 0x58, 0x02, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x50, 0x48,
+    0x8b, 0x45, 0x00, 0x48, 0x84, 0x4c, 0x24, 0x48, 0x48, 0x89, 0x44, 0x25, 0x40, 0x48, 0x58,
+    0x4c, 0x24,
+];
 
 #[cfg(target_os = "windows")]
 pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32]> {
@@ -158,12 +104,9 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
     type SIZE_T = usize;
 
     const TH32CS_SNAPPROCESS: DWORD = 0x00000002;
-    const TH32CS_SNAPMODULE: DWORD = 0x00000008;
-    const TH32CS_SNAPMODULE32: DWORD = 0x00000010;
     const PROCESS_QUERY_INFORMATION: DWORD = 0x0400;
     const PROCESS_VM_READ: DWORD = 0x0010;
     const MEM_COMMIT: DWORD = 0x1000;
-    const MEM_PRIVATE: DWORD = 0x20000;
     const PAGE_NOACCESS: DWORD = 0x01;
     const PAGE_GUARD: DWORD = 0x100;
 
@@ -184,17 +127,17 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
 
     #[repr(C)]
     #[allow(non_snake_case)]
-    struct MODULEENTRY32W {
-        dwSize: DWORD,
-        th32ModuleID: DWORD,
-        th32ProcessID: DWORD,
-        GlblcntUsage: DWORD,
-        ProccntUsage: DWORD,
-        modBaseAddr: *mut c_void,
-        modBaseSize: DWORD,
-        hModule: HANDLE,
-        szModule: [u16; 256],
-        szExePath: [u16; 260],
+    struct PROCESS_MEMORY_COUNTERS {
+        cb: DWORD,
+        PageFaultCount: DWORD,
+        PeakWorkingSetSize: SIZE_T,
+        WorkingSetSize: SIZE_T,
+        QuotaPeakPagedPoolUsage: SIZE_T,
+        QuotaPagedPoolUsage: SIZE_T,
+        QuotaPeakNonPagedPoolUsage: SIZE_T,
+        QuotaNonPagedPoolUsage: SIZE_T,
+        PagefileUsage: SIZE_T,
+        PeakPagefileUsage: SIZE_T,
     }
 
     #[repr(C)]
@@ -214,8 +157,6 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
         fn CreateToolhelp32Snapshot(dwFlags: DWORD, th32ProcessID: DWORD) -> HANDLE;
         fn Process32FirstW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> BOOL;
         fn Process32NextW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> BOOL;
-        fn Module32FirstW(hSnapshot: HANDLE, lpme: *mut MODULEENTRY32W) -> BOOL;
-        fn Module32NextW(hSnapshot: HANDLE, lpme: *mut MODULEENTRY32W) -> BOOL;
         fn OpenProcess(dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwProcessId: DWORD) -> HANDLE;
         fn VirtualQueryEx(
             hProcess: HANDLE,
@@ -230,6 +171,11 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
             nSize: SIZE_T,
             lpNumberOfBytesRead: *mut SIZE_T,
         ) -> BOOL;
+        fn K32GetProcessMemoryInfo(
+            Process: HANDLE,
+            ppsmemCounters: *mut PROCESS_MEMORY_COUNTERS,
+            cb: DWORD,
+        ) -> BOOL;
         fn CloseHandle(hObject: HANDLE) -> BOOL;
     }
 
@@ -242,7 +188,7 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
         let mut entry = std::mem::zeroed::<PROCESSENTRY32W>();
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as DWORD;
 
-        let mut weixin_pids = Vec::new();
+        let mut weixin_pids: Vec<(u32, usize, String)> = Vec::new();
         if Process32FirstW(snapshot, &mut entry) != 0 {
             loop {
                 let name = String::from_utf16_lossy(&entry.szExeFile);
@@ -250,7 +196,18 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
                 if trimmed.eq_ignore_ascii_case("Weixin.exe")
                     || trimmed.eq_ignore_ascii_case("WeChat.exe")
                 {
-                    weixin_pids.push((entry.th32ProcessID, trimmed.to_string()));
+                    let pid = entry.th32ProcessID;
+                    let mut mem_usage = 0usize;
+                    let h_test = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
+                    if !h_test.is_null() {
+                        let mut pmc = std::mem::zeroed::<PROCESS_MEMORY_COUNTERS>();
+                        pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as DWORD;
+                        if K32GetProcessMemoryInfo(h_test, &mut pmc, pmc.cb) != 0 {
+                            mem_usage = pmc.WorkingSetSize;
+                        }
+                        CloseHandle(h_test);
+                    }
+                    weixin_pids.push((pid, mem_usage, trimmed.to_string()));
                 }
                 if Process32NextW(snapshot, &mut entry) == 0 {
                     break;
@@ -263,208 +220,212 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
             return None;
         }
 
+        // Sort by memory usage descending so the main WeChat process (500MB+) is scanned FIRST!
+        weixin_pids.sort_by(|a, b| b.1.cmp(&a.1));
+
         let p1 = match page1 {
             Some(p) if p.len() >= 4096 => p,
             _ => return None,
         };
         let mut salt = [0u8; 16];
         salt.copy_from_slice(&p1[..16]);
-        let target_salt_hex = hex::encode(salt);
 
-        // 1. Try to find Weixin.dll module and extract XOR masks (WeChat 4.1.x mechanism)
-        let mut weixin_masks: Vec<[u8; 32]> = Vec::new();
-        // Always include identity mask [0; 32] (for WeChat <= 4.1.9 without XOR mask)
-        weixin_masks.push([0u8; 32]);
+        let mut chunk = vec![0u8; 2 * 1024 * 1024];
 
-        for (pid, _) in &weixin_pids {
-            let mod_snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, *pid);
-            if !mod_snap.is_null() && mod_snap != -1isize as HANDLE {
-                let mut me = std::mem::zeroed::<MODULEENTRY32W>();
-                me.dwSize = std::mem::size_of::<MODULEENTRY32W>() as DWORD;
-                if Module32FirstW(mod_snap, &mut me) != 0 {
-                    loop {
-                        let mod_name = String::from_utf16_lossy(&me.szModule);
-                        let mod_trim = mod_name.trim_matches('\0');
-                        if mod_trim.eq_ignore_ascii_case("Weixin.dll")
-                            || mod_trim.eq_ignore_ascii_case("WeChatWin.dll")
-                        {
-                            let dll_path = String::from_utf16_lossy(&me.szExePath);
-                            let dll_path_trim = dll_path.trim_matches('\0');
-                            if let Ok(bytes) = std::fs::read(dll_path_trim) {
-                                let found = scan_weixin_dll_for_internal_keys(&bytes);
-                                if !found.is_empty() {
-                                    eprintln!(
-                                        "[i] 成功读取 Weixin.dll，提取到 {} 个内部密钥掩码候选值",
-                                        found.len()
-                                    );
-                                    weixin_masks.extend(found);
-                                }
-                            }
-                            break;
-                        }
-                        if Module32NextW(mod_snap, &mut me) == 0 {
-                            break;
-                        }
-                    }
-                }
-                CloseHandle(mod_snap);
-            }
-            if weixin_masks.len() > 1 {
-                break;
-            }
-        }
-
-        let mut chunk = vec![0u8; 1024 * 1024];
-
-        for (pid, proc_name) in weixin_pids {
-            eprintln!("[i] 正在扫描 {} (PID: {}) 内存寻找匹配密钥...", proc_name, pid);
+        for (pid, mem_bytes, proc_name) in weixin_pids {
+            let mem_mb = mem_bytes / (1024 * 1024);
+            eprintln!(
+                "[i] 正在扫描 {} (PID: {}, 内存: {}MB) 匹配密钥...",
+                proc_name, pid, mem_mb
+            );
             let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
             if handle.is_null() {
                 continue;
             }
 
+            // 1. Collect all readable regions
             let mut addr = 0usize;
             let mut mbi = std::mem::zeroed::<MEMORY_BASIC_INFORMATION>();
             let mbi_size = std::mem::size_of::<MEMORY_BASIC_INFORMATION>();
-            let mut total_scanned = 0usize;
-            let start_time = std::time::Instant::now();
+            let mut readable_regions: Vec<(usize, usize)> = Vec::new();
 
             while addr < 0x7FFF_FFFF_0000 {
-                if start_time.elapsed().as_millis() > 2000 || total_scanned > 128 * 1024 * 1024 {
-                    break;
-                }
-
                 if VirtualQueryEx(handle, addr as *const c_void, &mut mbi, mbi_size) == 0 {
                     break;
                 }
-
                 let region_size = mbi.RegionSize;
-                let is_heap = mbi.State == MEM_COMMIT
-                    && mbi.Type == MEM_PRIVATE
+                let is_readable = mbi.State == MEM_COMMIT
                     && (mbi.Protect & PAGE_GUARD == 0)
                     && (mbi.Protect & PAGE_NOACCESS == 0);
 
-                if is_heap && region_size > 0 {
-                    let mut reg_offset = 0usize;
-                    while reg_offset < region_size {
-                        let to_read = (region_size - reg_offset).min(1024 * 1024);
-                        let mut bytes_read = 0usize;
-                        let cur_addr = (mbi.BaseAddress as usize) + reg_offset;
+                if is_readable && region_size > 0 && region_size <= 256 * 1024 * 1024 {
+                    readable_regions.push((mbi.BaseAddress as usize, region_size));
+                }
+                let next = addr.saturating_add(region_size);
+                if next <= addr {
+                    break;
+                }
+                addr = next;
+            }
 
-                        if ReadProcessMemory(
-                            handle,
-                            cur_addr as *const c_void,
-                            chunk.as_mut_ptr() as *mut c_void,
-                            to_read,
-                            &mut bytes_read,
-                        ) != 0
-                            && bytes_read >= 32
-                        {
-                            total_scanned += bytes_read;
-                            let slice = &chunk[..bytes_read];
+            // 2. Algorithm A (wcdb-key-tool for WeChat 4.1+):
+            // Search for WINDOWS_CONFIG_CIPHER_NAME ("com.Tencent.WCDB.Config.Cipher")
+            let mut needle_addresses = Vec::new();
+            for &(base, size) in &readable_regions {
+                let mut reg_offset = 0usize;
+                while reg_offset < size {
+                    let to_read = (size - reg_offset).min(chunk.len());
+                    let mut bytes_read = 0usize;
+                    if ReadProcessMemory(
+                        handle,
+                        (base + reg_offset) as *const c_void,
+                        chunk.as_mut_ptr() as *mut c_void,
+                        to_read,
+                        &mut bytes_read,
+                    ) != 0 && bytes_read >= WINDOWS_CONFIG_CIPHER_NAME.len() {
+                        let slice = &chunk[..bytes_read];
+                        let mut pos = 0;
+                        while let Some(rel) = slice[pos..].windows(WINDOWS_CONFIG_CIPHER_NAME.len()).position(|w| w == WINDOWS_CONFIG_CIPHER_NAME) {
+                            let match_addr = base + reg_offset + pos + rel;
+                            needle_addresses.push(match_addr);
+                            pos += rel + WINDOWS_CONFIG_CIPHER_NAME.len();
+                        }
+                    }
+                    reg_offset += to_read;
+                }
+            }
 
-                            // Strategy A: Scan for pattern b"x'" (WeChat <= 4.1.9)
-                            let mut cursor = 0;
-                            while let Some(rel) = slice[cursor..].windows(2).position(|w| w == b"x'") {
-                                let match_start = cursor + rel + 2;
-                                let remaining = &slice[match_start..];
-                                let hex_len = remaining
-                                    .iter()
-                                    .take_while(|b| b.is_ascii_hexdigit())
-                                    .count();
+            if !needle_addresses.is_empty() {
+                eprintln!("[i] 发现 {} 个 Config.Cipher 对象标记，正在解析密钥链...", needle_addresses.len());
+                for &needle_addr in &needle_addresses {
+                    // Pattern is [addr (8 bytes LE), len (8 bytes LE == 30)]
+                    let mut pattern = [0u8; 16];
+                    pattern[..8].copy_from_slice(&(needle_addr as u64).to_le_bytes());
+                    pattern[8..16].copy_from_slice(&(WINDOWS_CONFIG_CIPHER_NAME.len() as u64).to_le_bytes());
 
-                                if (hex_len == 64 || hex_len == 96)
-                                    && remaining.get(hex_len) == Some(&b'\'')
-                                {
-                                    if let Ok(hex_str) = std::str::from_utf8(&remaining[..hex_len]) {
-                                        let salt_matches = match hex_len {
-                                            96 => hex_str[64..96].eq_ignore_ascii_case(&target_salt_hex),
-                                            _ => true,
-                                        };
-
-                                        if salt_matches {
-                                            if let Ok(key_bytes) = hex::decode(&hex_str[..64]) {
-                                                if key_bytes.len() == 32 {
-                                                    let mut key_arr = [0u8; 32];
-                                                    key_arr.copy_from_slice(&key_bytes);
-
-                                                    for mask in &weixin_masks {
-                                                        let mut cand = [0u8; 32];
-                                                        for k in 0..32 {
-                                                            cand[k] = key_arr[k] ^ mask[k];
+                    for &(base, size) in &readable_regions {
+                        let mut reg_offset = 0usize;
+                        while reg_offset < size {
+                            let to_read = (size - reg_offset).min(chunk.len());
+                            let mut bytes_read = 0usize;
+                            if ReadProcessMemory(
+                                handle,
+                                (base + reg_offset) as *const c_void,
+                                chunk.as_mut_ptr() as *mut c_void,
+                                to_read,
+                                &mut bytes_read,
+                            ) != 0 && bytes_read >= 16 {
+                                let slice = &chunk[..bytes_read];
+                                let mut pos = 0;
+                                while let Some(rel) = slice[pos..].windows(16).position(|w| w == pattern) {
+                                    let qaddr = base + reg_offset + pos + rel;
+                                    let node_base = qaddr.saturating_sub(0x10);
+                                    let mut node = [0u8; 0x50];
+                                    let mut nr = 0usize;
+                                    if ReadProcessMemory(handle, node_base as *const c_void, node.as_mut_ptr() as *mut c_void, 0x50, &mut nr) != 0 && nr >= 0x40 {
+                                        let config_ptr = u64::from_le_bytes(node[0x28..0x30].try_into().unwrap_or([0; 8])) as usize;
+                                        if config_ptr >= 0x10000 && config_ptr < 0x7FFF_FFFF_0000 {
+                                            let mut obj = [0u8; 0x28];
+                                            let mut obr = 0usize;
+                                            if ReadProcessMemory(handle, (config_ptr + 0x88) as *const c_void, obj.as_mut_ptr() as *mut c_void, 0x28, &mut obr) != 0 && obr >= 0x18 {
+                                                let data_ptr = u64::from_le_bytes(obj[0x8..0x10].try_into().unwrap_or([0; 8])) as usize;
+                                                let data_len = u64::from_le_bytes(obj[0x10..0x18].try_into().unwrap_or([0; 8])) as usize;
+                                                if data_len > 0 && data_len <= 1024 && data_ptr >= 0x10000 && data_ptr < 0x7FFF_FFFF_0000 {
+                                                    let mut blob = vec![0u8; data_len];
+                                                    let mut bbr = 0usize;
+                                                    if ReadProcessMemory(handle, data_ptr as *const c_void, blob.as_mut_ptr() as *mut c_void, data_len, &mut bbr) != 0 && bbr == data_len {
+                                                        // XOR decrypt blob with WINDOWS_CONFIG_XOR_MASK
+                                                        for k in 0..blob.len() {
+                                                            blob[k] ^= WINDOWS_CONFIG_XOR_MASK[k % 32];
                                                         }
-                                                        let derived = derive_wechat_db_key(&cand, &salt);
-                                                        if verify_db_page1(&derived, p1) || verify_db_page1(&cand, p1) {
-                                                            eprintln!(
-                                                                "[i] 成功从运行中的 {} (PID: {}) 内存提取到数据库密钥!",
-                                                                proc_name, pid
-                                                            );
-                                                            CloseHandle(handle);
-                                                            return Some(cand);
+                                                        // Search for x'<hex>' in decrypted blob
+                                                        let mut bpos = 0;
+                                                        while let Some(brel) = blob[bpos..].windows(2).position(|w| w == b"x'" || w == b"X'") {
+                                                            let mstart = bpos + brel + 2;
+                                                            let rem = &blob[mstart..];
+                                                            let hlen = rem.iter().take_while(|b| b.is_ascii_hexdigit()).count();
+                                                            if (hlen == 64 || hlen == 96) && rem.get(hlen) == Some(&b'\'') {
+                                                                if let Ok(hex_str) = std::str::from_utf8(&rem[..64]) {
+                                                                    if let Ok(kbytes) = hex::decode(hex_str) {
+                                                                        if kbytes.len() == 32 {
+                                                                            let mut karr = [0u8; 32];
+                                                                            karr.copy_from_slice(&kbytes);
+                                                                            let derived = derive_wechat_db_key(&karr, &salt);
+                                                                            if verify_db_page1(&derived, p1) || verify_db_page1(&karr, p1) {
+                                                                                eprintln!(
+                                                                                    "[+] 成功通过 Config.Cipher 算法从微信进程 (PID: {}) 提取出数据库密钥: x'{}'!",
+                                                                                    pid, hex::encode(karr)
+                                                                                );
+                                                                                CloseHandle(handle);
+                                                                                return Some(karr);
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            bpos = mstart;
                                                         }
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                }
-                                cursor = match_start;
-                                if cursor >= slice.len() {
-                                    break;
+                                    pos += rel + 16;
                                 }
                             }
+                            reg_offset += to_read;
+                        }
+                    }
+                }
+            }
 
-                            // Strategy B: Scan for MSVC std::string (WeChat 4.1.x)
-                            let mut j = 0;
-                            while j + 32 <= bytes_read {
-                                let size = u64::from_le_bytes(slice[j + 16..j + 24].try_into().unwrap_or([0; 8]));
-                                let cap = u64::from_le_bytes(slice[j + 24..j + 32].try_into().unwrap_or([0; 8]));
-                                if size == 32 && (cap == 47 || cap == 32 || cap == 63) {
-                                    let ptr = usize::from_le_bytes(slice[j..j + 8].try_into().unwrap_or([0; 8]));
-                                    if ptr >= 0x10000 && ptr <= 0x7FFF_FFFF_0000 {
-                                        let mut key_buf = [0u8; 32];
-                                        let mut read_sz = 0usize;
-                                        if ReadProcessMemory(
-                                            handle,
-                                            ptr as *const c_void,
-                                            key_buf.as_mut_ptr() as *mut c_void,
-                                            32,
-                                            &mut read_sz,
-                                        ) != 0 && read_sz == 32 {
-                                            for mask in &weixin_masks {
-                                                let mut cand = [0u8; 32];
-                                                for k in 0..32 {
-                                                    cand[k] = key_buf[k] ^ mask[k];
-                                                }
-                                                let derived = derive_wechat_db_key(&cand, &salt);
-                                                if verify_db_page1(&derived, p1) || verify_db_page1(&cand, p1) {
-                                                    eprintln!(
-                                                        "[i] 成功通过 Weixin.dll 内部掩码与 MSVC 特征从运行中的 {} (PID: {}) 提取出数据库密钥!",
-                                                        proc_name, pid
-                                                    );
-                                                    CloseHandle(handle);
-                                                    return Some(cand);
-                                                }
+            // 3. Algorithm B: Raw x'<hex>' scan (WeChat <= 4.1.9)
+            for &(base, size) in &readable_regions {
+                let mut reg_offset = 0usize;
+                while reg_offset < size {
+                    let to_read = (size - reg_offset).min(chunk.len());
+                    let mut bytes_read = 0usize;
+                    if ReadProcessMemory(
+                        handle,
+                        (base + reg_offset) as *const c_void,
+                        chunk.as_mut_ptr() as *mut c_void,
+                        to_read,
+                        &mut bytes_read,
+                    ) != 0 && bytes_read >= 68 {
+                        let slice = &chunk[..bytes_read];
+                        let mut cursor = 0;
+                        while let Some(rel) = slice[cursor..].windows(2).position(|w| w == b"x'" || w == b"X'") {
+                            let match_start = cursor + rel + 2;
+                            let remaining = &slice[match_start..];
+                            let hex_len = remaining.iter().take_while(|b| b.is_ascii_hexdigit()).count();
+
+                            if (hex_len == 64 || hex_len == 96) && remaining.get(hex_len) == Some(&b'\'') {
+                                if let Ok(hex_str) = std::str::from_utf8(&remaining[..64]) {
+                                    if let Ok(key_bytes) = hex::decode(hex_str) {
+                                        if key_bytes.len() == 32 {
+                                            let mut key_arr = [0u8; 32];
+                                            key_arr.copy_from_slice(&key_bytes);
+                                            let derived = derive_wechat_db_key(&key_arr, &salt);
+                                            if verify_db_page1(&derived, p1) || verify_db_page1(&key_arr, p1) {
+                                                eprintln!(
+                                                    "[+] 成功从运行中的微信进程 (PID: {}) 内存匹配到数据库密钥!",
+                                                    pid
+                                                );
+                                                CloseHandle(handle);
+                                                return Some(key_arr);
                                             }
                                         }
                                     }
                                 }
-                                j += 8;
+                            }
+                            cursor = match_start;
+                            if cursor >= slice.len() {
+                                break;
                             }
                         }
-
-                        reg_offset += to_read;
-                        if to_read < 1024 * 1024 {
-                            break;
-                        }
                     }
+                    reg_offset += to_read;
                 }
-
-                let next = addr.saturating_add(region_size);
-                if next <= addr {
-                    break;
-                }
-                addr = next;
             }
 
             CloseHandle(handle);

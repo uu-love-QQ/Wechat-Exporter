@@ -5,13 +5,17 @@ edition = "2021"
 description = "WeChat 4.x local database decryptor and multi-format chat exporter"
 license = "MIT"
 
+[lib]
+name = "wechat_exporter"
+path = "src/lib.rs"
+
 [[bin]]
 name = "wechat-exporter"
-path = "src/main.rs"
+path = "src/bin/wechat_exporter.rs"
 
 [[bin]]
 name = "alpha-cli"
-path = "src/main.rs"
+path = "src/bin/alpha_cli.rs"
 
 [[bin]]
 name = "alpha-fixture"

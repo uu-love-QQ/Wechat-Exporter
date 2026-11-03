@@ -1,8 +1,8 @@
-mod cli;
-mod db;
-mod export;
-mod util;
-mod wechat;
+pub mod cli;
+pub mod db;
+pub mod export;
+pub mod util;
+pub mod wechat;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -102,19 +102,12 @@ fn run_detect_databases() -> Result<()> {
     Ok(())
 }
 
-fn main() {
+pub fn run() -> Result<()> {
     if std::env::args().len() <= 1 {
         print_welcome_help();
-        return;
+        return Ok(());
     }
 
-    if let Err(error) = run() {
-        eprintln!("Error: {error:#}");
-        std::process::exit(1);
-    }
-}
-
-fn run() -> Result<()> {
     let cli = Cli::parse();
     let options = cli.validate()?;
 

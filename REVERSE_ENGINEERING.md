@@ -186,3 +186,17 @@ download, voice transcription (Silk→WAV→text), Moments/favorites/contacts
 exports, avatar extraction from `head_image.db`, and the desktop UI/AI analysis
 features. Those require Alpha services or Windows-only native components; the
 local chat-export CLI remains fully functional without them.
+
+
+## 微信 4.1+ 密钥解析实现参考 (wcdb-key-tool)
+
+参考开源项目 [TANGandXUE/wcdb-key-tool](https://github.com/TANGandXUE/wcdb-key-tool)，微信 4.1+ 版本在运行时会将 WCDB 的 `Config.Cipher` 配置对象常驻内存：
+
+1. **对象标记定位**：
+   - 搜索常量字符串 `com.Tencent.WCDB.Config.Cipher` (30 字节) 的内存地址；
+   - 构造 `(needle_addr: u64, 30: u64)` 引用指针组并在私有堆与内存块中寻找引用节点；
+2. **异或解密与密钥提取**：
+   - 定位配置节点结构体偏移 `0x28` 的配置指针，以及 `+0x88` 处的属性对象；
+   - 读取数据指针与长度（典型长度为 99 字节，对应 `x'<64 hex key><32 hex salt>'`）；
+   - 使用 32 字节掩码 `d2c7442458020000004889442450488b450048844c2448488944254048584c24` 进行异或还原；
+   - 提取出候选密钥后，使用 Page 1 的 HMAC-SHA512 自校验验证有效性并缓存。
