@@ -186,11 +186,17 @@ pub fn parse_message_source(raw: &str) -> MessageSource {
     if xml_value(&xml, "silence").as_deref() == Some("1") {
         push("群已开启消息免打扰".to_string());
     }
-    match xml_value(&xml, "fr").as_deref() {
-        Some("1") => push("从手机发送".to_string()),
-        Some("2") => push("从电脑发送".to_string()),
-        Some("3") => push("从平板发送".to_string()),
-        _ => {}
+    // alpha_native.dll matches this exact document to identify a message the
+    // account owner sent from a phone. Other <fr> values are only device flags.
+    let compact = xml.split_whitespace().collect::<String>();
+    if compact.contains("<msgsource><alnode><fr>1</fr></alnode></msgsource>") {
+        push("本人从手机发送".to_string());
+    } else {
+        match xml_value(&xml, "fr").as_deref() {
+            Some("2") => push("从电脑发送".to_string()),
+            Some("3") => push("从平板发送".to_string()),
+            _ => {}
+        }
     }
     if let Some(scene) = xml_value(&xml, "scene") {
         let label = match scene.as_str() {
@@ -531,6 +537,11 @@ mod tests {
 
     #[test]
     fn translates_msgsource_into_notes() {
+        let owner = "<msgsource><alnode><fr>1</fr></alnode></msgsource>";
+        assert_eq!(
+            parse_message_source(owner).notes,
+            vec!["本人从手机发送".to_string()]
+        );
         let raw = "<msgsource><silence>1</silence><membercount>4</membercount><signature>v1_secret</signature><sec_msg_node><alnode><fr>2</fr></alnode></sec_msg_node></msgsource>";
         let parsed = parse_message_source(raw);
         assert_eq!(
