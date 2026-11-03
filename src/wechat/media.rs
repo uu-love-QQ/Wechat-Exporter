@@ -2,6 +2,8 @@ use aes::cipher::{BlockDecrypt, KeyInit};
 use aes::Aes128;
 use anyhow::{bail, Result};
 use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +11,9 @@ use super::model::{ExportMessage, MediaKind};
 
 const V1_MAGIC: &[u8] = b"\x07\x08V1\x08\x07";
 const V2_MAGIC: &[u8] = b"\x07\x08V2\x08\x07";
+
+static IMAGE_SEED_CACHE: std::sync::Mutex<Option<(u32, [u8; 16], u8)>> =
+    std::sync::Mutex::new(None);
 
 #[derive(Clone, Debug)]
 struct IndexedFile {
@@ -378,29 +383,397 @@ pub fn auto_scan_image_key_from_process(_test_ciphertext: &[u8; 16]) -> Option<[
     None
 }
 
-pub fn export_media(
-    messages: &mut [ExportMessage],
-    index: &MediaIndex,
-    output_dir: &Path,
-    mut image_key: Option<[u8; 16]>,
-) -> MediaOutcome {
-    if image_key.is_none() {
-        for file in &index.files {
-            let is_dat = file.path.extension().and_then(|v| v.to_str()).map(|ext| ext.eq_ignore_ascii_case("dat")).unwrap_or(false);
-            if is_dat {
-                if let Ok(data) = fs::read(&file.path) {
-                    if data.starts_with(V2_MAGIC) && data.len() >= 31 {
-                        let mut test_ciphertext = [0u8; 16];
-                        test_ciphertext.copy_from_slice(&data[15..31]);
-                        if let Some(scanned) = auto_scan_image_key_from_process(&test_ciphertext) {
-                            image_key = Some(scanned);
-                            break;
+/// WeChat 4.x chat-image key derivation (verified against a real account):
+/// `aes_key = md5(format!("{seed}{wxid}"))[..16]` (ASCII) and
+/// `xor_key = seed & 0xff`.
+pub fn image_key_from_seed(seed: u32, wxid: &str) -> ([u8; 16], u8) {
+    let digest = crate::util::md5_hex(&format!("{seed}{wxid}"));
+    let mut key = [0u8; 16];
+    key.copy_from_slice(digest.as_bytes().get(..16).unwrap_or(b"0000000000000000"));
+    (key, (seed & 0xff) as u8)
+}
+
+/// WeChat emoticon key: `md5(format!("{seed}{wxid}EMOTICON"))` hex-decoded,
+/// first 16 bytes; AES-128-CBC with key == IV.
+pub fn emoticon_key_from_seed(seed: u32, wxid: &str) -> Option<[u8; 16]> {
+    let digest = crate::util::md5_hex(&format!("{seed}{wxid}EMOTICON"));
+    let bytes = hex::decode(digest.get(..32)?).ok()?;
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&bytes[..16]);
+    Some(key)
+}
+
+fn emoticon_first_block_is_image(data: &[u8], key: &[u8; 16]) -> bool {
+    if data.len() < 16 {
+        return false;
+    }
+    let Ok(cipher) = Aes128::new_from_slice(key) else {
+        return false;
+    };
+    let mut block = [0u8; 16];
+    block.copy_from_slice(&data[..16]);
+    let generic = aes::cipher::generic_array::GenericArray::from_mut_slice(&mut block);
+    cipher.decrypt_block(generic);
+    for i in 0..16 {
+        block[i] ^= key[i];
+    }
+    is_image_header(&block) || block.starts_with(b"wxgf")
+}
+
+#[cfg(target_os = "windows")]
+pub fn auto_scan_image_seed_from_process(
+    wxid: &str,
+    validate: &dyn Fn(u32) -> bool,
+) -> Option<(u32, [u8; 16], u8)> {
+    use std::ffi::c_void;
+
+    type HANDLE = *mut c_void;
+    type DWORD = u32;
+    type BOOL = i32;
+    #[allow(non_camel_case_types)]
+    type SIZE_T = usize;
+
+    const TH32CS_SNAPPROCESS: DWORD = 0x0000_0002;
+    const PROCESS_QUERY_INFORMATION: DWORD = 0x0400;
+    const PROCESS_VM_READ: DWORD = 0x0010;
+    const MEM_COMMIT: DWORD = 0x1000;
+    const MEM_PRIVATE: DWORD = 0x20000;
+    const PAGE_NOACCESS: DWORD = 0x01;
+    const PAGE_GUARD: DWORD = 0x100;
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct PROCESSENTRY32W {
+        dwSize: DWORD,
+        cntUsage: DWORD,
+        th32ProcessID: DWORD,
+        th32DefaultHeapID: usize,
+        th32ModuleID: DWORD,
+        cntThreads: DWORD,
+        th32ParentProcessID: DWORD,
+        pcPriClassBase: i32,
+        dwFlags: DWORD,
+        szExeFile: [u16; 260],
+    }
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct PROCESS_MEMORY_COUNTERS {
+        cb: DWORD,
+        PageFaultCount: DWORD,
+        PeakWorkingSetSize: SIZE_T,
+        WorkingSetSize: SIZE_T,
+        QuotaPeakPagedPoolUsage: SIZE_T,
+        QuotaPagedPoolUsage: SIZE_T,
+        QuotaPeakNonPagedPoolUsage: SIZE_T,
+        QuotaNonPagedPoolUsage: SIZE_T,
+        PagefileUsage: SIZE_T,
+        PeakPagefileUsage: SIZE_T,
+    }
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct MEMORY_BASIC_INFORMATION {
+        BaseAddress: *mut c_void,
+        AllocationBase: *mut c_void,
+        AllocationProtect: DWORD,
+        PartitionId: u16,
+        RegionSize: SIZE_T,
+        State: DWORD,
+        Protect: DWORD,
+        Type: DWORD,
+    }
+
+    extern "system" {
+        fn CreateToolhelp32Snapshot(dwFlags: DWORD, th32ProcessID: DWORD) -> HANDLE;
+        fn Process32FirstW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> BOOL;
+        fn Process32NextW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> BOOL;
+        fn OpenProcess(dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwProcessId: DWORD) -> HANDLE;
+        fn VirtualQueryEx(
+            hProcess: HANDLE,
+            lpAddress: *const c_void,
+            lpBuffer: *mut MEMORY_BASIC_INFORMATION,
+            dwLength: SIZE_T,
+        ) -> SIZE_T;
+        fn ReadProcessMemory(
+            hProcess: HANDLE,
+            lpBaseAddress: *const c_void,
+            lpBuffer: *mut c_void,
+            nSize: SIZE_T,
+            lpNumberOfBytesRead: *mut SIZE_T,
+        ) -> BOOL;
+        fn K32GetProcessMemoryInfo(
+            Process: HANDLE,
+            ppsmemCounters: *mut PROCESS_MEMORY_COUNTERS,
+            cb: DWORD,
+        ) -> BOOL;
+        fn CloseHandle(hObject: HANDLE) -> BOOL;
+    }
+
+    fn wide_trimmed(buf: &[u16]) -> String {
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        String::from_utf16_lossy(&buf[..end])
+    }
+
+    fn collect_seeds(data: &[u8], out: &mut HashSet<u32>) {
+        let mut i = 0usize;
+        while i < data.len() {
+            if !data[i].is_ascii_digit() {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < data.len() && data[i].is_ascii_digit() {
+                i += 1;
+            }
+            let len = i - start;
+            if (9..=10).contains(&len) {
+                if let Ok(text) = std::str::from_utf8(&data[start..i]) {
+                    if let Ok(value) = text.parse::<u64>() {
+                        if value > 100_000_000 && value < 4_000_000_000 {
+                            out.insert(value as u32);
                         }
                     }
                 }
             }
         }
     }
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot.is_null() || snapshot == -1isize as HANDLE {
+            return None;
+        }
+        let mut entry = std::mem::zeroed::<PROCESSENTRY32W>();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as DWORD;
+        let mut pids: Vec<(u32, usize)> = Vec::new();
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                let name = wide_trimmed(&entry.szExeFile);
+                if name.eq_ignore_ascii_case("Weixin.exe")
+                    || name.eq_ignore_ascii_case("WeChat.exe")
+                {
+                    let pid = entry.th32ProcessID;
+                    let mut mem = 0usize;
+                    let h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
+                    if !h.is_null() {
+                        let mut pmc = std::mem::zeroed::<PROCESS_MEMORY_COUNTERS>();
+                        pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as DWORD;
+                        if K32GetProcessMemoryInfo(h, &mut pmc, pmc.cb) != 0 {
+                            mem = pmc.WorkingSetSize;
+                        }
+                        CloseHandle(h);
+                    }
+                    pids.push((pid, mem));
+                }
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+        pids.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let mut chunk = vec![0u8; 4 * 1024 * 1024];
+        for (pid, mem) in pids {
+            let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
+            if handle.is_null() {
+                continue;
+            }
+            eprintln!(
+                "[i] 正在扫描 Weixin.exe (PID: {}, 内存: {}MB) 查找图片种子...",
+                pid,
+                mem / (1024 * 1024)
+            );
+            let mut seeds: HashSet<u32> = HashSet::new();
+            let mut addr = 0usize;
+            loop {
+                let mut mbi = std::mem::zeroed::<MEMORY_BASIC_INFORMATION>();
+                if VirtualQueryEx(
+                    handle,
+                    addr as *const c_void,
+                    &mut mbi,
+                    std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+                ) == 0
+                {
+                    break;
+                }
+                let base = mbi.BaseAddress as usize;
+                let size = mbi.RegionSize;
+                let next = match base.checked_add(size) {
+                    Some(next) if next > base => next,
+                    _ => break,
+                };
+                if mbi.State == MEM_COMMIT
+                    && mbi.Type == MEM_PRIVATE
+                    && size > 0
+                    && mbi.Protect & PAGE_NOACCESS == 0
+                    && mbi.Protect & PAGE_GUARD == 0
+                {
+                    let mut offset = 0usize;
+                    let mut tail: Vec<u8> = Vec::new();
+                    while offset < size {
+                        let want = (size - offset).min(chunk.len());
+                        let mut got = 0usize;
+                        if ReadProcessMemory(
+                            handle,
+                            (base + offset) as *const c_void,
+                            chunk.as_mut_ptr() as *mut c_void,
+                            want,
+                            &mut got,
+                        ) != 0
+                            && got > 0
+                        {
+                            let mut window = Vec::with_capacity(tail.len() + got);
+                            window.extend_from_slice(&tail);
+                            window.extend_from_slice(&chunk[..got]);
+                            collect_seeds(&window, &mut seeds);
+                            let keep = window.len().min(16);
+                            tail = window[window.len() - keep..].to_vec();
+                        }
+                        offset = offset.saturating_add(want);
+                    }
+                }
+                addr = next;
+            }
+
+            for seed in seeds {
+                if !validate(seed) {
+                    continue;
+                }
+                let (key, xor_key) = image_key_from_seed(seed, wxid);
+                {
+                    eprintln!(
+                        "[+] 成功从 Weixin.exe (PID: {}) 提取图片种子: {} (AES: {}, XOR: 0x{:02x})",
+                        pid,
+                        seed,
+                        String::from_utf8_lossy(&key),
+                        xor_key
+                    );
+                    CloseHandle(handle);
+                    return Some((seed, key, xor_key));
+                }
+            }
+            CloseHandle(handle);
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn auto_scan_image_seed_from_process(
+    _wxid: &str,
+    _validate: &dyn Fn(u32) -> bool,
+) -> Option<(u32, [u8; 16], u8)> {
+    None
+}
+
+pub fn export_media(
+    messages: &mut [ExportMessage],
+    index: &MediaIndex,
+    output_dir: &Path,
+    mut image_key: Option<[u8; 16]>,
+    account_id: &str,
+) -> MediaOutcome {
+    let mut image_xor_key: Option<u8> = None;
+    let mut image_seed: Option<u32> = None;
+
+    let mut v2_sample: Option<[u8; 16]> = None;
+    let mut emoticon_sample: Option<[u8; 16]> = None;
+    for file in &index.files {
+        let is_dat = file
+            .path
+            .extension()
+            .and_then(|v| v.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("dat"))
+            .unwrap_or(false);
+        let is_emoticon = file
+            .path
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .contains("emoticon")
+            || file
+                .path
+                .extension()
+                .and_then(|v| v.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("thumb"))
+                .unwrap_or(false);
+        if !is_dat && !is_emoticon {
+            continue;
+        }
+        if let Ok(data) = fs::read(&file.path) {
+            if is_dat && data.starts_with(V2_MAGIC) && data.len() >= 31 && v2_sample.is_none() {
+                let mut test_ciphertext = [0u8; 16];
+                test_ciphertext.copy_from_slice(&data[15..31]);
+                v2_sample = Some(test_ciphertext);
+            }
+            if is_emoticon && data.len() >= 16 && emoticon_sample.is_none() {
+                let mut block = [0u8; 16];
+                block.copy_from_slice(&data[..16]);
+                emoticon_sample = Some(block);
+            }
+        }
+        if v2_sample.is_some() && emoticon_sample.is_some() {
+            break;
+        }
+    }
+
+    if image_key.is_none() {
+        if let Some((seed, key, xor_key)) = *IMAGE_SEED_CACHE.lock().unwrap() {
+            image_seed = Some(seed);
+            image_key = Some(key);
+            image_xor_key = Some(xor_key);
+        }
+    }
+    if image_key.is_none() {
+        if let Some(test_ciphertext) = v2_sample {
+            let scan = auto_scan_image_seed_from_process(account_id, &|seed| {
+                let (key, _) = image_key_from_seed(seed, account_id);
+                let Ok(cipher) = Aes128::new_from_slice(&key) else {
+                    return false;
+                };
+                let mut block = test_ciphertext;
+                let generic = aes::cipher::generic_array::GenericArray::from_mut_slice(&mut block);
+                cipher.decrypt_block(generic);
+                is_image_header(&block)
+            });
+            if let Some((seed, key, xor_key)) = scan {
+                image_seed = Some(seed);
+                image_key = Some(key);
+                image_xor_key = Some(xor_key);
+                *IMAGE_SEED_CACHE.lock().unwrap() = Some((seed, key, xor_key));
+            }
+        }
+        if image_key.is_none() {
+            if let Some(block16) = emoticon_sample {
+                let scan = auto_scan_image_seed_from_process(account_id, &|seed| {
+                    match emoticon_key_from_seed(seed, account_id) {
+                        Some(key) => emoticon_first_block_is_image(&block16, &key),
+                        None => false,
+                    }
+                });
+                if let Some((seed, key, xor_key)) = scan {
+                    image_seed = Some(seed);
+                    image_key = Some(key);
+                    image_xor_key = Some(xor_key);
+                    *IMAGE_SEED_CACHE.lock().unwrap() = Some((seed, key, xor_key));
+                }
+            }
+        }
+        if image_key.is_none() {
+            if let Some(test_ciphertext) = v2_sample {
+                if let Some(scanned) = auto_scan_image_key_from_process(&test_ciphertext) {
+                    eprintln!(
+                        "[!] 未找到图片种子，退回 16 字节 ASCII 密钥扫描: {}",
+                        String::from_utf8_lossy(&scanned)
+                    );
+                    image_key = Some(scanned);
+                }
+            }
+        }
+    }
+
+    let emoticon_key = image_seed.and_then(|seed| emoticon_key_from_seed(seed, account_id));
     let media_dir = output_dir.join("media");
     let mut outcome = MediaOutcome {
         saved: 0,
@@ -428,24 +801,36 @@ pub fn export_media(
         };
         let safe_stem = crate::util::sanitize_file_name(&stem);
         let prefix = format!("{:05}_{}", message.index, safe_stem);
-        let result = if file
+        let is_dat = file
             .path
             .extension()
             .and_then(|value| value.to_str())
             .map(|ext| ext.eq_ignore_ascii_case("dat"))
-            .unwrap_or(false)
-        {
-            match decrypt_dat_file(&file.path, image_key) {
-                Ok((bytes, ext)) => {
-                    let dest = media_dir.join(format!("{prefix}.{ext}"));
-                    if let Err(error) = write_bytes(&dest, &bytes) {
-                        Err(error)
-                    } else {
-                        Ok(dest)
-                    }
+            .unwrap_or(false);
+        let raw_bytes = fs::read(&file.path).unwrap_or_default();
+        let mut decrypted: Option<(Vec<u8>, &'static str)> = None;
+
+        // Emoticons are AES-128-CBC with key == IV, derived from the account seed.
+        if let Some(key) = emoticon_key.as_ref() {
+            if media.kind == MediaKind::Emoji || !is_dat {
+                if let Some((bytes, ext)) = decrypt_emoticon_bytes(&raw_bytes, key) {
+                    decrypted = Some((bytes, ext));
                 }
-                Err(error) => Err(error),
             }
+        }
+        // V2 chat images: AES-128-ECB over the first region + single-byte XOR tail.
+        if decrypted.is_none() && is_dat {
+            if let Ok((bytes, ext)) = decrypt_dat_file(&file.path, image_key, image_xor_key) {
+                decrypted = Some((bytes, ext));
+            }
+        }
+        if decrypted.is_none() && is_image_header(&raw_bytes) {
+            decrypted = Some((raw_bytes.clone(), detect_image_ext(&raw_bytes)));
+        }
+
+        let result = if let Some((bytes, ext)) = decrypted {
+            let dest = media_dir.join(format!("{prefix}.{ext}"));
+            write_bytes(&dest, &bytes).map(|_| dest)
         } else {
             let mut ext = file
                 .path
@@ -453,11 +838,8 @@ pub fn export_media(
                 .and_then(|value| value.to_str())
                 .unwrap_or("bin")
                 .to_string();
-            let raw_bytes = std::fs::read(&file.path).unwrap_or_default();
-            if is_image_header(&raw_bytes) {
-                ext = detect_image_ext(&raw_bytes).to_string();
-            } else if ext.eq_ignore_ascii_case("thumb") {
-                // Windows cannot open .thumb, map to .jpg
+            if ext.eq_ignore_ascii_case("thumb") {
+                // Windows cannot open .thumb; keep the raw bytes under a safe name.
                 ext = "jpg".to_string();
             }
             let dest = media_dir.join(format!("{prefix}.{ext}"));
@@ -519,7 +901,48 @@ fn is_image_header(bytes: &[u8]) -> bool {
     detect_image_ext(bytes) != "bin"
 }
 
-fn decrypt_dat_file(path: &Path, image_key: Option<[u8; 16]>) -> Result<(Vec<u8>, &'static str)> {
+/// AES-128-CBC (key == IV) + PKCS7 for WeChat emoticon `Thumb` / `Persist`
+/// files, matching the account seed derivation.
+fn decrypt_emoticon_bytes(data: &[u8], key: &[u8; 16]) -> Option<(Vec<u8>, &'static str)> {
+    if is_image_header(data) {
+        return Some((data.to_vec(), detect_image_ext(data)));
+    }
+    if data.len() < 16 || data.len() % 16 != 0 {
+        return None;
+    }
+    let cipher = Aes128::new_from_slice(key).ok()?;
+    let mut previous = *key;
+    let mut out = Vec::with_capacity(data.len());
+    for chunk in data.chunks_exact(16) {
+        let mut current = [0u8; 16];
+        current.copy_from_slice(chunk);
+        let mut block = current;
+        let generic = aes::cipher::generic_array::GenericArray::from_mut_slice(&mut block);
+        cipher.decrypt_block(generic);
+        for i in 0..16 {
+            block[i] ^= previous[i];
+        }
+        previous = current;
+        out.extend_from_slice(&block);
+    }
+    let pad = *out.last()? as usize;
+    if pad == 0 || pad > 16 || pad > out.len() {
+        return None;
+    }
+    out.truncate(out.len() - pad);
+    if is_image_header(&out) {
+        let ext = detect_image_ext(&out);
+        Some((out, ext))
+    } else {
+        None
+    }
+}
+
+fn decrypt_dat_file(
+    path: &Path,
+    image_key: Option<[u8; 16]>,
+    xor_key: Option<u8>,
+) -> Result<(Vec<u8>, &'static str)> {
     let data = fs::read(path)?;
     if is_image_header(&data) {
         return Ok((data.clone(), detect_image_ext(&data)));
@@ -533,7 +956,7 @@ fn decrypt_dat_file(path: &Path, image_key: Option<[u8; 16]>) -> Result<(Vec<u8>
                 anyhow::anyhow!("V2 image encryption requires --image-key (32 hex characters)")
             })?
         };
-        let decrypted = decrypt_dat_aes_xor(&data, &key)?;
+        let decrypted = decrypt_dat_aes_xor(&data, &key, xor_key)?;
         let ext = detect_image_ext(&decrypted);
         return Ok((decrypted, ext));
     }
@@ -545,7 +968,7 @@ fn decrypt_dat_file(path: &Path, image_key: Option<[u8; 16]>) -> Result<(Vec<u8>
     bail!("unsupported .dat encryption format")
 }
 
-fn decrypt_dat_aes_xor(data: &[u8], key: &[u8; 16]) -> Result<Vec<u8>> {
+fn decrypt_dat_aes_xor(data: &[u8], key: &[u8; 16], xor_key: Option<u8>) -> Result<Vec<u8>> {
     if data.len() < 15 {
         bail!("truncated .dat header");
     }
@@ -580,14 +1003,21 @@ fn decrypt_dat_aes_xor(data: &[u8], key: &[u8; 16]) -> Result<Vec<u8>> {
     let raw = &data[aes_end..raw_end];
     let xor = &data[raw_end..];
 
-    // Deduce xor key from JPEG tail FF D9 if possible, else 0x88
-    let xor_key = if xor.len() >= 2 {
-        let k1 = xor[xor.len() - 2] ^ 0xFF;
-        let k2 = xor[xor.len() - 1] ^ 0xD9;
-        if k1 == k2 { k1 } else { 0x88 }
-    } else {
-        0x88
-    };
+    // Alpha derives this from the account seed (`seed & 0xff`); when the
+    // seed is unavailable fall back to the JPEG tail heuristic.
+    let xor_key = xor_key.unwrap_or_else(|| {
+        if xor.len() >= 2 {
+            let k1 = xor[xor.len() - 2] ^ 0xFF;
+            let k2 = xor[xor.len() - 1] ^ 0xD9;
+            if k1 == k2 {
+                k1
+            } else {
+                0x88
+            }
+        } else {
+            0x88
+        }
+    });
 
     let mut out = Vec::with_capacity(block.len() + raw.len() + xor.len());
     out.extend_from_slice(&block);
@@ -652,7 +1082,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("x.dat");
         std::fs::write(&path, &encrypted).unwrap();
-        let (bytes, ext) = decrypt_dat_file(&path, None).unwrap();
+        let (bytes, ext) = decrypt_dat_file(&path, None, None).unwrap();
         assert_eq!(ext, "png");
         assert_eq!(bytes, png);
     }
@@ -664,7 +1094,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("x.dat");
         std::fs::write(&path, encrypted).unwrap();
-        let (bytes, ext) = decrypt_dat_file(&path, None).unwrap();
+        let (bytes, ext) = decrypt_dat_file(&path, None, None).unwrap();
         assert_eq!(ext, "png");
         assert_eq!(bytes, png);
     }
@@ -679,7 +1109,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("x.dat");
         std::fs::write(&path, &data).unwrap();
-        assert!(decrypt_dat_file(&path, None).is_err());
+        assert!(decrypt_dat_file(&path, None, None).is_err());
     }
 
     #[test]
@@ -704,10 +1134,61 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("x.dat");
         std::fs::write(&path, &data).unwrap();
-        let (bytes, ext) = decrypt_dat_file(&path, Some(key)).unwrap();
+        let (bytes, ext) = decrypt_dat_file(&path, Some(key), None).unwrap();
         assert_eq!(ext, "png");
         let mut expected = png.to_vec();
         expected.extend_from_slice(&tail);
         assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn derives_image_and_emoticon_keys_from_seed() {
+        let wxid = "wxid_z2yief89nr2s22";
+        let (key, xor_key) = image_key_from_seed(3_642_459_924, wxid);
+        assert_eq!(&key, b"b866e5aa60cda50c");
+        assert_eq!(xor_key, 0x14);
+        let expected_emoticon: [u8; 16] = hex::decode("7995167f11b67c406b3e75f397cb5095")
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            emoticon_key_from_seed(3_642_459_924, wxid).unwrap(),
+            expected_emoticon
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn decrypts_real_emoticon_sample() {
+        let Ok(path) = std::env::var("EMOTICON_SAMPLE") else {
+            return;
+        };
+        let data = std::fs::read(path).expect("read sample");
+        let key = emoticon_key_from_seed(3_642_459_924, "wxid_z2yief89nr2s22").unwrap();
+        assert!(emoticon_first_block_is_image(&data, &key));
+        let (bytes, ext) = decrypt_emoticon_bytes(&data, &key).expect("decrypt");
+        eprintln!("real emoticon: {} bytes, ext={ext}", bytes.len());
+        assert!(is_image_header(&bytes));
+    }
+
+    #[test]
+    fn decrypts_emoticon_cbc() {
+        use aes::cipher::BlockEncrypt;
+        let key = [0x11u8; 16];
+        let png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4];
+        let mut plain = pkcs7(&png);
+        let cipher = Aes128::new_from_slice(&key).unwrap();
+        let mut previous = key;
+        for chunk in plain.chunks_exact_mut(16) {
+            for i in 0..16 {
+                chunk[i] ^= previous[i];
+            }
+            let generic = aes::cipher::generic_array::GenericArray::from_mut_slice(chunk);
+            cipher.encrypt_block(generic);
+            previous.copy_from_slice(chunk);
+        }
+        let (bytes, ext) = decrypt_emoticon_bytes(&plain, &key).unwrap();
+        assert_eq!(ext, "png");
+        assert_eq!(bytes, png);
     }
 }

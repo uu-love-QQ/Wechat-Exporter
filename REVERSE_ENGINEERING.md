@@ -237,3 +237,25 @@ local chat-export CLI remains fully functional without them.
 
 Rust 实现位于 `src/db.rs` 的 `scan_master_passphrase_alpha`、`extract_internal_db_key_masks`
 与 `verify_all`，并带有掩码提取、MSVC 对象头识别和 XOR→PBKDF2→HMAC 端到端单元测试。
+
+
+## 图片密钥与表情解密（对齐 Alpha `GetImageKey`）
+
+微信 4.x 的 V2 聊天图片与表情文件都依赖账号级 seed：
+
+```text
+aes_key   = md5(format!("{seed}{wxid}"))[..16]      // 16 个 ASCII 字符
+xor_key   = seed & 0xff
+emoji_key = md5(format!("{seed}{wxid}EMOTICON"))    // hex 解码后取前 16 字节
+```
+
+- V2 聊天图片：`.dat` 头部 15 字节 + AES-128-ECB 区 + 尾部单字节 XOR；
+- 表情文件：AES-128-CBC + PKCS7，`key == IV`；
+- 解密后的 `wxgf` 为 HEVC 动画容器，`jpg/png/gif` 可直接输出。
+
+实现位于 `src/wechat/media.rs`：
+
+- `auto_scan_image_seed_from_process`：扫描 `Weixin.exe` 私有堆中的 9~10 位十进制 seed，
+  用图片模板或表情模板校验后返回 `(seed, aes_key, xor_key)`；
+- `image_key_from_seed` / `emoticon_key_from_seed`：按上述公式派生；
+- `decrypt_emoticon_bytes` / `decrypt_dat_aes_xor`：分别处理表情与聊天图片。
