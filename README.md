@@ -1,8 +1,8 @@
-# alpha-cli-rs
+# Wechat-Exporter
 
 微信 4.x 本地数据库解密、全文检索与多格式聊天记录导出工具（Rust 跨平台 1:1 复刻版）。
 
-基于对 `Alpha-0.3.5-x64-Setup.exe` 内部二进制（`alpha-cli.exe`、`alpha_native.dll`、`alpha_xkey.dll`、`alpha-engine.exe`）的反汇编逆向与架构分析重写。无需依赖 Windows 平台特定的 Alpha 守护进程或私有安全运行时（DRM），即可在 **Windows** 与 **Linux** 两端独立运行。
+基于对 `Alpha-0.3.5-x64-Setup.exe` 内部二进制（`wechat-exporter.exe`、`alpha_native.dll`、`alpha_xkey.dll`、`alpha-engine.exe`）的反汇编逆向与架构分析重写。无需依赖 Windows 平台特定的 Alpha 守护进程或私有安全运行时（DRM），即可在 **Windows** 与 **Linux** 两端独立运行。
 
 ---
 
@@ -11,9 +11,9 @@
 项目中已配置好交叉编译工具链并生成了独立 Release 二进制：
 
 - **Windows 64 位原生二进制**：
-  `alpha-cli-rs/target/x86_64-pc-windows-gnu/release/alpha-cli.exe`
+  `wechat-exporter-rs/target/x86_64-pc-windows-gnu/release/wechat-exporter.exe`
 - **Linux 64 位原生二进制**：
-  `alpha-cli-rs/target/release/alpha-cli`
+  `wechat-exporter-rs/target/release/wechat-exporter`
 
 ### 本地编译命令
 
@@ -47,12 +47,12 @@ cargo build --target x86_64-pc-windows-gnu --release
 ### 自动检索相关命令
 ```bash
 # 查看本机所有已检测到的微信 4.x 数据库与账号列表
-alpha-cli --detect-databases
+wechat-exporter --detect-databases
 # 简写
-alpha-cli -D
+wechat-exporter -D
 
 # 自动选用最新活跃账号列出会话列表（无需输入路径）
-alpha-cli --key <64位Hex密钥> --list-conversations
+wechat-exporter --key <64位Hex密钥> --list-conversations
 ```
 
 ---
@@ -82,16 +82,16 @@ alpha-cli --key <64位Hex密钥> --list-conversations
 
 ```powershell
 # 1. 仅检测并列出本机所有微信数据库账号
-.\alpha-cli.exe -D
+.\wechat-exporter.exe -D
 
 # 2. 列出最近活跃会话（自动关联电脑管家迁移路径，传入主口令）
-.\alpha-cli.exe --key 22f2af8d4301484db4defe2fe89a972417944e0538a44fb3a7213db93149c36e --list-conversations
+.\wechat-exporter.exe --key 22f2af8d4301484db4defe2fe89a972417944e0538a44fb3a7213db93149c36e --list-conversations
 
 # 3. 全文检索关键词
-.\alpha-cli.exe --key 22f2af8d4301484db4defe2fe89a972417944e0538a44fb3a7213db93149c36e --search "合同" --ascending
+.\wechat-exporter.exe --key 22f2af8d4301484db4defe2fe89a972417944e0538a44fb3a7213db93149c36e --search "合同" --ascending
 
 # 4. 导出指定会话（含图片自动解密为真实图片格式）：
-.\alpha-cli.exe `
+.\wechat-exporter.exe `
   --key 22f2af8d4301484db4defe2fe89a972417944e0538a44fb3a7213db93149c36e `
   --conversation-id "wxid_85da986onp4h22" `
   --format all `
@@ -99,7 +99,7 @@ alpha-cli --key <64位Hex密钥> --list-conversations
   --output-dir "C:\Users\14744\Downloads\uuMovies\test"
 
 # 5. 全自动模式（微信登录在线时，无需提供路径与 key）：
-.\alpha-cli.exe `
+.\wechat-exporter.exe `
   --conversation-id "wxid_85da986onp4h22" `
   --format all `
   --include-media `

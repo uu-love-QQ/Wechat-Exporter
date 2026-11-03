@@ -36,8 +36,10 @@ jobs:
       - name: Upload Windows Binary Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: alpha-cli-windows-msvc-x64
-          path: target/x86_64-pc-windows-msvc/release/alpha-cli.exe
+          name: wechat-exporter-windows-msvc-x64
+          path: |
+            target/x86_64-pc-windows-msvc/release/wechat-exporter.exe
+            target/x86_64-pc-windows-msvc/release/alpha-cli.exe
 
   build-linux:
     name: Build Linux (x86_64-unknown-linux-gnu)
@@ -63,8 +65,10 @@ jobs:
       - name: Upload Linux Binary Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: alpha-cli-linux-x64
-          path: target/release/alpha-cli
+          name: wechat-exporter-linux-x64
+          path: |
+            target/release/wechat-exporter
+            target/release/alpha-cli
 
   release:
     name: Create GitHub Release
@@ -75,33 +79,37 @@ jobs:
       - name: Download Windows Artifact
         uses: actions/download-artifact@v4
         with:
-          name: alpha-cli-windows-msvc-x64
+          name: wechat-exporter-windows-msvc-x64
           path: release-bins/windows
 
       - name: Download Linux Artifact
         uses: actions/download-artifact@v4
         with:
-          name: alpha-cli-linux-x64
+          name: wechat-exporter-linux-x64
           path: release-bins/linux
 
       - name: Package Release Assets
         run: |
           mkdir -p dist
-          cp release-bins/windows/alpha-cli.exe dist/alpha-cli-windows-x64.exe
-          cp release-bins/linux/alpha-cli dist/alpha-cli-linux-x64
-          chmod +x dist/alpha-cli-linux-x64
+          cp release-bins/windows/wechat-exporter.exe dist/wechat-exporter.exe
+          cp release-bins/windows/alpha-cli.exe dist/alpha-cli.exe
+          cp release-bins/linux/wechat-exporter dist/wechat-exporter
+          cp release-bins/linux/alpha-cli dist/alpha-cli
+          chmod +x dist/wechat-exporter dist/alpha-cli
           cd dist
-          tar -czf alpha-cli-linux-x64.tar.gz alpha-cli-linux-x64
-          zip alpha-cli-windows-x64.zip alpha-cli-windows-x64.exe
+          tar -czf wechat-exporter-linux-x64.tar.gz wechat-exporter alpha-cli
+          zip wechat-exporter-windows-x64.zip wechat-exporter.exe alpha-cli.exe
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/alpha-cli-windows-x64.zip
-            dist/alpha-cli-windows-x64.exe
-            dist/alpha-cli-linux-x64.tar.gz
-            dist/alpha-cli-linux-x64
+            dist/wechat-exporter-windows-x64.zip
+            dist/wechat-exporter.exe
+            dist/alpha-cli.exe
+            dist/wechat-exporter-linux-x64.tar.gz
+            dist/wechat-exporter
+            dist/alpha-cli
           draft: false
           prerelease: false
           generate_release_notes: true

@@ -1,9 +1,13 @@
 [package]
-name = "alpha-cli-rs"
+name = "wechat-exporter"
 version = "0.1.0"
 edition = "2021"
-description = "Rust reimplementation of Alpha's WeChat chat export CLI"
+description = "WeChat 4.x local database decryptor and multi-format chat exporter"
 license = "MIT"
+
+[[bin]]
+name = "wechat-exporter"
+path = "src/main.rs"
 
 [[bin]]
 name = "alpha-cli"

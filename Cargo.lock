@@ -23,30 +23,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alpha-cli-rs"
-version = "0.1.0"
-dependencies = [
- "aes",
- "anyhow",
- "base64",
- "chrono",
- "clap",
- "hex",
- "hmac",
- "md-5",
- "pbkdf2",
- "regex",
- "rusqlite",
- "rust_xlsxwriter",
- "ruzstd",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1003,6 +979,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b1f9c3798725016c6ee5f2f57869ec0831e8bbc0ab0310a86e787e97f41389e"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wechat-exporter"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "base64",
+ "chrono",
+ "clap",
+ "hex",
+ "hmac",
+ "md-5",
+ "pbkdf2",
+ "regex",
+ "rusqlite",
+ "rust_xlsxwriter",
+ "ruzstd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

@@ -28,7 +28,7 @@ fn now_ms() -> i64 {
 fn print_welcome_help() {
     println!(
         r#"================================================================================
-  Alpha-CLI: 微信 4.x 本地数据库解密与多格式导出工具 (Rust 双端实现)
+  Wechat-Exporter: 微信 4.x 本地数据库解密与多格式导出工具 (Rust 双端实现)
 ================================================================================
 
 [+] 正在自动检索本机已安装的微信 4.x 数据库..."#
@@ -61,17 +61,17 @@ fn print_welcome_help() {
 【快速使用指南】
 --------------------------------------------------------------------------------
 1. 列出会话列表（缺省 --source-database 时自动使用最新活跃账号）：
-   alpha-cli --key <64位Hex密钥> --list-conversations --page-size 20
+   wechat-exporter --key <64位Hex密钥> --list-conversations --page-size 20
 
 2. 全文关键词搜索（支持检索 zstd 压缩的聊天记录）：
-   alpha-cli --key <64位Hex密钥> --search "合同" --ascending
+   wechat-exporter --key <64位Hex密钥> --search "合同" --ascending
 
 3. 导出指定聊天为全部 10 种格式并提取媒体图片/视频：
-   alpha-cli --key <64位Hex密钥> --conversation-id "123456789@chatroom" \
+   wechat-exporter --key <64位Hex密钥> --conversation-id "123456789@chatroom" \
      --format all --include-media --output-dir "/path/to/backup"
 
 4. 查看详细帮助与所有高级参数：
-   alpha-cli --help
+   wechat-exporter --help
 ================================================================================"
 "#
     );

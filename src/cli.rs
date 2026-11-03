@@ -4,12 +4,12 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "alpha-cli",
+    name = "wechat-exporter",
     version = env!("CARGO_PKG_VERSION"),
     about = "微信 4.x 本地 WCDB 数据库解密与多格式聊天记录导出工具 (Windows / Linux)",
     long_about = r#"
 ================================================================================
-alpha-cli: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格式导出工具
+wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格式导出工具
 ================================================================================
 
 本工具由底层逆向复刻实现，支持 Windows 与 Linux 双端原生运行。
@@ -35,22 +35,22 @@ alpha-cli: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格式导
 
 【使用示例】
   • 自动检索本机微信数据库：
-    alpha-cli --detect-databases
+    wechat-exporter --detect-databases
 
   • 快速列出会话（自动寻找数据库，通过 stdin 传入 64 位 Hex 密钥）：
-    printf '%s' "0123...def" | alpha-cli --list-conversations --page-size 20
+    printf '%s' "0123...def" | wechat-exporter --list-conversations --page-size 20
     # 或直接使用 --key 参数：
-    alpha-cli --key <64-HEX> --list-conversations
+    wechat-exporter --key <64-HEX> --list-conversations
 
   • 全文搜索所有消息（包含 zstd 压缩文本）：
-    alpha-cli --key <64-HEX> --search "关键词" --ascending
+    wechat-exporter --key <64-HEX> --search "关键词" --ascending
 
   • 导出单个群聊为全部 10 种格式并提取媒体：
-    alpha-cli --key <64-HEX> --conversation-id "123456789@chatroom" \
+    wechat-exporter --key <64-HEX> --conversation-id "123456789@chatroom" \
       --format all --include-media --output-dir "/path/to/backup"
 
   • 手动指定非默认路径数据库：
-    alpha-cli --source-database "/path/to/xwechat_files/wxid_xxx/db_storage" \
+    wechat-exporter --source-database "/path/to/xwechat_files/wxid_xxx/db_storage" \
       --key <64-HEX> --list-conversations
 "#
 )]
