@@ -1,0 +1,208 @@
+use serde_json::Value;
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+use tempfile::TempDir;
+
+const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const GROUP: &str = "123456789@chatroom";
+const ALICE: &str = "wxid_alice";
+
+fn fixture() -> (TempDir, PathBuf) {
+    let temp = TempDir::new().expect("temp dir");
+    let root = temp.path().join("data");
+    let status = Command::new(env!("CARGO_BIN_EXE_alpha-fixture"))
+        .arg(&root)
+        .status()
+        .expect("run fixture");
+    assert!(status.success());
+    let source = root
+        .join("xwechat_files")
+        .join("wxid_testuser_abcd")
+        .join("db_storage");
+    (temp, source)
+}
+
+fn run_with_key(args: &[&str]) -> (i32, String, String) {
+    let mut output = Command::new(env!("CARGO_BIN_EXE_alpha-cli"))
+        .args(["--key", KEY])
+        .args(args)
+        .output()
+        .expect("run alpha-cli");
+    if output.status.success() {
+        output.stdout.extend_from_slice(&[]);
+    }
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
+#[test]
+fn lists_conversations() {
+    let (_temp, source) = fixture();
+    let (code, stdout, stderr) = run_with_key(&[
+        "--source-database",
+        source.to_str().unwrap(),
+        "--list-conversations",
+        "--page-size",
+        "10",
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let value: Value = serde_json::from_str(&stdout).expect("json");
+    let conversations = value["conversations"].as_array().expect("array");
+    assert!(conversations.iter().any(|item| item["id"] == GROUP));
+    assert!(conversations.iter().any(|item| item["id"] == ALICE));
+    assert!(!conversations.iter().any(|item| item["id"] == "wxid_testuser"));
+    assert_eq!(value["account_id"], "wxid_testuser");
+}
+
+#[test]
+fn exports_all_formats_and_media() {
+    let (temp, source) = fixture();
+    let output = temp.path().join("out");
+    let (code, stdout, stderr) = run_with_key(&[
+        "--source-database",
+        source.to_str().unwrap(),
+        "--conversation-id",
+        GROUP,
+        "--format",
+        "all",
+        "--output-dir",
+        output.to_str().unwrap(),
+        "--include-media",
+    ]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    for name in [
+        "conversation.json",
+        "conversation.md",
+        "conversation.chatlab.json",
+        "conversation.chatlab.jsonl",
+        "conversation.html",
+        "conversation.txt",
+        "conversation.xlsx",
+        "conversation.arkme.json",
+        "conversation.sql",
+        "conversation.weclone.csv",
+    ] {
+        assert!(output.join(name).exists(), "missing {name}");
+    }
+    assert!(output.join("export-report.json").exists());
+    let json: Value =
+        serde_json::from_slice(&fs::read(output.join("conversation.json")).unwrap()).unwrap();
+    let messages = json["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 7);
+    assert!(messages.iter().any(|message| message["content"] == "hello group"));
+    assert!(messages
+        .iter()
+        .any(|message| message["content"] == "compressed hello"));
+    assert!(messages
+        .iter()
+        .any(|message| message["content"]
+            .as_str()
+            .unwrap()
+            .contains("original text")));
+    assert!(messages.iter().any(|message| message["isSend"] == 1));
+    assert!(messages.iter().any(|message| message["isSend"] == 0));
+    assert!(messages.iter().any(|message| message["mediaPath"]
+        .as_str()
+        .unwrap_or("")
+        .starts_with("media/")));
+    let report: Value =
+        serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
+    assert_eq!(report["conversations"][0]["message_count"], 7);
+    assert!(report["conversations"][0]["media"]["saved"].as_u64().unwrap() >= 1);
+}
+
+#[test]
+fn searches_across_shards() {
+    let (_temp, source) = fixture();
+    let (code, stdout, stderr) = run_with_key(&[
+        "--source-database",
+        source.to_str().unwrap(),
+        "--search",
+        "hello",
+        "--ascending",
+        "--page-size",
+        "10",
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let value: Value = serde_json::from_str(&stdout).expect("json");
+    let items = value["items"].as_array().unwrap();
+    assert!(items.iter().any(|item| item["conversation_id"] == ALICE));
+    assert!(items.iter().any(|item| item["conversation_id"] == GROUP));
+}
+
+#[test]
+fn rejects_conflicting_modes() {
+    let (_temp, source) = fixture();
+    let (code, _, stderr) = run_with_key(&[
+        "--source-database",
+        source.to_str().unwrap(),
+        "--list-conversations",
+        "--search",
+        "hello",
+    ]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("conflicts"));
+}
+
+#[test]
+fn exported_chatlab_matches_spec_shape() {
+    let (temp, source) = fixture();
+    let output = temp.path().join("chatlab");
+    let (code, _, stderr) = run_with_key(&[
+        "--source-database",
+        source.to_str().unwrap(),
+        "--conversation-id",
+        GROUP,
+        "--format",
+        "chatlab-json",
+        "--format",
+        "chatlab-jsonl",
+        "--output-dir",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let value: Value =
+        serde_json::from_slice(&fs::read(output.join("conversation.chatlab.json")).unwrap()).unwrap();
+    assert_eq!(value["chatlab"]["version"], "0.0.2");
+    assert_eq!(value["meta"]["platform"], "wechat");
+    assert_eq!(value["meta"]["type"], "group");
+    assert!(!value["members"].as_array().unwrap().is_empty());
+    assert_eq!(value["messages"].as_array().unwrap().len(), 7);
+    let lines = fs::read_to_string(output.join("conversation.chatlab.jsonl")).unwrap();
+    let lines: Vec<&str> = lines.lines().collect();
+    assert!(lines[0].contains("\"_type\":\"header\""));
+    assert!(lines.last().unwrap().contains("\"_type\":\"message\""));
+}
+
+#[test]
+fn auto_detects_database_and_lists() {
+    let (_temp, source) = fixture();
+    // Set XWECHAT_FILES_DIR to point to parent of account
+    let parent = source.parent().unwrap().parent().unwrap();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_alpha-cli"));
+    cmd.env("XWECHAT_FILES_DIR", parent)
+        .args(["--key", KEY, "--list-conversations", "--page-size", "10"]);
+    let output = cmd.output().expect("run alpha-cli auto-detect");
+    assert_eq!(output.status.code().unwrap_or(-1), 0);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("wxid_alice"));
+    assert!(stdout.contains("123456789@chatroom"));
+}
+
+#[test]
+fn detects_databases_flag() {
+    let (_temp, source) = fixture();
+    let parent = source.parent().unwrap().parent().unwrap();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_alpha-cli"));
+    cmd.env("XWECHAT_FILES_DIR", parent)
+        .arg("--detect-databases");
+    let output = cmd.output().expect("run alpha-cli -D");
+    assert_eq!(output.status.code().unwrap_or(-1), 0);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("正在检索本机所有 WeChat 4.x 数据库"));
+    assert!(stdout.contains("wxid_testuser"));
+}
