@@ -142,6 +142,36 @@ fn extract_internal_db_key_masks(image: &[u8]) -> Vec<[u8; 32]> {
     masks
 }
 
+/// Alpha's fast candidate gate (alpha_xkey.dll `0x180004b50` + `0x180008de0`).
+///
+/// It rejects values that cannot be the account passphrase before spending
+/// 256,000 PBKDF2 iterations:
+/// - at least 16 distinct byte values;
+/// - at most 24 printable ASCII bytes (0x20..=0x7e);
+/// - `b[6] & 0xf0 == 0x40`, `b[8] & 0xc0 == 0x80`;
+/// - `b[22] & 0xf0 == 0x40`, `b[24] & 0xc0 == 0x80`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn alpha_candidate_filter(candidate: &[u8; 32]) -> bool {
+    let mut seen = [false; 256];
+    let mut distinct = 0usize;
+    let mut printable = 0usize;
+    for &byte in candidate {
+        if !seen[byte as usize] {
+            seen[byte as usize] = true;
+            distinct += 1;
+        }
+        if (0x20..=0x7e).contains(&byte) {
+            printable += 1;
+        }
+    }
+    distinct >= 16
+        && printable <= 24
+        && candidate[6] & 0xf0 == 0x40
+        && candidate[8] & 0xc0 == 0x80
+        && candidate[22] & 0xf0 == 0x40
+        && candidate[24] & 0xc0 == 0x80
+}
+
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn verify_master_candidate(
     candidate: &[u8; 32],
@@ -152,6 +182,9 @@ fn verify_master_candidate(
     let mut passphrase = [0u8; 32];
     for i in 0..32 {
         passphrase[i] = candidate[i] ^ mask[i];
+    }
+    if !alpha_candidate_filter(&passphrase) {
+        return None;
     }
     let derived = derive_wechat_db_key(&passphrase, salt);
     if verify_db_page1(&derived, page1) {
@@ -186,6 +219,9 @@ fn verify_all(
                 if masks.is_empty() {
                     if worker == 0 {
                         for candidate in candidates {
+                            if !alpha_candidate_filter(candidate) {
+                                continue;
+                            }
                             let derived = derive_wechat_db_key(candidate, salt);
                             if verify_db_page1(&derived, page1) {
                                 *result.lock().unwrap() = Some(*candidate);
@@ -608,6 +644,22 @@ pub fn scan_master_passphrase_alpha(page1: &[u8]) -> Option<[u8; 32]> {
                 name,
                 pid,
                 candidates.len()
+            );
+            let mut filtered = 0usize;
+            for mask in &masks {
+                for candidate in &candidates {
+                    let mut passphrase = [0u8; 32];
+                    for i in 0..32 {
+                        passphrase[i] = candidate[i] ^ mask[i];
+                    }
+                    if alpha_candidate_filter(&passphrase) {
+                        filtered += 1;
+                    }
+                }
+            }
+            eprintln!(
+                "[i] 其中 {} 个组合通过 Alpha 字节过滤器，开始 PBKDF2 校验",
+                filtered
             );
             let found = verify_all(&candidates, &masks, &salt, page1);
             CloseHandle(handle);
@@ -1328,6 +1380,20 @@ mod tests {
     }
 
     #[test]
+    fn alpha_candidate_filter_accepts_known_passphrase() {
+        let passphrase: [u8; 32] = hex::decode(
+            "22f2af8d4301484db4defe2fe89a972417944e0538a44fb3a7213db93149c36e",
+        )
+        .unwrap()
+        .try_into()
+        .unwrap();
+        assert!(alpha_candidate_filter(&passphrase));
+        let mut wrong = passphrase;
+        wrong[6] = 0x00;
+        assert!(!alpha_candidate_filter(&wrong));
+    }
+
+    #[test]
     fn verifies_page1_hmac_calculation() {
         let salt = [0x12u8; 16];
         let passphrase = [0xab; 32];
@@ -1340,7 +1406,12 @@ mod tests {
     fn opens_wechat_pbkdf2_derived_database() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("wechat_sim.db");
-        let master_passphrase = [0x55u8; 32];
+        let master_passphrase: [u8; 32] = hex::decode(
+            "22f2af8d4301484db4defe2fe89a972417944e0538a44fb3a7213db93149c36e",
+        )
+        .unwrap()
+        .try_into()
+        .unwrap();
         let salt = [0x77u8; 16];
 
         // 1. Simulate WeChat WCDB database creation:
