@@ -213,8 +213,13 @@ local chat-export CLI remains fully functional without them.
      48 BA <imm64> ??? 48 BA <imm64> ??? 48 BA <imm64> ??? 48 BA <imm64> ... 48 85 C0
      ```
    - 每段 `48 BA` 是 `movabs rdx, imm64`，四段立即数按顺序拼接为 32 字节掩码；
-   - 偏移关系：第 2/3/4 段分别位于前一段起始 `+0x0d`（3 字节间隔），
-     第四段之后 `+0x0d..+0x14` 范围内检查 `48 85 C0`（`test rax, rax`）。
+   - 偏移关系：第 2/3/4 段分别位于前一段起始 `+0x0d..+0x12`（Alpha 会枚举
+     3..8 字节的指令间隔），第四段之后 `+0x0d..+0x14` 范围内检查
+     `48 85 C0`（`test rax, rax`）。
+   - 对实际 205,932,072 字节的 `Weixin.dll` 验证：该算法提取到 2 个掩码，
+     其中 `14619eb39b02c1b64d024aa665b7b03e459d2f2f9a5bde992d162dc798c78eec`
+     位于 `RVA 0x37eb15`，其后的代码正是 `xorps xmm0/xmm1` 对 32 字节字符串
+     缓冲区做原地异或，确认这就是内部 DB key 掩码。
 
 2. **扫描 Weixin.exe 私有堆**
    - 仅枚举 `State == MEM_COMMIT` 且 `Type == MEM_PRIVATE` 的区域；

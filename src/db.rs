@@ -95,43 +95,52 @@ fn extract_internal_db_key_masks(image: &[u8]) -> Vec<[u8; 32]> {
     if image.len() < 62 {
         return masks;
     }
-    for i in 0..=image.len() - 62 {
-        if image[i] != 0x48 || image[i + 1] != 0xBA {
+    // Alpha scans the executable section for four `48 BA` (movabs rdx, imm64)
+    // groups.  The disassembler shows the 2nd/3rd/4th group are searched at
+    // +0x0d ..= +0x12 (3..=8 additional bytes after the previous 10-byte
+    // instruction), and `48 85 C0` must follow the last group.
+    for start in 0..=image.len() - 62 {
+        if image[start] != 0x48 || image[start + 1] != 0xBA {
             continue;
         }
-        if image[i + 13] != 0x48
-            || image[i + 14] != 0xBA
-            || image[i + 26] != 0x48
-            || image[i + 27] != 0xBA
-            || image[i + 39] != 0x48
-            || image[i + 40] != 0xBA
-        {
-            continue;
-        }
-        let tail_ok = (0..8).any(|k| {
-            image
-                .get(i + 52 + k..i + 55 + k)
-                .map(|s| s == [0x48, 0x85, 0xC0])
-                .unwrap_or(false)
-        });
-        if !tail_ok {
-            continue;
-        }
-        let mut mask = [0u8; 32];
-        mask[0..8].copy_from_slice(&image[i + 2..i + 10]);
-        mask[8..16].copy_from_slice(&image[i + 15..i + 23]);
-        mask[16..24].copy_from_slice(&image[i + 28..i + 36]);
-        mask[24..32].copy_from_slice(&image[i + 41..i + 49]);
-        if mask.iter().all(|&b| b == 0) {
-            continue;
-        }
-        if seen.insert(mask) {
-            masks.push(mask);
+        for gap2 in 13..=18usize {
+            let p2 = start + gap2;
+            if p2 + 1 >= image.len() || image[p2] != 0x48 || image[p2 + 1] != 0xBA {
+                continue;
+            }
+            for gap3 in 13..=18usize {
+                let p3 = p2 + gap3;
+                if p3 + 1 >= image.len() || image[p3] != 0x48 || image[p3 + 1] != 0xBA {
+                    continue;
+                }
+                for gap4 in 13..=18usize {
+                    let p4 = p3 + gap4;
+                    if p4 + 21 > image.len() || image[p4] != 0x48 || image[p4 + 1] != 0xBA {
+                        continue;
+                    }
+                    let tail_ok = (0..8).any(|k| {
+                        image[p4 + 13 + k..p4 + 16 + k] == [0x48, 0x85, 0xC0]
+                    });
+                    if !tail_ok {
+                        continue;
+                    }
+                    let mut mask = [0u8; 32];
+                    mask[0..8].copy_from_slice(&image[start + 2..start + 10]);
+                    mask[8..16].copy_from_slice(&image[p2 + 2..p2 + 10]);
+                    mask[16..24].copy_from_slice(&image[p3 + 2..p3 + 10]);
+                    mask[24..32].copy_from_slice(&image[p4 + 2..p4 + 10]);
+                    if mask.iter().all(|&b| b == 0) {
+                        continue;
+                    }
+                    if seen.insert(mask) {
+                        masks.push(mask);
+                    }
+                }
+            }
         }
     }
     masks
 }
-
 
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn verify_master_candidate(
@@ -369,6 +378,25 @@ pub fn scan_master_passphrase_alpha(page1: &[u8]) -> Option<[u8; 32]> {
         String::from_utf16_lossy(&buf[..end])
     }
 
+    fn local_weixin_dll() -> Option<std::path::PathBuf> {
+        let mut candidates = Vec::new();
+        if let Ok(cwd) = std::env::current_dir() {
+            candidates.push(cwd.join("Weixin.dll"));
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                candidates.push(parent.join("Weixin.dll"));
+            }
+        }
+        candidates.into_iter().find(|path| path.is_file())
+    }
+
+    fn find_weixin_dll(pid: u32) -> Option<std::path::PathBuf> {
+        find_module_path(pid, "Weixin.dll")
+            .filter(|path| path.is_file())
+            .or_else(local_weixin_dll)
+    }
+
     fn find_module_path(pid: u32, wanted: &str) -> Option<std::path::PathBuf> {
         unsafe {
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
@@ -544,7 +572,7 @@ pub fn scan_master_passphrase_alpha(page1: &[u8]) -> Option<[u8; 32]> {
         pids.sort_by(|a, b| b.1.cmp(&a.1));
 
         for (pid, mem_bytes, name) in pids {
-            let Some(dll_path) = find_module_path(pid, "Weixin.dll") else {
+            let Some(dll_path) = find_weixin_dll(pid) else {
                 continue;
             };
             let image = match std::fs::read(&dll_path) {
@@ -1282,6 +1310,21 @@ mod tests {
         header[24] = 0x2f;
         header[6] = 1;
         assert_eq!(msvc_string32_pointer(&header), None);
+    }
+
+    #[test]
+    #[ignore]
+    fn scans_real_weixin_dll_masks() {
+        let Ok(path) = std::env::var("WEIXIN_DLL") else {
+            return;
+        };
+        let image = std::fs::read(path).expect("read Weixin.dll");
+        let masks = extract_internal_db_key_masks(&image);
+        eprintln!("real Weixin.dll masks: {}", masks.len());
+        for mask in &masks {
+            eprintln!("{}", hex::encode(mask));
+        }
+        assert!(!masks.is_empty());
     }
 
     #[test]
