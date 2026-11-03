@@ -41,7 +41,7 @@ impl MediaIndex {
         if let Some(root) = account_root {
             let mut stack = vec![(root.to_path_buf(), 0usize)];
             while let Some((dir, depth)) = stack.pop() {
-                if depth > 10 || index.files.len() > 300_000 {
+                if depth > 12 || index.files.len() > 1_000_000 {
                     continue;
                 }
                 let Ok(entries) = fs::read_dir(&dir) else {
@@ -91,6 +91,9 @@ impl MediaIndex {
                     }
                 }
             }
+        }
+        if !index.files.is_empty() {
+            eprintln!("[i] 媒体索引: {} 个文件", index.files.len());
         }
         index
     }
