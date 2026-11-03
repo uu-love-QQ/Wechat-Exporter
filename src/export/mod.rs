@@ -61,51 +61,80 @@ pub fn write_conversation(
 fn session_json(context: &ExportContext<'_>) -> Value {
     let conversation = context.conversation;
     json!({
-        "accountId": conversation.id,
+        "id": conversation.id,
+        "name": conversation.name,
         "nickname": conversation.nickname,
         "remark": conversation.remark,
         "alias": conversation.alias,
-        "displayName": conversation.name,
-        "type": if conversation.is_group { "群聊" } else { "私聊" },
-        "lastTimestamp": conversation.last_timestamp,
-        "messageCount": context.messages.len(),
-        "avatar": Value::Null
+        "kind": if conversation.is_group { "group" } else { "private" },
+        "kindText": if conversation.is_group { "群聊" } else { "私聊" },
+        "lastTime": conversation.last_timestamp,
+        "messageCount": context.messages.len()
     })
 }
 
 pub fn message_json(message: &ExportMessage, include_media: bool) -> Value {
     let mut object = Map::new();
-    object.insert("localId".into(), json!(message.index));
-    object.insert("createTime".into(), json!(message.create_time));
+    object.insert("id".into(), json!(message.local_id));
     object.insert(
-        "formattedTime".into(),
+        "platformId".into(),
+        json!(message.platform_message_id().unwrap_or_default()),
+    );
+    object.insert("time".into(), json!(message.create_time));
+    object.insert(
+        "timeText".into(),
         json!(format_timestamp(message.create_time)),
     );
     object.insert("type".into(), json!(message.type_name));
-    object.insert("localType".into(), json!(message.local_type));
+    object.insert("typeCode".into(), json!(message.base_type));
     object.insert("content".into(), json!(message.content));
-    object.insert("isSend".into(), json!(if message.is_send { 1 } else { 0 }));
-    object.insert("senderUsername".into(), json!(message.sender_id));
-    object.insert("senderDisplayName".into(), json!(message.sender_name));
-    object.insert("senderNickname".into(), json!(message.nickname));
-    object.insert("senderRemark".into(), json!(message.remark));
-    object.insert("source".into(), json!(message.source));
-    object.insert("senderAvatarKey".into(), json!(message.sender_id));
-    if let Some(platform_id) = message.platform_message_id() {
-        object.insert("platformMessageId".into(), json!(platform_id));
+    object.insert("fromMe".into(), json!(message.is_send));
+    let mut sender = Map::new();
+    sender.insert("id".into(), json!(message.sender_id));
+    sender.insert("name".into(), json!(message.sender_name));
+    if !message.nickname.is_empty() && message.nickname != message.sender_name {
+        sender.insert("nickname".into(), json!(message.nickname));
     }
+    if !message.remark.is_empty() {
+        sender.insert("remark".into(), json!(message.remark));
+    }
+    if !message.alias.is_empty() {
+        sender.insert("alias".into(), json!(message.alias));
+    }
+    object.insert("sender".into(), Value::Object(sender));
     if let Some(subtype) = message.app_subtype {
-        object.insert("appMsgType".into(), json!(subtype));
-        object.insert("appMsgKind".into(), json!(app_kind(subtype)));
+        object.insert("app".into(), json!({
+            "type": subtype,
+            "kind": app_kind(subtype),
+        }));
+    }
+    let mut origin = Map::new();
+    if !message.source.signature.is_empty() {
+        origin.insert("signature".into(), json!(message.source.signature));
+    }
+    if message.source.silence {
+        origin.insert("silent".into(), json!(true));
+    }
+    if let Some(count) = message.source.member_count {
+        origin.insert("memberCount".into(), json!(count));
+    }
+    if !origin.is_empty() {
+        object.insert("origin".into(), Value::Object(origin));
     }
     if include_media {
-        if let Some(path) = &message.media_path {
-            object.insert("mediaPath".into(), json!(path));
-        }
         if let Some(media) = &message.media {
+            let mut item = Map::new();
+            item.insert("kind".into(), json!(media.kind.as_str()));
             if !media.md5.is_empty() {
-                object.insert("mediaMd5".into(), json!(media.md5));
+                item.insert("md5".into(), json!(media.md5));
             }
+            if !media.file_name.is_empty() {
+                item.insert("name".into(), json!(media.file_name));
+            }
+            if let Some(path) = &message.media_path {
+                item.insert("path".into(), json!(path));
+            }
+            object.insert("media".into(), Value::Object(item));
         }
     }
     Value::Object(object)
@@ -561,10 +590,29 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
         ));
         if let Some(media_path) = &message.media_path {
             let escaped = crate::util::escape_html(media_path);
-            if message.media.as_ref().map(|media| media.kind) == Some(MediaKind::Image) {
-                out.push_str(&format!("<img src=\"{escaped}\" alt=\"媒体\" />\n"));
-            } else {
-                out.push_str(&format!("<a href=\"{escaped}\">附件</a>\n"));
+            let kind = message.media.as_ref().map(|media| media.kind);
+            match kind {
+                Some(MediaKind::Image) | Some(MediaKind::Emoji) => {
+                    out.push_str(&format!("<img src=\"{escaped}\" alt=\"媒体\" />\n"));
+                }
+                Some(MediaKind::Video) => {
+                    out.push_str(&format!("<video src=\"{escaped}\" controls></video>\n"));
+                }
+                Some(MediaKind::Voice) => {
+                    out.push_str(&format!("<audio src=\"{escaped}\" controls></audio>\n"));
+                }
+                _ => {
+                    let label = message
+                        .media
+                        .as_ref()
+                        .map(|media| media.file_name.as_str())
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or("附件");
+                    out.push_str(&format!(
+                        "<a href=\"{escaped}\">{}</a>\n",
+                        crate::util::escape_html(label)
+                    ));
+                }
             }
         }
         out.push_str("</div>\n");

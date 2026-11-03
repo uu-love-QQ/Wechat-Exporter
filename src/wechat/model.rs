@@ -49,6 +49,15 @@ pub struct MediaRef {
     pub kind: MediaKind,
 }
 
+/// Readable fields recovered from the WeChat `source` column. The raw value
+/// is an internal `<msgsource>` document and is not useful as a JSON field.
+#[derive(Clone, Debug, Default)]
+pub struct MessageSource {
+    pub signature: String,
+    pub silence: bool,
+    pub member_count: Option<i64>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaKind {
     Image,
@@ -109,7 +118,7 @@ pub struct ExportMessage {
     pub base_type: i64,
     pub type_name: String,
     pub content: String,
-    pub source: String,
+    pub source: MessageSource,
     pub app_subtype: Option<i64>,
     pub media: Option<MediaRef>,
     pub media_path: Option<String>,

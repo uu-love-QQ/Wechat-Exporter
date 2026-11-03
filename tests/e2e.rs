@@ -103,12 +103,13 @@ fn exports_all_formats_and_media() {
             .as_str()
             .unwrap()
             .contains("original text")));
-    assert!(messages.iter().any(|message| message["isSend"] == 1));
-    assert!(messages.iter().any(|message| message["isSend"] == 0));
-    assert!(messages.iter().any(|message| message["mediaPath"]
+    assert!(messages.iter().any(|message| message["fromMe"] == true));
+    assert!(messages.iter().any(|message| message["fromMe"] == false));
+    assert!(messages.iter().any(|message| message["media"]["path"]
         .as_str()
         .unwrap_or("")
-        .starts_with("media/")));
+        .starts_with("media/image/")));
+    assert!(messages.iter().all(|message| message.get("source").is_none()));
     let report: Value =
         serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
     assert_eq!(report["conversations"][0]["message_count"], 7);

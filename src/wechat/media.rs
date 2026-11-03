@@ -820,6 +820,7 @@ pub fn export_media(
             ));
             continue;
         };
+        let folder = media.kind.as_str();
         let stem = if media.kind == MediaKind::File && !file.stem.is_empty() {
             file.stem.clone()
         } else if !media.md5.is_empty() {
@@ -857,7 +858,7 @@ pub fn export_media(
         }
 
         let result = if let Some((bytes, ext)) = decrypted {
-            let dest = media_dir.join(format!("{prefix}.{ext}"));
+            let dest = media_dir.join(folder).join(format!("{prefix}.{ext}"));
             write_bytes(&dest, &bytes).map(|_| dest)
         } else {
             let mut ext = file
@@ -870,17 +871,19 @@ pub fn export_media(
                 // Windows cannot open .thumb; keep the raw bytes under a safe name.
                 ext = "jpg".to_string();
             }
-            let dest = media_dir.join(format!("{prefix}.{ext}"));
+            let dest = media_dir.join(folder).join(format!("{prefix}.{ext}"));
             crate::util::copy_media_file(&file.path, &dest)
                 .map(|_| dest)
                 .map_err(anyhow::Error::from)
         };
         match result {
             Ok(dest) => {
-                message.media_path = Some(format!(
-                    "media/{}",
-                    dest.file_name().and_then(|value| value.to_str()).unwrap_or("media.bin")
-                ));
+                let relative = dest
+                    .strip_prefix(output_dir)
+                    .unwrap_or(dest.as_path())
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                message.media_path = Some(relative);
                 outcome.saved += 1;
             }
             Err(error) => {

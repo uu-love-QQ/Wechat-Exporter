@@ -118,7 +118,7 @@ pub fn export_message(
         base_type: raw.base_type,
         type_name: parsed.type_name,
         content: parsed.text,
-        source: raw.source.clone(),
+        source: crate::wechat::parse::parse_message_source(&raw.source),
         app_subtype: parsed.app_subtype,
         media,
         media_path: None,

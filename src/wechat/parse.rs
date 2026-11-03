@@ -1,7 +1,7 @@
 use regex::Regex;
 use std::sync::{LazyLock, OnceLock};
 
-use super::model::{MediaKind, MediaRef, ParsedContent};
+use super::model::{MediaKind, MediaRef, MessageSource, ParsedContent};
 
 static SENDER_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?s)^([A-Za-z0-9_@\-\.]{2,128}):\r?\n").expect("sender prefix regex")
@@ -161,6 +161,26 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
         file_name,
         kind,
     })
+}
+
+/// Pull the few human-readable facts out of WeChat's `<msgsource>` document.
+pub fn parse_message_source(raw: &str) -> MessageSource {
+    let xml = normalize_xml(raw);
+    if xml.is_empty() {
+        return MessageSource::default();
+    }
+    let signature = xml_value(&xml, "signature").unwrap_or_default();
+    let silence = xml_value(&xml, "silence")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let member_count = xml_value(&xml, "membercount")
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0);
+    MessageSource {
+        signature,
+        silence,
+        member_count,
+    }
 }
 
 fn quote_text(xml: &str) -> Option<String> {
