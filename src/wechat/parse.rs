@@ -163,24 +163,57 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
     })
 }
 
-/// Pull the few human-readable facts out of WeChat's `<msgsource>` document.
+/// Turn WeChat's `<msgsource>` document into short Chinese notes.
+/// Cryptographic signatures and empty tags are dropped.
 pub fn parse_message_source(raw: &str) -> MessageSource {
     let xml = normalize_xml(raw);
-    if xml.is_empty() {
+    if !xml.to_ascii_lowercase().contains("msgsource") && !xml.contains('<') {
         return MessageSource::default();
     }
-    let signature = xml_value(&xml, "signature").unwrap_or_default();
-    let silence = xml_value(&xml, "silence")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let member_count = xml_value(&xml, "membercount")
-        .and_then(|value| value.parse::<i64>().ok())
-        .filter(|value| *value > 0);
-    MessageSource {
-        signature,
-        silence,
-        member_count,
+    let mut notes = Vec::new();
+    let mut push = |note: String| {
+        if !note.is_empty() && !notes.iter().any(|existing| existing == &note) {
+            notes.push(note);
+        }
+    };
+    if let Some(value) = xml_value(&xml, "membercount") {
+        if let Ok(count) = value.parse::<i64>() {
+            if count > 0 {
+                push(format!("发送时群里有 {count} 人"));
+            }
+        }
     }
+    if xml_value(&xml, "silence").as_deref() == Some("1") {
+        push("群已开启消息免打扰".to_string());
+    }
+    match xml_value(&xml, "fr").as_deref() {
+        Some("1") => push("从手机发送".to_string()),
+        Some("2") => push("从电脑发送".to_string()),
+        Some("3") => push("从平板发送".to_string()),
+        _ => {}
+    }
+    if let Some(scene) = xml_value(&xml, "scene") {
+        let label = match scene.as_str() {
+            "1" => Some("通过搜索添加"),
+            "3" | "14" => Some("通过群聊添加"),
+            "17" => Some("通过名片分享"),
+            "30" => Some("通过扫一扫添加"),
+            _ => None,
+        };
+        if let Some(label) = label {
+            push(label.to_string());
+        }
+    }
+    if xml_value(&xml, "atuserlist").is_some_and(|value| !value.trim().is_empty()) {
+        push("消息里 @ 了人".to_string());
+    }
+    if xml.to_ascii_lowercase().contains("revokemsg") {
+        push("这是一条撤回记录".to_string());
+    }
+    if xml.contains("<bizflag>1") || xml.to_ascii_lowercase().contains("enterprise") {
+        push("来自企业微信".to_string());
+    }
+    MessageSource { notes }
 }
 
 fn quote_text(xml: &str) -> Option<String> {
@@ -494,5 +527,21 @@ mod tests {
         ];
         let decoded = super::super::shards::decompress_payload(compressed.to_vec(), 4);
         assert_eq!(String::from_utf8(decoded).unwrap(), "compressed hello");
+    }
+
+    #[test]
+    fn translates_msgsource_into_notes() {
+        let raw = "<msgsource><silence>1</silence><membercount>4</membercount><signature>v1_secret</signature><sec_msg_node><alnode><fr>2</fr></alnode></sec_msg_node></msgsource>";
+        let parsed = parse_message_source(raw);
+        assert_eq!(
+            parsed.notes,
+            vec![
+                "发送时群里有 4 人".to_string(),
+                "群已开启消息免打扰".to_string(),
+                "从电脑发送".to_string(),
+            ]
+        );
+        let binary = parse_message_source("\u{1}\u{2}not xml");
+        assert!(binary.notes.is_empty());
     }
 }

@@ -49,13 +49,10 @@ pub struct MediaRef {
     pub kind: MediaKind,
 }
 
-/// Readable fields recovered from the WeChat `source` column. The raw value
-/// is an internal `<msgsource>` document and is not useful as a JSON field.
+/// Readable notes recovered from WeChat's compressed `<msgsource>` column.
 #[derive(Clone, Debug, Default)]
 pub struct MessageSource {
-    pub signature: String,
-    pub silence: bool,
-    pub member_count: Option<i64>,
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -131,6 +131,7 @@ impl Shard {
             let compress = value_to_bytes(row.get_ref(8)?);
             let packed = value_to_bytes(row.get_ref(9)?);
             let ct_content: i64 = row.get(10)?;
+            let ct_source: i64 = row.get(11)?;
             Ok((
                 local_id,
                 server_id,
@@ -143,6 +144,7 @@ impl Shard {
                 compress,
                 packed,
                 ct_content,
+                ct_source,
             ))
         })?;
         let mut out = Vec::new();
@@ -159,12 +161,14 @@ impl Shard {
                 compress,
                 packed,
                 ct_content,
+                ct_source,
             ) = row?;
             let mut payload = content;
             if payload.is_empty() && !compress.is_empty() {
                 payload = compress;
             }
             let payload = decompress_payload(payload, ct_content);
+            let source = decompress_payload(source, ct_source);
             let raw_content = String::from_utf8_lossy(&payload).to_string();
             let source_text = String::from_utf8_lossy(&source).to_string();
             let base_type = local_type & 0xFFFF_FFFF;

@@ -108,18 +108,8 @@ pub fn message_json(message: &ExportMessage, include_media: bool) -> Value {
             "kind": app_kind(subtype),
         }));
     }
-    let mut origin = Map::new();
-    if !message.source.signature.is_empty() {
-        origin.insert("signature".into(), json!(message.source.signature));
-    }
-    if message.source.silence {
-        origin.insert("silent".into(), json!(true));
-    }
-    if let Some(count) = message.source.member_count {
-        origin.insert("memberCount".into(), json!(count));
-    }
-    if !origin.is_empty() {
-        object.insert("origin".into(), Value::Object(origin));
+    if !message.source.notes.is_empty() {
+        object.insert("source".into(), json!(message.source.notes));
     }
     if include_media {
         if let Some(media) = &message.media {
