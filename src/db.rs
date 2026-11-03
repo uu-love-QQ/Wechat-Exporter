@@ -379,7 +379,72 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
                 }
             }
 
-            // 3. Algorithm B: Raw x'<hex>' scan (WeChat <= 4.1.9)
+            // 2.5 Algorithm B (from wx-cli-again): Salt-adjacent binary key search on heap
+            for &(base, size) in &readable_regions {
+                let mut reg_offset = 0usize;
+                while reg_offset < size {
+                    let to_read = (size - reg_offset).min(chunk.len());
+                    let mut bytes_read = 0usize;
+                    if ReadProcessMemory(
+                        handle,
+                        (base + reg_offset) as *const c_void,
+                        chunk.as_mut_ptr() as *mut c_void,
+                        to_read,
+                        &mut bytes_read,
+                    ) != 0 && bytes_read >= 48 {
+                        let slice = &chunk[..bytes_read];
+                        let mut start = 0usize;
+                        while start + 16 <= slice.len() {
+                            if let Some(rel) = slice[start..].windows(16).position(|w| w == salt) {
+                                let i = start + rel;
+                                const BEFORE: [usize; 3] = [32, 40, 48];
+                                const AFTER: [usize; 3] = [0, 8, 16];
+                                for off in BEFORE {
+                                    if i >= off && i - off + 32 <= slice.len() {
+                                        let cand_bytes = &slice[i - off..i - off + 32];
+                                        if cand_bytes.iter().any(|&b| b != 0) && !cand_bytes.iter().all(|&b| b == cand_bytes[0]) {
+                                            let mut karr = [0u8; 32];
+                                            karr.copy_from_slice(cand_bytes);
+                                            if verify_db_page1(&karr, p1) {
+                                                eprintln!(
+                                                    "[+] 成功通过 Salt-Adjacent 算法从微信进程 (PID: {}) 提取到数据库密钥: x'{}'!",
+                                                    pid, hex::encode(karr)
+                                                );
+                                                CloseHandle(handle);
+                                                return Some(karr);
+                                            }
+                                        }
+                                    }
+                                }
+                                for off in AFTER {
+                                    let kstart = i + 16 + off;
+                                    if kstart + 32 <= slice.len() {
+                                        let cand_bytes = &slice[kstart..kstart + 32];
+                                        if cand_bytes.iter().any(|&b| b != 0) && !cand_bytes.iter().all(|&b| b == cand_bytes[0]) {
+                                            let mut karr = [0u8; 32];
+                                            karr.copy_from_slice(cand_bytes);
+                                            if verify_db_page1(&karr, p1) {
+                                                eprintln!(
+                                                    "[+] 成功通过 Salt-Adjacent 算法从微信进程 (PID: {}) 提取到数据库密钥: x'{}'!",
+                                                    pid, hex::encode(karr)
+                                                );
+                                                CloseHandle(handle);
+                                                return Some(karr);
+                                            }
+                                        }
+                                    }
+                                }
+                                start = i + 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    reg_offset += to_read;
+                }
+            }
+
+            // 3. Algorithm C: Raw x'<hex>' scan (WeChat <= 4.1.9)
             for &(base, size) in &readable_regions {
                 let mut reg_offset = 0usize;
                 while reg_offset < size {
