@@ -45,16 +45,18 @@ impl MediaIndex {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     let name = entry.file_name().to_string_lossy().to_string();
-                    if entry.file_type().map(|kind| kind.is_symlink()).unwrap_or(true) {
-                        continue;
-                    }
                     let Ok(metadata) = entry.metadata() else {
                         continue;
                     };
+                    // Follow directory symlinks/junctions, skip non-directory symlinks
+                    let file_type = entry.file_type().ok();
+                    if file_type.as_ref().map(|k| k.is_symlink()).unwrap_or(false) && !metadata.is_dir() {
+                        continue;
+                    }
                     if metadata.is_dir() {
                         if matches!(
                             name.as_str(),
-                            "db_storage" | "cache" | "tmp" | "temp" | "backup" | "node_modules" | ".git"
+                            "db_storage" | "tmp" | "temp" | "backup" | "node_modules" | ".git"
                         ) {
                             continue;
                         }
@@ -445,11 +447,19 @@ pub fn export_media(
                 Err(error) => Err(error),
             }
         } else {
-            let ext = file
+            let mut ext = file
                 .path
                 .extension()
                 .and_then(|value| value.to_str())
-                .unwrap_or("bin");
+                .unwrap_or("bin")
+                .to_string();
+            let raw_bytes = std::fs::read(&file.path).unwrap_or_default();
+            if is_image_header(&raw_bytes) {
+                ext = detect_image_ext(&raw_bytes).to_string();
+            } else if ext.eq_ignore_ascii_case("thumb") {
+                // Windows cannot open .thumb, map to .jpg
+                ext = "jpg".to_string();
+            }
             let dest = media_dir.join(format!("{prefix}.{ext}"));
             crate::util::copy_media_file(&file.path, &dest)
                 .map(|_| dest)

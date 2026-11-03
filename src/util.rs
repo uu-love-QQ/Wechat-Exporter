@@ -1,3 +1,25 @@
+fn find_local_key_file() -> Option<String> {
+    if let Ok(content) = fs::read_to_string("key.txt") {
+        let trimmed = content.trim();
+        if !trimmed.is_empty() {
+            eprintln!("[i] 自动从当前目录下的 key.txt 文件加载数据库密钥");
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(parent) = exe_path.parent() {
+            let exe_key = parent.join("key.txt");
+            if let Ok(content) = fs::read_to_string(&exe_key) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    eprintln!("[i] 自动从程序所在目录的 key.txt 文件加载数据库密钥: {}", exe_key.display());
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
+}
 use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -77,14 +99,9 @@ pub fn read_key(explicit: Option<&str>, file: Option<&Path>) -> Result<Option<[u
             .with_context(|| format!("failed to read key file {}", path.display()))?
             .trim()
             .to_string()
-    } else if let Ok(content) = fs::read_to_string("key.txt") {
-        let trimmed = content.trim();
-        if !trimmed.is_empty() {
-            eprintln!("[i] 自动从当前目录下的 key.txt 文件加载数据库密钥");
-            trimmed.to_string()
-        } else {
-            String::new()
-        }
+    } else if let Some(content) = find_local_key_file() {
+        content
+
     } else if stdin_has_piped_data() {
         let mut stdin = std::io::stdin();
         let mut buf = String::new();
