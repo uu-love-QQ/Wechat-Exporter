@@ -420,7 +420,7 @@ fn emoticon_first_block_is_image(data: &[u8], key: &[u8; 16]) -> bool {
     for i in 0..16 {
         block[i] ^= key[i];
     }
-    is_image_header(&block) || block.starts_with(b"wxgf")
+    is_strict_image_header(&block) || block.starts_with(b"wxgf")
 }
 
 #[cfg(target_os = "windows")]
@@ -681,8 +681,8 @@ pub fn export_media(
     let mut image_xor_key: Option<u8> = None;
     let mut image_seed: Option<u32> = None;
 
-    let mut v2_sample: Option<[u8; 16]> = None;
-    let mut emoticon_sample: Option<[u8; 16]> = None;
+    let mut v2_candidates: Vec<(u64, [u8; 16])> = Vec::new();
+    let mut emoticon_candidates: Vec<(u64, [u8; 16])> = Vec::new();
     for file in &index.files {
         let is_dat = file
             .path
@@ -704,22 +704,39 @@ pub fn export_media(
         if !is_dat && !is_emoticon {
             continue;
         }
-        if let Ok(data) = fs::read(&file.path) {
-            if is_dat && data.starts_with(V2_MAGIC) && data.len() >= 31 && v2_sample.is_none() {
-                let mut test_ciphertext = [0u8; 16];
-                test_ciphertext.copy_from_slice(&data[15..31]);
-                v2_sample = Some(test_ciphertext);
-            }
-            if is_emoticon && data.len() >= 16 && emoticon_sample.is_none() {
-                let mut block = [0u8; 16];
-                block.copy_from_slice(&data[..16]);
-                emoticon_sample = Some(block);
+        let Ok(meta) = fs::metadata(&file.path) else {
+            continue;
+        };
+        let size = meta.len();
+        if is_dat && v2_candidates.len() < 8 && size >= 31 {
+            if let Ok(mut handle) = fs::File::open(&file.path) {
+                use std::io::Read;
+                let mut head = [0u8; 31];
+                if handle.read_exact(&mut head).is_ok() && head.starts_with(V2_MAGIC) {
+                    let mut block = [0u8; 16];
+                    block.copy_from_slice(&head[15..31]);
+                    v2_candidates.push((size, block));
+                }
             }
         }
-        if v2_sample.is_some() && emoticon_sample.is_some() {
+        if is_emoticon && emoticon_candidates.len() < 8 && size >= 16 && size % 16 == 0 {
+            if let Ok(mut handle) = fs::File::open(&file.path) {
+                use std::io::Read;
+                let mut block = [0u8; 16];
+                if handle.read_exact(&mut block).is_ok() && !is_image_header(&block) {
+                    emoticon_candidates.push((size, block));
+                }
+            }
+        }
+        if v2_candidates.len() >= 8 && emoticon_candidates.len() >= 8 {
             break;
         }
     }
+    v2_candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    emoticon_candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    let v2_samples: Vec<[u8; 16]> = v2_candidates.into_iter().map(|(_, block)| block).collect();
+    let emoticon_samples: Vec<[u8; 16]> =
+        emoticon_candidates.into_iter().map(|(_, block)| block).collect();
 
     if image_key.is_none() {
         if let Some((seed, key, xor_key)) = *IMAGE_SEED_CACHE.lock().unwrap() {
@@ -728,50 +745,58 @@ pub fn export_media(
             image_xor_key = Some(xor_key);
         }
     }
-    if image_key.is_none() {
-        if let Some(test_ciphertext) = v2_sample {
-            let scan = auto_scan_image_seed_from_process(account_id, &|seed| {
-                let (key, _) = image_key_from_seed(seed, account_id);
-                let Ok(cipher) = Aes128::new_from_slice(&key) else {
-                    return false;
-                };
-                let mut block = test_ciphertext;
+    if image_key.is_none() && !v2_samples.is_empty() {
+        eprintln!(
+            "[i] 使用 {} 个 V2 图片样本交叉确认图片种子",
+            v2_samples.len()
+        );
+        let scan = auto_scan_image_seed_from_process(account_id, &|seed| {
+            let (key, _) = image_key_from_seed(seed, account_id);
+            let Ok(cipher) = Aes128::new_from_slice(&key) else {
+                return false;
+            };
+            v2_samples.iter().all(|sample| {
+                let mut block = *sample;
                 let generic = aes::cipher::generic_array::GenericArray::from_mut_slice(&mut block);
                 cipher.decrypt_block(generic);
-                is_image_header(&block)
-            });
-            if let Some((seed, key, xor_key)) = scan {
-                image_seed = Some(seed);
-                image_key = Some(key);
-                image_xor_key = Some(xor_key);
-                *IMAGE_SEED_CACHE.lock().unwrap() = Some((seed, key, xor_key));
-            }
+                is_strict_image_header(&block)
+            })
+        });
+        if let Some((seed, key, xor_key)) = scan {
+            image_seed = Some(seed);
+            image_key = Some(key);
+            image_xor_key = Some(xor_key);
+            *IMAGE_SEED_CACHE.lock().unwrap() = Some((seed, key, xor_key));
         }
-        if image_key.is_none() {
-            if let Some(block16) = emoticon_sample {
-                let scan = auto_scan_image_seed_from_process(account_id, &|seed| {
-                    match emoticon_key_from_seed(seed, account_id) {
-                        Some(key) => emoticon_first_block_is_image(&block16, &key),
-                        None => false,
-                    }
-                });
-                if let Some((seed, key, xor_key)) = scan {
-                    image_seed = Some(seed);
-                    image_key = Some(key);
-                    image_xor_key = Some(xor_key);
-                    *IMAGE_SEED_CACHE.lock().unwrap() = Some((seed, key, xor_key));
-                }
-            }
+    }
+    if image_key.is_none() && !emoticon_samples.is_empty() {
+        eprintln!(
+            "[i] 使用 {} 个表情样本交叉确认图片种子",
+            emoticon_samples.len()
+        );
+        let scan = auto_scan_image_seed_from_process(account_id, &|seed| {
+            let Some(key) = emoticon_key_from_seed(seed, account_id) else {
+                return false;
+            };
+            emoticon_samples
+                .iter()
+                .all(|sample| emoticon_first_block_is_image(sample, &key))
+        });
+        if let Some((seed, key, xor_key)) = scan {
+            image_seed = Some(seed);
+            image_key = Some(key);
+            image_xor_key = Some(xor_key);
+            *IMAGE_SEED_CACHE.lock().unwrap() = Some((seed, key, xor_key));
         }
-        if image_key.is_none() {
-            if let Some(test_ciphertext) = v2_sample {
-                if let Some(scanned) = auto_scan_image_key_from_process(&test_ciphertext) {
-                    eprintln!(
-                        "[!] 未找到图片种子，退回 16 字节 ASCII 密钥扫描: {}",
-                        String::from_utf8_lossy(&scanned)
-                    );
-                    image_key = Some(scanned);
-                }
+    }
+    if image_key.is_none() {
+        if let Some(test_ciphertext) = v2_samples.first() {
+            if let Some(scanned) = auto_scan_image_key_from_process(test_ciphertext) {
+                eprintln!(
+                    "[!] 未找到图片种子，退回 16 字节 ASCII 密钥扫描: {}",
+                    String::from_utf8_lossy(&scanned)
+                );
+                image_key = Some(scanned);
             }
         }
     }
@@ -902,6 +927,12 @@ fn detect_image_ext(bytes: &[u8]) -> &'static str {
 
 fn is_image_header(bytes: &[u8]) -> bool {
     detect_image_ext(bytes) != "bin"
+}
+
+/// Seed validation only accepts JPEG/PNG. GIF/WEBP/BMP/wxgf first bytes are
+/// common enough that a random AES key decrypts some ciphertext into them.
+fn is_strict_image_header(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47])
 }
 
 /// AES-128-CBC (key == IV) + PKCS7 for WeChat emoticon `Thumb` / `Persist`
