@@ -84,6 +84,522 @@ pub fn verify_db_page1(enc_key: &[u8; 32], page1: &[u8]) -> bool {
 
 
 
+
+/// Extract 32-byte masks encoded as four `48 BA <imm64>` (movabs rdx, imm64)
+/// groups separated by 3-byte instructions, followed by `48 85 C0`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn extract_internal_db_key_masks(image: &[u8]) -> Vec<[u8; 32]> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    let mut masks = Vec::new();
+    if image.len() < 62 {
+        return masks;
+    }
+    for i in 0..=image.len() - 62 {
+        if image[i] != 0x48 || image[i + 1] != 0xBA {
+            continue;
+        }
+        if image[i + 13] != 0x48
+            || image[i + 14] != 0xBA
+            || image[i + 26] != 0x48
+            || image[i + 27] != 0xBA
+            || image[i + 39] != 0x48
+            || image[i + 40] != 0xBA
+        {
+            continue;
+        }
+        let tail_ok = (0..8).any(|k| {
+            image
+                .get(i + 52 + k..i + 55 + k)
+                .map(|s| s == [0x48, 0x85, 0xC0])
+                .unwrap_or(false)
+        });
+        if !tail_ok {
+            continue;
+        }
+        let mut mask = [0u8; 32];
+        mask[0..8].copy_from_slice(&image[i + 2..i + 10]);
+        mask[8..16].copy_from_slice(&image[i + 15..i + 23]);
+        mask[16..24].copy_from_slice(&image[i + 28..i + 36]);
+        mask[24..32].copy_from_slice(&image[i + 41..i + 49]);
+        if mask.iter().all(|&b| b == 0) {
+            continue;
+        }
+        if seen.insert(mask) {
+            masks.push(mask);
+        }
+    }
+    masks
+}
+
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn verify_master_candidate(
+    candidate: &[u8; 32],
+    mask: &[u8; 32],
+    salt: &[u8; 16],
+    page1: &[u8],
+) -> Option<[u8; 32]> {
+    let mut passphrase = [0u8; 32];
+    for i in 0..32 {
+        passphrase[i] = candidate[i] ^ mask[i];
+    }
+    let derived = derive_wechat_db_key(&passphrase, salt);
+    if verify_db_page1(&derived, page1) {
+        Some(passphrase)
+    } else {
+        None
+    }
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn verify_all(
+    candidates: &[[u8; 32]],
+    masks: &[[u8; 32]],
+    salt: &[u8; 16],
+    page1: &[u8],
+) -> Option<[u8; 32]> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(8)
+        .max(1);
+    let result = std::sync::Mutex::new(None);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        for worker in 0..threads {
+            let result = &result;
+            let done = &done;
+            scope.spawn(move || {
+                if masks.is_empty() {
+                    if worker == 0 {
+                        for candidate in candidates {
+                            let derived = derive_wechat_db_key(candidate, salt);
+                            if verify_db_page1(&derived, page1) {
+                                *result.lock().unwrap() = Some(*candidate);
+                                done.store(true, std::sync::atomic::Ordering::Relaxed);
+                                return;
+                            }
+                        }
+                    }
+                    return;
+                }
+                for (index, mask) in masks.iter().enumerate() {
+                    if index % threads != worker {
+                        continue;
+                    }
+                    for candidate in candidates {
+                        if done.load(std::sync::atomic::Ordering::Relaxed) {
+                            return;
+                        }
+                        if let Some(passphrase) =
+                            verify_master_candidate(candidate, mask, salt, page1)
+                        {
+                            *result.lock().unwrap() = Some(passphrase);
+                            done.store(true, std::sync::atomic::Ordering::Relaxed);
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    result.into_inner().unwrap()
+}
+
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn msvc_string32_pointer(data: &[u8]) -> Option<u64> {
+    if data.len() < 32 {
+        return None;
+    }
+    // MSVC std::string (x64) layout: 16-byte _Bx union, _Mysize at +16,
+    // _Myres at +24.  A heap-backed string of length 32 normally grows to
+    // capacity 47, and the unused upper half of _Bx is zero.
+    if data[16] != 0x20 || data[24] != 0x2f {
+        return None;
+    }
+    if data[6..16] != [0u8; 10] || data[17..24] != [0u8; 7] || data[25..32] != [0u8; 7] {
+        return None;
+    }
+    let ptr = u64::from_le_bytes(data[0..8].try_into().ok()?);
+    if ptr == 0 {
+        None
+    } else {
+        Some(ptr)
+    }
+}
+
+#[cfg(target_os = "windows")]
+static MASTER_PASSPHRASE: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "windows")]
+pub fn cached_master_passphrase() -> Option<[u8; 32]> {
+    MASTER_PASSPHRASE.lock().ok().and_then(|guard| *guard)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn cached_master_passphrase() -> Option<[u8; 32]> {
+    None
+}
+
+/// Reimplementation of Alpha's `RecoverDbKey` master-passphrase acquisition.
+///
+/// Alpha's native provider:
+/// 1. locates `Weixin.exe` and reads `Weixin.dll` from disk;
+/// 2. extracts 32-byte internal DB key masks from four consecutive
+///    `48 BA <imm64>` (movabs rdx, imm64) groups inside the DLL image;
+/// 3. enumerates MEM_COMMIT | MEM_PRIVATE regions of `Weixin.exe`;
+/// 4. slides a 32-byte window looking for an MSVC `std::string` header with
+///    `_Mysize == 32` and `_Myres == 47`, then reads the pointed-to 32 bytes;
+/// 5. XORs each candidate string body with each DLL mask and verifies the
+///    result by PBKDF2-HMAC-SHA512 + page-1 HMAC.
+#[cfg(target_os = "windows")]
+pub fn scan_master_passphrase_alpha(page1: &[u8]) -> Option<[u8; 32]> {
+    use std::collections::HashSet;
+    use std::ffi::c_void;
+
+    type HANDLE = *mut c_void;
+    type DWORD = u32;
+    type BOOL = i32;
+    #[allow(non_camel_case_types)]
+    type SIZE_T = usize;
+
+    const TH32CS_SNAPPROCESS: DWORD = 0x0000_0002;
+    const TH32CS_SNAPMODULE: DWORD = 0x0000_0008;
+    const TH32CS_SNAPMODULE32: DWORD = 0x0000_0010;
+    const PROCESS_QUERY_INFORMATION: DWORD = 0x0400;
+    const PROCESS_VM_READ: DWORD = 0x0010;
+    const MEM_COMMIT: DWORD = 0x1000;
+    const MEM_PRIVATE: DWORD = 0x20000;
+    const PAGE_NOACCESS: DWORD = 0x01;
+    const PAGE_GUARD: DWORD = 0x100;
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct PROCESSENTRY32W {
+        dwSize: DWORD,
+        cntUsage: DWORD,
+        th32ProcessID: DWORD,
+        th32DefaultHeapID: usize,
+        th32ModuleID: DWORD,
+        cntThreads: DWORD,
+        th32ParentProcessID: DWORD,
+        pcPriClassBase: i32,
+        dwFlags: DWORD,
+        szExeFile: [u16; 260],
+    }
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct MODULEENTRY32W {
+        dwSize: DWORD,
+        th32ModuleID: DWORD,
+        th32ProcessID: DWORD,
+        GlblcntUsage: DWORD,
+        ProccntUsage: DWORD,
+        modBaseAddr: *mut u8,
+        modBaseSize: DWORD,
+        hModule: *mut c_void,
+        szModule: [u16; 256],
+        szExePath: [u16; 260],
+    }
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct PROCESS_MEMORY_COUNTERS {
+        cb: DWORD,
+        PageFaultCount: DWORD,
+        PeakWorkingSetSize: SIZE_T,
+        WorkingSetSize: SIZE_T,
+        QuotaPeakPagedPoolUsage: SIZE_T,
+        QuotaPagedPoolUsage: SIZE_T,
+        QuotaPeakNonPagedPoolUsage: SIZE_T,
+        QuotaNonPagedPoolUsage: SIZE_T,
+        PagefileUsage: SIZE_T,
+        PeakPagefileUsage: SIZE_T,
+    }
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct MEMORY_BASIC_INFORMATION {
+        BaseAddress: *mut c_void,
+        AllocationBase: *mut c_void,
+        AllocationProtect: DWORD,
+        PartitionId: u16,
+        RegionSize: SIZE_T,
+        State: DWORD,
+        Protect: DWORD,
+        Type: DWORD,
+    }
+
+    extern "system" {
+        fn CreateToolhelp32Snapshot(dwFlags: DWORD, th32ProcessID: DWORD) -> HANDLE;
+        fn Process32FirstW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> BOOL;
+        fn Process32NextW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> BOOL;
+        fn Module32FirstW(hSnapshot: HANDLE, lpme: *mut MODULEENTRY32W) -> BOOL;
+        fn Module32NextW(hSnapshot: HANDLE, lpme: *mut MODULEENTRY32W) -> BOOL;
+        fn OpenProcess(dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwProcessId: DWORD) -> HANDLE;
+        fn VirtualQueryEx(
+            hProcess: HANDLE,
+            lpAddress: *const c_void,
+            lpBuffer: *mut MEMORY_BASIC_INFORMATION,
+            dwLength: SIZE_T,
+        ) -> SIZE_T;
+        fn ReadProcessMemory(
+            hProcess: HANDLE,
+            lpBaseAddress: *const c_void,
+            lpBuffer: *mut c_void,
+            nSize: SIZE_T,
+            lpNumberOfBytesRead: *mut SIZE_T,
+        ) -> BOOL;
+        fn K32GetProcessMemoryInfo(
+            Process: HANDLE,
+            ppsmemCounters: *mut PROCESS_MEMORY_COUNTERS,
+            cb: DWORD,
+        ) -> BOOL;
+        fn CloseHandle(hObject: HANDLE) -> BOOL;
+    }
+
+    fn wide_trimmed(buf: &[u16]) -> String {
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        String::from_utf16_lossy(&buf[..end])
+    }
+
+    fn find_module_path(pid: u32, wanted: &str) -> Option<std::path::PathBuf> {
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+            if snap.is_null() || snap == -1isize as HANDLE {
+                return None;
+            }
+            let mut me = std::mem::zeroed::<MODULEENTRY32W>();
+            me.dwSize = std::mem::size_of::<MODULEENTRY32W>() as DWORD;
+            let mut found = None;
+            if Module32FirstW(snap, &mut me) != 0 {
+                loop {
+                    let module = wide_trimmed(&me.szModule);
+                    if module.eq_ignore_ascii_case(wanted) {
+                        found = Some(std::path::PathBuf::from(wide_trimmed(&me.szExePath)));
+                        break;
+                    }
+                    if Module32NextW(snap, &mut me) == 0 {
+                        break;
+                    }
+                }
+            }
+            CloseHandle(snap);
+            found
+        }
+    }
+
+    fn readable_protect(protect: DWORD) -> bool {
+        protect & PAGE_NOACCESS == 0 && protect & PAGE_GUARD == 0
+    }
+
+    /// Collect every 32-byte MSVC std::string body whose header says
+    /// `_Mysize == 32` and `_Myres == 47`, scanning only private heap pages.
+    fn collect_msvc_string_candidates(handle: HANDLE) -> Vec<[u8; 32]> {
+        use std::collections::HashSet;
+        let mut candidates: HashSet<[u8; 32]> = HashSet::new();
+        let mut chunk = vec![0u8; 4 * 1024 * 1024];
+        unsafe {
+            let mut addr = 0usize;
+            loop {
+                let mut mbi = std::mem::zeroed::<MEMORY_BASIC_INFORMATION>();
+                if VirtualQueryEx(
+                    handle,
+                    addr as *const c_void,
+                    &mut mbi,
+                    std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+                ) == 0
+                {
+                    break;
+                }
+                let base = mbi.BaseAddress as usize;
+                let size = mbi.RegionSize;
+                if next_region(base, size).is_none() {
+                    break;
+                }
+                let region_ok = mbi.State == MEM_COMMIT
+                    && mbi.Type == MEM_PRIVATE
+                    && readable_protect(mbi.Protect)
+                    && size > 0;
+                if region_ok {
+                    let mut offset = 0usize;
+                    let mut tail: Vec<u8> = Vec::new();
+                    while offset < size {
+                        let want = (size - offset).min(chunk.len());
+                        let mut got = 0usize;
+                        let ok = ReadProcessMemory(
+                            handle,
+                            (base + offset) as *const c_void,
+                            chunk.as_mut_ptr() as *mut c_void,
+                            want,
+                            &mut got,
+                        ) != 0;
+                        if ok && got > 0 {
+                            let mut window: Vec<u8> = Vec::with_capacity(tail.len() + got);
+                            window.extend_from_slice(&tail);
+                            window.extend_from_slice(&chunk[..got]);
+                            scan_msvc_windows(handle, &window, &mut candidates);
+                            let keep = window.len().min(31);
+                            tail = window[window.len() - keep..].to_vec();
+                        }
+                        offset = offset.saturating_add(want);
+                    }
+                }
+                match next_region(base, size) {
+                    Some(next) => addr = next,
+                    None => break,
+                }
+            }
+        }
+        candidates.into_iter().collect()
+    }
+
+    fn next_region(base: usize, size: usize) -> Option<usize> {
+        let next = base.checked_add(size)?;
+        if next <= base {
+            None
+        } else {
+            Some(next)
+        }
+    }
+
+    fn scan_msvc_windows(handle: HANDLE, data: &[u8], out: &mut HashSet<[u8; 32]>) {
+        if data.len() < 32 {
+            return;
+        }
+        let mut offset = 0usize;
+        while offset + 32 <= data.len() {
+            let window = &data[offset..offset + 32];
+            let Some(ptr) = msvc_string32_pointer(window) else {
+                offset += 1;
+                continue;
+            };
+            let mut body = [0u8; 32];
+            let mut got = 0usize;
+            unsafe {
+                if ReadProcessMemory(
+                    handle,
+                    ptr as usize as *const c_void,
+                    body.as_mut_ptr() as *mut c_void,
+                    32,
+                    &mut got,
+                ) != 0
+                    && got == 32
+                {
+                    out.insert(body);
+                }
+            }
+            offset += 1;
+        }
+    }
+
+    if page1.len() < 4096 {
+        return None;
+    }
+    let mut salt = [0u8; 16];
+    salt.copy_from_slice(&page1[..16]);
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot.is_null() || snapshot == -1isize as HANDLE {
+            return None;
+        }
+        let mut entry = std::mem::zeroed::<PROCESSENTRY32W>();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as DWORD;
+        let mut pids: Vec<(u32, usize, String)> = Vec::new();
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                let name = wide_trimmed(&entry.szExeFile);
+                if name.eq_ignore_ascii_case("Weixin.exe")
+                    || name.eq_ignore_ascii_case("WeChat.exe")
+                {
+                    let pid = entry.th32ProcessID;
+                    let mut mem_usage = 0usize;
+                    let h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
+                    if !h.is_null() {
+                        let mut pmc = std::mem::zeroed::<PROCESS_MEMORY_COUNTERS>();
+                        pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as DWORD;
+                        if K32GetProcessMemoryInfo(h, &mut pmc, pmc.cb) != 0 {
+                            mem_usage = pmc.WorkingSetSize;
+                        }
+                        CloseHandle(h);
+                    }
+                    pids.push((pid, mem_usage, name));
+                }
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+        if pids.is_empty() {
+            return None;
+        }
+        pids.sort_by(|a, b| b.1.cmp(&a.1));
+
+        for (pid, mem_bytes, name) in pids {
+            let Some(dll_path) = find_module_path(pid, "Weixin.dll") else {
+                continue;
+            };
+            let image = match std::fs::read(&dll_path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    eprintln!(
+                        "[!] 无法读取 Weixin.dll {}: {}",
+                        dll_path.display(),
+                        error
+                    );
+                    continue;
+                }
+            };
+            let masks = extract_internal_db_key_masks(&image);
+            eprintln!(
+                "[i] {} (PID: {}, 内存: {}MB) 从 Weixin.dll 提取到 {} 个内部密钥掩码候选值",
+                name,
+                pid,
+                mem_bytes / (1024 * 1024),
+                masks.len()
+            );
+            if masks.is_empty() {
+                continue;
+            }
+            let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
+            if handle.is_null() {
+                eprintln!("[!] 无法打开 {} (PID: {})，请以管理员身份运行", name, pid);
+                continue;
+            }
+            let candidates = collect_msvc_string_candidates(handle);
+            eprintln!(
+                "[i] 从 {} (PID: {}) 私有堆扫描到 {} 个 32 字节通行码候选",
+                name,
+                pid,
+                candidates.len()
+            );
+            let found = verify_all(&candidates, &masks, &salt, page1);
+            CloseHandle(handle);
+            if let Some(passphrase) = found {
+                eprintln!(
+                    "[+] 成功从 {} (PID: {}) 提取出主通行码: {}",
+                    name,
+                    pid,
+                    hex::encode(passphrase)
+                );
+                if let Ok(mut guard) = MASTER_PASSPHRASE.lock() {
+                    *guard = Some(passphrase);
+                }
+                return Some(passphrase);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(target_os = "windows")]
 const WINDOWS_CONFIG_CIPHER_NAME: &[u8] = b"com.Tencent.WCDB.Config.Cipher";
 #[cfg(target_os = "windows")]
@@ -229,6 +745,10 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
         };
         let mut salt = [0u8; 16];
         salt.copy_from_slice(&p1[..16]);
+
+        if let Some(passphrase) = scan_master_passphrase_alpha(p1) {
+            return Some(passphrase);
+        }
 
         let mut chunk = vec![0u8; 2 * 1024 * 1024];
 
@@ -525,6 +1045,12 @@ impl Db {
                 if is_plain {
                     Self::try_open_plain(path)
                 } else {
+                    // Reuse the master passphrase captured by an earlier scan.
+                    if let Some(master) = cached_master_passphrase() {
+                        if let Ok(db) = Self::try_open_keyed(path, &master) {
+                            return Ok(db);
+                        }
+                    }
                     // Attempt to auto-scan key from running WeChat process on Windows
                     use std::io::Read;
                     let mut file = std::fs::File::open(path)?;
@@ -711,6 +1237,54 @@ mod tests {
     }
 
     #[test]
+    fn extracts_alpha_internal_db_key_mask_pattern() {
+        let mut image = vec![0xCCu8; 16];
+        let imm1 = [0x11u8; 8];
+        let imm2 = [0x22u8; 8];
+        let imm3 = [0x33u8; 8];
+        let imm4 = [0x44u8; 8];
+        image.extend_from_slice(&[0x48, 0xBA]);
+        image.extend_from_slice(&imm1);
+        image.extend_from_slice(&[0x90, 0x90, 0x90]);
+        image.extend_from_slice(&[0x48, 0xBA]);
+        image.extend_from_slice(&imm2);
+        image.extend_from_slice(&[0x90, 0x90, 0x90]);
+        image.extend_from_slice(&[0x48, 0xBA]);
+        image.extend_from_slice(&imm3);
+        image.extend_from_slice(&[0x90, 0x90, 0x90]);
+        image.extend_from_slice(&[0x48, 0xBA]);
+        image.extend_from_slice(&imm4);
+        image.extend_from_slice(&[0x90, 0x90, 0x90]);
+        image.extend_from_slice(&[0x48, 0x85, 0xC0]);
+        image.extend_from_slice(&[0; 32]);
+
+        let masks = extract_internal_db_key_masks(&image);
+        assert_eq!(masks.len(), 1);
+        let mut expected = [0u8; 32];
+        expected[0..8].copy_from_slice(&imm1);
+        expected[8..16].copy_from_slice(&imm2);
+        expected[16..24].copy_from_slice(&imm3);
+        expected[24..32].copy_from_slice(&imm4);
+        assert_eq!(masks[0], expected);
+    }
+
+    #[test]
+    fn identifies_msvc_string32_header() {
+        let mut header = [0u8; 32];
+        let pointer = 0x0000_1234_5678_90A0u64;
+        header[0..8].copy_from_slice(&pointer.to_le_bytes());
+        header[16] = 0x20;
+        header[24] = 0x2f;
+        assert_eq!(msvc_string32_pointer(&header), Some(pointer));
+
+        header[24] = 0x30;
+        assert_eq!(msvc_string32_pointer(&header), None);
+        header[24] = 0x2f;
+        header[6] = 1;
+        assert_eq!(msvc_string32_pointer(&header), None);
+    }
+
+    #[test]
     fn verifies_page1_hmac_calculation() {
         let salt = [0x12u8; 16];
         let passphrase = [0xab; 32];
@@ -742,4 +1316,25 @@ mod tests {
         // 2. Open using Db::open with ONLY the master passphrase!
         let db = Db::open(&path, Some(&master_passphrase), false).expect("must open with master passphrase");
         assert_eq!(db.count("messages").unwrap(), 1);
+
+        // 3. The Alpha scanner finds an obfuscated candidate and XORs it with a
+        //    Weixin.dll mask before PBKDF2 verification.
+        let mut page1 = [0u8; 4096];
+        {
+            use std::io::Read;
+            std::fs::File::open(&path)
+                .unwrap()
+                .read_exact(&mut page1)
+                .unwrap();
+        }
+        let mask = [0x3Cu8; 32];
+        let mut candidate = [0u8; 32];
+        for i in 0..32 {
+            candidate[i] = master_passphrase[i] ^ mask[i];
+        }
+        assert_eq!(
+            verify_all(&[candidate], &[mask], &salt, &page1),
+            Some(master_passphrase)
+        );
+        assert_eq!(verify_all(&[candidate], &[[0xA5u8; 32]], &salt, &page1), None);
     }

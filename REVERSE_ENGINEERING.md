@@ -200,3 +200,35 @@ local chat-export CLI remains fully functional without them.
    - 读取数据指针与长度（典型长度为 99 字节，对应 `x'<64 hex key><32 hex salt>'`）；
    - 使用 32 字节掩码 `d2c7442458020000004889442450488b450048844c2448488944254048584c24` 进行异或还原；
    - 提取出候选密钥后，使用 Page 1 的 HMAC-SHA512 自校验验证有效性并缓存。
+
+
+## Alpha 主通行码自动提取（alpha_xkey.dll `RecoverDbKey`）
+
+对安装包内的 `alpha_xkey.dll` 做静态逆向后确认，Alpha 的自动取 Key 链路并不依赖
+`key.txt`，而是：
+
+1. **提取 Weixin.dll 内部掩码**
+   - 扫描 `Weixin.dll` 映像中的机器码模式：
+     ```
+     48 BA <imm64> ??? 48 BA <imm64> ??? 48 BA <imm64> ??? 48 BA <imm64> ... 48 85 C0
+     ```
+   - 每段 `48 BA` 是 `movabs rdx, imm64`，四段立即数按顺序拼接为 32 字节掩码；
+   - 偏移关系：第 2/3/4 段分别位于前一段起始 `+0x0d`（3 字节间隔），
+     第四段之后 `+0x0d..+0x14` 范围内检查 `48 85 C0`（`test rax, rax`）。
+
+2. **扫描 Weixin.exe 私有堆**
+   - 仅枚举 `State == MEM_COMMIT` 且 `Type == MEM_PRIVATE` 的区域；
+   - 按 32 字节滑动窗口匹配 MSVC x64 `std::string` 对象头：
+     - `_Mysize`（+0x10）== 32
+     - `_Myres`（+0x18）== 47
+     - `_Bx` 未使用区（+0x06..+0x10、+0x11..+0x18、+0x19..+0x20）为零
+   - 读取 `_Bx` 指针指向的 32 字节内容作为候选。
+
+3. **异或 + 密码学验证**
+   - `passphrase = candidate XOR mask`；
+   - `enc_key = PBKDF2-HMAC-SHA512(passphrase, page1[0..16], 256000)`；
+   - 用 `enc_key` 校验 Page 1 的 HMAC-SHA512；
+   - 命中后即为 64 Hex 主通行码（32 字节原始口令），可派生全部账号数据库密钥。
+
+Rust 实现位于 `src/db.rs` 的 `scan_master_passphrase_alpha`、`extract_internal_db_key_masks`
+与 `verify_all`，并带有掩码提取、MSVC 对象头识别和 XOR→PBKDF2→HMAC 端到端单元测试。
