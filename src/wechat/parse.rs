@@ -132,7 +132,17 @@ fn type_name_for_app(subtype: Option<i64>, content: &str) -> Option<&'static str
 
 pub fn extract_cdn_url(xml: &str) -> Option<String> {
     // Priority: externurl (original animated/high-res) > encrypturl > cdnurl > dataurl > url
-    for attr in ["externurl", "encrypturl", "cdnurl", "thumburl", "dataurl", "url"] {
+    for attr in [
+        "externurl",
+        "cdnbigimgurl",
+        "encrypturl",
+        "cdnmidimgurl",
+        "cdnurl",
+        "cdnthumburl",
+        "thumburl",
+        "dataurl",
+        "url",
+    ] {
         for tag in ["emoji", "img", "appmsg", "appattach"] {
             if let Some(val) = xml_attr(xml, tag, attr) {
                 let trimmed = val.replace("&amp;", "&").trim().to_string();
@@ -142,7 +152,16 @@ pub fn extract_cdn_url(xml: &str) -> Option<String> {
             }
         }
     }
-    for tag in ["externurl", "encrypturl", "cdnurl", "dataurl", "url", "thumburl"] {
+    for tag in [
+        "externurl",
+        "cdnbigimgurl",
+        "encrypturl",
+        "cdnmidimgurl",
+        "cdnurl",
+        "cdnthumburl",
+        "dataurl",
+        "url",
+    ] {
         if let Some(val) = xml_value(xml, tag) {
             let trimmed = val.replace("&amp;", "&").trim().to_string();
             if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -151,7 +170,10 @@ pub fn extract_cdn_url(xml: &str) -> Option<String> {
         }
     }
     static CDN_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"(?:externurl|encrypturl|cdnurl|thumburl|dataurl)\s*=\s*"([^"]+)""#).unwrap()
+        regex::Regex::new(
+            r#"(?:externurl|cdnbigimgurl|encrypturl|cdnmidimgurl|cdnurl|cdnthumburl|thumburl|dataurl)\s*=\s*"([^"]+)""#,
+        )
+        .unwrap()
     });
     if let Some(caps) = CDN_REGEX.captures(xml) {
         if let Some(m) = caps.get(1) {
@@ -270,7 +292,10 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
     let aes_key = extract_aes_key(xml);
     let width = first_attr_number(xml, &["width", "cdnthumbwidth"]);
     let height = first_attr_number(xml, &["height", "cdnthumbheight"]);
-    let declared_size = first_attr_u64(xml, &["len", "androidlen", "totallen"]);
+    let declared_size = first_attr_u64(
+        xml,
+        &["len", "length", "androidlen", "hdlength", "totallen"],
+    );
     let mut candidate_md5s = Vec::new();
     for attr in ["externmd5", "encryptmd5", "androidmd5", "s60v3md5", "s60v5md5", "rawmd5", "midmd5", "hdmd5"] {
         for tag in ["emoji", "img", "appmsg", "appattach"] {
@@ -679,6 +704,16 @@ mod tests {
         ];
         let decoded = super::super::shards::decompress_payload(compressed.to_vec(), 4);
         assert_eq!(String::from_utf8(decoded).unwrap(), "compressed hello");
+    }
+
+    #[test]
+    fn prefers_big_image_url_and_reads_declared_length() {
+        let xml = r#"<msg><img aeskey="00112233445566778899aabbccddeeff" cdnthumburl="http://t/t.jpg" cdnthumbwidth="120" cdnthumbheight="90" cdnmidimgurl="http://t/m.jpg" length="198488" cdnbigimgurl="http://t/big.jpg" hdlength="300000" md5="3d7399f3e4e2ad4855318105efd62c62"/></msg>"#;
+        assert_eq!(extract_cdn_url(xml).as_deref(), Some("http://t/big.jpg"));
+        let parsed = media_ref(3, None, xml).expect("image media ref");
+        assert_eq!(parsed.declared_size, Some(198488));
+        assert_eq!(parsed.width, Some(120));
+        assert_eq!(parsed.height, Some(90));
     }
 
     #[test]

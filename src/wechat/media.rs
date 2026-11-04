@@ -1038,6 +1038,19 @@ pub fn export_media(
                 }
             }
 
+            // Transcode wxgf/HEVC here so a blank decode can be rejected before the
+            // candidate is accepted (and before it can win the fallback slot).
+            let Some((bytes, ext)) = finalize_candidate(bytes, ext) else {
+                tried.push(format!("{} (空白或无法解码)", cand.path.display()));
+                if debug {
+                    eprintln!(
+                        "      • 候选 {} 解码为空白图，跳过",
+                        cand.path.display()
+                    );
+                }
+                continue;
+            };
+
             if let Some(reason) = looks_like_thumbnail(&bytes, &media) {
                 if debug {
                     eprintln!(
@@ -1046,11 +1059,14 @@ pub fn export_media(
                         reason
                     );
                 }
-                if fallback
+                let better = fallback
                     .as_ref()
-                    .map(|(_, _, existing, _, _)| existing.len() < bytes.len())
-                    .unwrap_or(true)
-                {
+                    .map(|(existing_path, _, existing, _, _)| {
+                        candidate_quality(&bytes, &media, &cand.path)
+                            > candidate_quality(existing, &media, existing_path)
+                    })
+                    .unwrap_or(true);
+                if better {
                     fallback = Some((cand.path.clone(), cand_is_dat, bytes, ext, reason));
                 }
                 continue;
@@ -1060,6 +1076,7 @@ pub fn export_media(
             break;
         }
 
+        let mut used_fallback = false;
         let (selected_path, is_dat, mut decrypted) = match selected {
             Some((path, is_dat, bytes, ext)) => (path, is_dat, Some((bytes, ext))),
             None => match fallback {
@@ -1071,9 +1088,49 @@ pub fn export_media(
                             reason
                         );
                     }
+                    used_fallback = true;
                     (path, is_dat, Some((bytes, ext)))
                 }
                 None => {
+                    // Every local candidate was blank or undecodable: try the CDN.
+                    let mut recovered = false;
+                    if let Some(url) = media.cdn_url.as_deref() {
+                        if debug {
+                            eprintln!("  [3] 本地全部候选解码失败，改用 CDN 拉取: {}", url);
+                        }
+                        if let Some((mut data, mut ext)) =
+                            download_from_cdn(url, media.aes_key.as_ref())
+                        {
+                            if ext == "hevc" || data.starts_with(b"wxgf") {
+                                if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
+                                    data = img_bytes;
+                                    ext = img_ext;
+                                } else {
+                                    data.clear();
+                                }
+                            }
+                            if !data.is_empty() {
+                                use sha2::{Digest, Sha256};
+                                let digest = hex::encode(Sha256::digest(&data));
+                                let dest = media_dir
+                                    .join(folder)
+                                    .join(format!("{digest}.{ext}"));
+                                if write_bytes(&dest, &data).is_ok() {
+                                    let relative = dest
+                                        .strip_prefix(output_dir)
+                                        .unwrap_or(dest.as_path())
+                                        .to_string_lossy()
+                                        .replace('\\', "/");
+                                    message.media_path = Some(relative);
+                                    outcome.saved += 1;
+                                    recovered = true;
+                                }
+                            }
+                        }
+                    }
+                    if recovered {
+                        continue;
+                    }
                     outcome.failed += 1;
                     outcome.failures.push(format!(
                         "message {}: media candidates unreadable [{}]",
@@ -1180,9 +1237,22 @@ pub fn export_media(
                     .replace('\\', "/");
                 message.media_path = Some(relative);
                 outcome.saved += 1;
-                let is_thumb_local = file.path.to_string_lossy().contains("Thumb")
-                    || file.path.extension().and_then(|v| v.to_str()).map(|e| e.eq_ignore_ascii_case("thumb")).unwrap_or(false);
-                if is_thumb_local {
+                let path_lower = file.path.to_string_lossy().to_ascii_lowercase();
+                let is_thumb_local = path_lower.contains("thumb")
+                    || path_lower.contains("bubble")
+                    || path_lower.ends_with("_t.dat")
+                    || path_lower.ends_with("_b.dat")
+                    || path_lower.contains("/persist/")
+                    || path_lower.contains("\\persist\\");
+                // A still JPEG standing in for a declared animated original, a low-res
+                // fallback, or a thumbnail: all are worth a CDN upgrade attempt.
+                let declared = media.declared_size.unwrap_or(0);
+                let local_len = bytes_to_write.len() as u64;
+                let size_mismatch = declared_length_mismatch(declared, local_len);
+                let local_is_still = is_still_extension(&ext) && declared > local_len;
+                if (is_thumb_local || used_fallback || size_mismatch || local_is_still)
+                    && media.kind != MediaKind::File
+                {
                     if let Some(url) = media.cdn_url.as_deref() {
                         if let Some((mut full_data, mut full_ext)) = download_from_cdn(url, media.aes_key.as_ref()) {
                             if full_ext == "hevc" || full_data.starts_with(b"wxgf") {
@@ -1198,6 +1268,26 @@ pub fn export_media(
                             if write_bytes(&full_dest, &full_data).is_ok() {
                                 if debug && is_target_media {
                                     eprintln!("  [+] 成功从 CDN 补齐完整原图/动图: media/{}/{}", folder, full_filename);
+                                }
+                                let local_area = image_dimensions(&bytes_to_write)
+                                    .map(|(w, h)| w as u64 * h as u64)
+                                    .unwrap_or(0);
+                                let full_area = image_dimensions(&full_data)
+                                    .map(|(w, h)| w as u64 * h as u64)
+                                    .unwrap_or(0);
+                                let exact_original = declared > 0
+                                    && full_data.len() as u64 + declared / 100 >= declared
+                                    && (full_data.len() as u64) <= declared * 2;
+                                if exact_original
+                                    || (full_ext == "gif" && local_is_still)
+                                    || full_area > local_area
+                                {
+                                    let relative = full_dest
+                                        .strip_prefix(output_dir)
+                                        .unwrap_or(full_dest.as_path())
+                                        .to_string_lossy()
+                                        .replace('\\', "/");
+                                    message.media_path = Some(relative);
                                 }
                             }
                         }
@@ -1375,18 +1465,22 @@ fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 /// Decide whether the decrypted bytes are a lower-resolution stand-in for the
 /// asset the message describes. Uses declared pixels first, then declared bytes.
 fn looks_like_thumbnail(bytes: &[u8], media: &super::model::MediaRef) -> Option<String> {
+    if media.kind == MediaKind::File {
+        return None;
+    }
+    // Pixel size is authoritative. Byte length is not: WeChat re-encodes originals to
+    // JPEG/WEBP, so a genuine original is often smaller than the declared GIF length.
     if let Some((w, h)) = image_dimensions(bytes) {
         if let (Some(dw), Some(dh)) = (media.width, media.height) {
             if w * 10 < dw * 9 || h * 10 < dh * 9 {
                 return Some(format!("实际 {w}x{h} < 声明 {dw}x{dh}"));
             }
-            if w > dw || h > dh {
-                return None;
-            }
         }
+        return None;
     }
+    // Dimensions unavailable (corrupt/unsupported header): only then fall back to size.
     if let Some(declared) = media.declared_size {
-        if declared > 0 && (bytes.len() as u64) * 100 < declared * 95 {
+        if declared > 0 && (bytes.len() as u64) * 100 < declared * 90 {
             return Some(format!(
                 "实际 {} 字节 < 声明 {} 字节",
                 bytes.len(),
@@ -1395,6 +1489,47 @@ fn looks_like_thumbnail(bytes: &[u8], media: &super::model::MediaRef) -> Option<
         }
     }
     None
+}
+
+/// Ranking key for a decoded candidate when no candidate reaches the declared size:
+/// biggest pixels first, then closest to the declared byte length, then raw size.
+/// Alpha's originals are byte-exact with the length declared in the message XML.
+/// A local plaintext even 1% smaller is a re-compressed preview, not the original.
+fn declared_length_mismatch(declared: u64, local_len: u64) -> bool {
+    declared > 0 && local_len + declared / 100 < declared
+}
+
+fn is_still_extension(ext: &str) -> bool {
+    matches!(ext, "jpg" | "jpeg" | "png" | "webp")
+}
+
+fn candidate_quality(
+    bytes: &[u8],
+    media: &super::model::MediaRef,
+    path: &Path,
+) -> (i32, u64, i64, usize) {
+    let path_lower = path.to_string_lossy().to_ascii_lowercase();
+    let dir_rank = if path_lower.contains("thumb")
+        || path_lower.contains("bubble")
+        || path_lower.ends_with("_t.dat")
+        || path_lower.ends_with("_b.dat")
+    {
+        -1
+    } else if path_lower.contains("persist") {
+        2
+    } else {
+        0
+    };
+    let area = image_dimensions(bytes)
+        .map(|(w, h)| w as u64 * h as u64)
+        .unwrap_or(0);
+    let declared = media.declared_size.unwrap_or(0) as i64;
+    let distance = if declared > 0 {
+        (bytes.len() as i64 - declared).abs()
+    } else {
+        0
+    };
+    (dir_rank, area, -distance, bytes.len())
 }
 
 /// Decrypt one on-disk candidate with the same key ladder used for the final export.
@@ -1407,6 +1542,34 @@ fn decrypt_candidate_bytes(
     image_xor_key: Option<u8>,
     emoticon_key: Option<[u8; 16]>,
 ) -> Option<(Vec<u8>, &'static str)> {
+    // Chat files (PDF/ZIP/APK...) are stored as plaintext once received.
+    if media.kind == MediaKind::File && !raw.is_empty() {
+        let ext = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("bin")
+            .to_ascii_lowercase();
+        let ext = match ext.as_str() {
+            "pdf" => "pdf",
+            "apk" => "apk",
+            "zip" => "zip",
+            "rar" => "rar",
+            "7z" => "7z",
+            "doc" => "doc",
+            "docx" => "docx",
+            "xls" => "xls",
+            "xlsx" => "xlsx",
+            "ppt" => "ppt",
+            "pptx" => "pptx",
+            "txt" => "txt",
+            "html" => "html",
+            "mp4" => "mp4",
+            "mp3" => "mp3",
+            "wav" => "wav",
+            _ => "bin",
+        };
+        return Some((raw.to_vec(), ext));
+    }
     for key in [media.aes_key.as_ref(), emoticon_key.as_ref()]
         .into_iter()
         .flatten()
@@ -1504,6 +1667,100 @@ fn detect_wxgf_fps(data: &[u8]) -> u32 {
     10
 }
 
+/// Split a wxgf HEVC payload into independent streams. WeChat stores HEVC-with-alpha
+/// as two concatenated streams; decoding both at once yields the alpha plane (white).
+fn hevc_segments(payload: &[u8]) -> Vec<&[u8]> {
+    let mut starts: Vec<(usize, u8)> = Vec::new();
+    let mut i = 0usize;
+    while i + 3 < payload.len() {
+        if payload[i] == 0 && payload[i + 1] == 0 {
+            let (header, consumed) = if payload[i + 2] == 1 {
+                (i + 3, 3)
+            } else if i + 3 < payload.len() && payload[i + 2] == 0 && payload[i + 3] == 1 {
+                (i + 4, 4)
+            } else {
+                i += 1;
+                continue;
+            };
+            if header < payload.len() {
+                starts.push((i, (payload[header] >> 1) & 0x3F));
+            }
+            let _ = consumed;
+            i = header + 1;
+            continue;
+        }
+        i += 1;
+    }
+    let vps: Vec<usize> = starts
+        .iter()
+        .filter(|(_, nal_type)| *nal_type == 32)
+        .map(|(pos, _)| *pos)
+        .collect();
+    if vps.len() <= 1 {
+        return vec![payload];
+    }
+    let mut segments = Vec::new();
+    for k in 0..vps.len() {
+        let end = vps.get(k + 1).copied().unwrap_or(payload.len());
+        segments.push(&payload[vps[k]..end]);
+    }
+    segments
+}
+
+/// True when the decoded frame is essentially uniform white, i.e. we picked an
+/// alpha/monochrome plane instead of the colour stream.
+fn probe_frame_is_white(ffmpeg: &Path, input: &Path) -> Option<bool> {
+    let out = std::process::Command::new(ffmpeg)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "hevc",
+            "-i",
+            input.to_str()?,
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=8:8:flags=area",
+            "-pix_fmt",
+            "rgb24",
+            "-f",
+            "rawvideo",
+            "-",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() || out.stdout.len() < 8 * 8 * 3 {
+        return None;
+    }
+    let pixels = &out.stdout[..8 * 8 * 3];
+    let count = (pixels.len() / 3) as u64;
+    let luma: Vec<i64> = pixels
+        .chunks_exact(3)
+        .map(|p| (p[0] as i64 + p[1] as i64 + p[2] as i64) / 3)
+        .collect();
+    let avg = luma.iter().sum::<i64>() / count as i64;
+    let var = luma
+        .iter()
+        .map(|value| {
+            let delta = value - avg;
+            delta * delta
+        })
+        .sum::<i64>()
+        / count as i64;
+    Some(avg >= 250 && var <= 4)
+}
+
+/// Normalise a decoded candidate: transcode wxgf/HEVC to a viewable image and
+/// reject blank (white) decodes so the next candidate can be tried.
+fn finalize_candidate(bytes: Vec<u8>, ext: &'static str) -> Option<(Vec<u8>, &'static str)> {
+    if ext == "hevc" || bytes.starts_with(b"wxgf") {
+        return transcode_wxgf_to_image(&bytes);
+    }
+    Some((bytes, ext))
+}
+
 fn transcode_wxgf_to_image(data: &[u8]) -> Option<(Vec<u8>, &'static str)> {
     let ffmpeg = find_ffmpeg()?;
     let nal_offset = data
@@ -1513,20 +1770,41 @@ fn transcode_wxgf_to_image(data: &[u8]) -> Option<(Vec<u8>, &'static str)> {
     if nal_offset >= data.len() {
         return None;
     }
-    let hevc_data = &data[nal_offset..];
+    let payload = &data[nal_offset..];
     let frames = if data.len() >= 14 && data.starts_with(b"wxgf") {
         u16::from_le_bytes([data[12], data[13]])
     } else {
         0
     };
     let temp_dir = tempfile::TempDir::new().ok()?;
-    let in_path = temp_dir.path().join("input.hevc");
-    fs::write(&in_path, hevc_data).ok()?;
+
+    // Pick the colour stream: HEVC-with-alpha concatenates two streams, and decoding
+    // them together (or picking the alpha plane) yields an all-white frame.
+    let mut chosen: Option<PathBuf> = None;
+    for (index, segment) in hevc_segments(payload).into_iter().enumerate() {
+        let path = temp_dir.path().join(format!("segment{index}.hevc"));
+        if fs::write(&path, segment).is_err() {
+            continue;
+        }
+        match probe_frame_is_white(&ffmpeg, &path) {
+            Some(true) => continue,
+            Some(false) => {
+                chosen = Some(path);
+                break;
+            }
+            None => {
+                if chosen.is_none() {
+                    chosen = Some(path);
+                }
+            }
+        }
+    }
+    let in_path = chosen?;
 
     if frames > 1 {
         let fps = detect_wxgf_fps(data).to_string();
         let out_path = temp_dir.path().join("output.gif");
-        let status = std::process::Command::new(ffmpeg)
+        let status = std::process::Command::new(&ffmpeg)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -1549,7 +1827,7 @@ fn transcode_wxgf_to_image(data: &[u8]) -> Option<(Vec<u8>, &'static str)> {
         }
     } else {
         let out_path = temp_dir.path().join("output.jpg");
-        let status = std::process::Command::new(ffmpeg)
+        let status = std::process::Command::new(&ffmpeg)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -1573,7 +1851,6 @@ fn transcode_wxgf_to_image(data: &[u8]) -> Option<(Vec<u8>, &'static str)> {
     }
     None
 }
-
 /// AES-128-CBC (key == IV) + PKCS7 for WeChat emoticon `Thumb` / `Persist`
 /// files, matching the account seed derivation.
 fn decrypt_emoticon_bytes(data: &[u8], key: &[u8; 16]) -> Option<(Vec<u8>, &'static str)> {
@@ -1826,6 +2103,123 @@ mod tests {
         let mut expected = png.to_vec();
         expected.extend_from_slice(&tail);
         assert_eq!(bytes, expected);
+    }
+
+    fn hevc_nal(nal_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8, 0, 0, 1, nal_type << 1, 1];
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn splits_concatenated_hevc_streams_at_second_vps() {
+        let mut data = Vec::new();
+        data.extend(hevc_nal(32, &[0xAA; 4])); // VPS 1
+        data.extend(hevc_nal(33, &[0xBB; 4])); // SPS 1
+        data.extend(hevc_nal(19, &[0xCC; 8])); // IDR 1
+        data.extend(hevc_nal(32, &[0xDD; 4])); // VPS 2
+        data.extend(hevc_nal(33, &[0xEE; 4])); // SPS 2
+        data.extend(hevc_nal(19, &[0xFF; 8])); // IDR 2
+        let segments = hevc_segments(&data);
+        assert_eq!(segments.len(), 2);
+        assert!(segments[0].starts_with(&[0, 0, 0, 1, 64]));
+        assert!(segments[1].starts_with(&[0, 0, 0, 1, 64]));
+        assert_eq!(segments[0].len() + segments[1].len(), data.len());
+
+        // A single-stream payload must stay whole.
+        let single: Vec<u8> = [hevc_nal(32, &[1, 2]), hevc_nal(19, &[3, 4])].concat();
+        assert_eq!(hevc_segments(&single).len(), 1);
+    }
+
+    #[test]
+    fn detects_preview_smaller_than_declared_length() {
+        // Message 17: local preview 21509 bytes, XML declares 29560.
+        assert!(declared_length_mismatch(29560, 21509));
+        // Message 702: local 2013844 vs declared 3843963.
+        assert!(declared_length_mismatch(3843963, 2013844));
+        // Byte-exact original from the CDN.
+        assert!(!declared_length_mismatch(90546, 90546));
+        // No declared length: cannot judge.
+        assert!(!declared_length_mismatch(0, 123));
+        assert!(is_still_extension("jpg"));
+        assert!(is_still_extension("png"));
+        assert!(!is_still_extension("gif"));
+    }
+
+    #[test]
+    fn keeps_original_with_matching_pixels_even_if_bytes_shrink() {
+        let mut jpg_like = vec![0u8; 24];
+        jpg_like[0..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        jpg_like[16..20].copy_from_slice(&416u32.to_be_bytes());
+        jpg_like[20..24].copy_from_slice(&440u32.to_be_bytes());
+        let media = super::super::model::MediaRef {
+            md5: "a977c9bbc0cc67c2fd4f601f5219f16e".into(),
+            candidate_md5s: Vec::new(),
+            file_name: String::new(),
+            kind: MediaKind::Emoji,
+            cdn_url: None,
+            aes_key: None,
+            width: Some(416),
+            height: Some(440),
+            declared_size: Some(29560),
+        };
+        // 21509 < 29560 but pixels match: this is the original, not a thumbnail.
+        assert!(looks_like_thumbnail(&jpg_like, &media).is_none());
+    }
+
+    #[test]
+    fn ranks_candidates_by_pixels_before_bytes() {
+        let media = super::super::model::MediaRef {
+            md5: "b1fc57f4bf68c556fd0f30b417857e3a".into(),
+            candidate_md5s: Vec::new(),
+            file_name: String::new(),
+            kind: MediaKind::Emoji,
+            cdn_url: None,
+            aes_key: None,
+            width: Some(240),
+            height: Some(240),
+            declared_size: Some(20563),
+        };
+        let mut big_pixels = vec![0u8; 24];
+        big_pixels[0..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        big_pixels[16..20].copy_from_slice(&240u32.to_be_bytes());
+        big_pixels[20..24].copy_from_slice(&240u32.to_be_bytes());
+        big_pixels.resize(5000, 0);
+
+        let mut small_pixels = vec![0u8; 24];
+        small_pixels[0..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        small_pixels[16..20].copy_from_slice(&160u32.to_be_bytes());
+        small_pixels[20..24].copy_from_slice(&160u32.to_be_bytes());
+        small_pixels.resize(20560, 0);
+
+        let p = Path::new("x/business/emoticon/Persist/b1/aa");
+        assert!(
+            candidate_quality(&big_pixels, &media, p) > candidate_quality(&small_pixels, &media, p)
+        );
+    }
+
+    #[test]
+    fn copies_chat_file_bytes_without_decryption() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("report.pdf");
+        let payload = b"%PDF-1.7 fake document".to_vec();
+        std::fs::write(&path, &payload).unwrap();
+        let media = super::super::model::MediaRef {
+            md5: String::new(),
+            candidate_md5s: Vec::new(),
+            file_name: "report.pdf".into(),
+            kind: MediaKind::File,
+            cdn_url: None,
+            aes_key: None,
+            width: None,
+            height: None,
+            declared_size: None,
+        };
+        let (bytes, ext) =
+            decrypt_candidate_bytes(&payload, &path, &media, false, None, None, None)
+                .expect("file must be copied verbatim");
+        assert_eq!(bytes, payload);
+        assert_eq!(ext, "pdf");
     }
 
     #[test]
