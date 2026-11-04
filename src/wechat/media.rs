@@ -1051,6 +1051,16 @@ pub fn export_media(
                 continue;
             };
 
+            // An unrecognised payload (ext "bin") is not a usable image: skip it so a
+            // real preview or the CDN original can win instead of writing garbage.
+            if media.kind != MediaKind::File && ext == "bin" {
+                tried.push(format!("{} (无法识别为图片)", cand.path.display()));
+                if debug {
+                    eprintln!("      • 候选 {} 解密后不是已知图片格式，跳过", cand.path.display());
+                }
+                continue;
+            }
+
             if let Some(reason) = looks_like_thumbnail(&bytes, &media) {
                 if debug {
                     eprintln!(
