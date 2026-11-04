@@ -50,6 +50,12 @@ pub struct MediaRef {
     pub kind: MediaKind,
     pub cdn_url: Option<String>,
     pub aes_key: Option<[u8; 16]>,
+    /// Pixel size declared by the message XML. Used to tell a real original
+    /// from a thumbnail after the candidate file has been decrypted.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// Plaintext byte length declared by the message XML (`len` / `androidlen`).
+    pub declared_size: Option<u64>,
 }
 
 /// Readable notes recovered from WeChat's compressed `<msgsource>` column.

@@ -126,48 +126,6 @@ impl MediaIndex {
         index
     }
 
-    fn find(&self, media: &super::model::MediaRef) -> Option<&IndexedFile> {
-        let all_md5s = std::iter::once(&media.md5)
-            .chain(media.candidate_md5s.iter())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_ascii_lowercase())
-            .collect::<Vec<_>>();
-
-        // Collect every candidate index from every bucket, then score them all at once.
-        // Returning the first bucket hit would keep the low-res Thumb when the same
-        // asset also exists at higher resolution.
-        let mut indices: Vec<usize> = Vec::new();
-        for lower in &all_md5s {
-            if let Some(list) = self.by_md5.get(lower) {
-                indices.extend(list.iter().copied());
-            }
-            if lower.len() >= 16 {
-                for (token, list) in &self.by_md5 {
-                    if token.starts_with(lower.as_str()) || lower.starts_with(token.as_str()) {
-                        indices.extend(list.iter().copied());
-                    }
-                }
-            }
-        }
-
-        if !media.file_name.is_empty() {
-            let wanted = media.file_name.to_ascii_lowercase();
-            if let Some(list) = self.by_name.get(&wanted) {
-                indices.extend(list.iter().copied());
-            }
-            let stem = Path::new(&wanted)
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or("");
-            if let Some(list) = self.by_name.get(&format!("{stem}.dat")) {
-                indices.extend(list.iter().copied());
-            }
-        }
-
-        indices.sort_unstable();
-        indices.dedup();
-        self.pick(&indices, media.kind).and_then(|i| self.files.get(i))
-    }
 
     /// Full-res custom emoticons are stored at Persist/<sha[0..2]>/<sha256-of-plaintext>.
     /// The low-res Thumb decrypts to that same plaintext, so its hash is the lookup key.
@@ -185,80 +143,134 @@ impl MediaIndex {
         None
     }
 
-    fn pick(&self, indices: &[usize], kind: MediaKind) -> Option<usize> {
-        let mut best: Option<(usize, i32, u64)> = None;
-        for &index in indices {
-            let file = self.files.get(index)?;
-            let ext = file
-                .path
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            let size = fs::metadata(&file.path).map(|m| m.len()).unwrap_or(0);
-            let base_score = match kind {
-                MediaKind::Image => match ext.as_str() {
-                    "jpg" | "jpeg" | "png" | "webp" => 20,
-                    "gif" => 15,
-                    "dat" => 10,
-                    _ => 1,
-                },
-                MediaKind::Video => match ext.as_str() {
-                    "mp4" | "mov" | "m4v" => 20,
-                    "dat" => 10,
-                    _ => 1,
-                },
-                MediaKind::Voice => match ext.as_str() {
-                    "wav" | "silk" | "mp3" | "amr" => 20,
-                    "dat" => 10,
-                    _ => 1,
-                },
-                MediaKind::Emoji => match ext.as_str() {
-                    "gif" => 30,
-                    "png" | "jpg" | "jpeg" | "webp" => 15,
-                    "bin" => 8,
-                    "dat" => 6,
-                    "thumb" => 2,
-                    "" => 15, // extension-less files under Persist are full originals
-                    _ => 1,
-                },
-                MediaKind::File => {
-                    if ext == "dat" {
-                        1
-                    } else {
-                        20
+    /// Score a single indexed file for the requested media kind. Higher wins.
+    fn score_file(&self, file: &IndexedFile, kind: MediaKind) -> i64 {
+        let ext = file
+            .path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let base_score = match kind {
+            MediaKind::Image => match ext.as_str() {
+                "jpg" | "jpeg" | "png" | "webp" => 20,
+                "gif" => 15,
+                "dat" => 10,
+                _ => 1,
+            },
+            MediaKind::Video => match ext.as_str() {
+                "mp4" | "mov" | "m4v" => 20,
+                "dat" => 10,
+                _ => 1,
+            },
+            MediaKind::Voice => match ext.as_str() {
+                "wav" | "silk" | "mp3" | "amr" => 20,
+                "dat" => 10,
+                _ => 1,
+            },
+            MediaKind::Emoji => match ext.as_str() {
+                "gif" => 30,
+                "png" | "jpg" | "jpeg" | "webp" => 15,
+                "bin" => 8,
+                "dat" => 6,
+                "thumb" => 2,
+                "" => 15, // extension-less files under Persist are full originals
+                _ => 1,
+            },
+            MediaKind::File => {
+                if ext == "dat" {
+                    1
+                } else {
+                    20
+                }
+            }
+        };
+        let path_lower = file.path.to_string_lossy().to_ascii_lowercase();
+        let mut dir_score = 0;
+        if path_lower.contains("\\persist\\") || path_lower.contains("/persist/") {
+            dir_score += 100;
+        }
+        if path_lower.contains("\\thumb\\") || path_lower.contains("/thumb/") {
+            dir_score -= 40;
+        }
+        if path_lower.contains("\\bubble\\") || path_lower.contains("/bubble/") {
+            dir_score -= 30;
+        }
+        if path_lower.ends_with("_t.dat") || path_lower.ends_with("_b.dat") {
+            dir_score -= 20;
+        }
+        if path_lower.contains("_h.dat") {
+            dir_score += 30;
+        }
+        (base_score + dir_score).max(1) as i64
+    }
+
+    /// Every candidate for this message, best first. Directory names alone are not
+    /// trusted: ordering prefers candidates whose on-disk size matches the size the
+    /// message declares, so a `cache/<month>/Emoticon/...` original also wins.
+    fn candidates(&self, media: &super::model::MediaRef) -> Vec<usize> {
+        let all_md5s = std::iter::once(&media.md5)
+            .chain(media.candidate_md5s.iter())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+
+        let mut indices: Vec<usize> = Vec::new();
+        for lower in &all_md5s {
+            if let Some(list) = self.by_md5.get(lower) {
+                indices.extend(list.iter().copied());
+            }
+            if lower.len() >= 16 {
+                for (token, list) in &self.by_md5 {
+                    if token.starts_with(lower.as_str()) || lower.starts_with(token.as_str()) {
+                        indices.extend(list.iter().copied());
                     }
                 }
-            };
-            // Directory-aware weighting: originals in Persist beat thumbnails and
-            // in-chat Bubble previews even when both are extension-less.
-            let path_lower = file.path.to_string_lossy().to_ascii_lowercase();
-            let mut dir_score = 0;
-            if path_lower.contains("\\persist\\") || path_lower.contains("/persist/") {
-                dir_score += 100;
-            }
-            if path_lower.contains("\\thumb\\") || path_lower.contains("/thumb/") {
-                dir_score -= 40;
-            }
-            if path_lower.contains("\\bubble\\") || path_lower.contains("/bubble/") {
-                dir_score -= 30;
-            }
-            if path_lower.ends_with("_t.dat") || path_lower.ends_with("_b.dat") {
-                dir_score -= 20;
-            }
-            if path_lower.contains("_h.dat") {
-                dir_score += 30;
-            }
-            let score = (base_score + dir_score).max(1);
-            // Prefer higher format score; on tie, prefer larger file size (original over thumbnail)
-            if best
-                .map(|(_, best_score, best_size)| score > best_score || (score == best_score && size > best_size))
-                .unwrap_or(true)
-            {
-                best = Some((index, score, size));
             }
         }
-        best.map(|(index, _, _)| index)
+        if !media.file_name.is_empty() {
+            let wanted = media.file_name.to_ascii_lowercase();
+            if let Some(list) = self.by_name.get(&wanted) {
+                indices.extend(list.iter().copied());
+            }
+            let stem = Path::new(&wanted)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            if let Some(list) = self.by_name.get(&format!("{stem}.dat")) {
+                indices.extend(list.iter().copied());
+            }
+        }
+        indices.sort_unstable();
+        indices.dedup();
+
+        let declared = media.declared_size.unwrap_or(0) as i64;
+        indices.sort_by(|a, b| {
+            let fa = &self.files[*a];
+            let fb = &self.files[*b];
+            let sa = self.score_file(fa, media.kind);
+            let sb = self.score_file(fb, media.kind);
+            let size_a = fs::metadata(&fa.path).map(|m| m.len()).unwrap_or(0) as i64;
+            let size_b = fs::metadata(&fb.path).map(|m| m.len()).unwrap_or(0) as i64;
+            // 1) kind/directory score, 2) closeness to the declared plaintext length,
+            // 3) larger file. Declared length is the strongest "is this the original" hint.
+            sb.cmp(&sa)
+                .then_with(|| {
+                    if declared > 0 {
+                        (size_a - declared).abs().cmp(&(size_b - declared).abs())
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .then_with(|| size_b.cmp(&size_a))
+        });
+        indices
+    }
+
+    fn find(&self, media: &super::model::MediaRef) -> Option<&IndexedFile> {
+        self.candidates(media)
+            .first()
+            .and_then(|index| self.files.get(*index))
     }
 }
 
@@ -927,11 +939,11 @@ pub fn export_media(
                 eprintln!("      • 消息独立 AES Key: {}", hex::encode(key));
             }
         }
-        let Some(file) = index.find(&media) else {
+        let candidates = index.candidates(&media);
+        if candidates.is_empty() {
             if debug && is_target_media {
                 eprintln!("  [2] 本地寻址: 未在本地数据库/附件缓存中命中对应文件");
             }
-            // Fallback: attempt to complement missing media from CDN URL if present
             if let Some(url) = media.cdn_url.as_deref() {
                 if debug && is_target_media {
                     eprintln!("  [3] CDN 远程补齐: 发起网络请求拉取: {}", url);
@@ -972,80 +984,122 @@ pub fn export_media(
                 message.index, media.md5, media.file_name
             ));
             continue;
-        };
-        if debug && is_target_media {
-            let meta_size = fs::metadata(&file.path).map(|m| m.len()).unwrap_or(0);
-            eprintln!("  [2] 本地寻址命中:");
-            eprintln!("      • 命中路径: {}", file.path.display());
-            eprintln!("      • 文件大小: {} 字节 ({:.1} KB)", meta_size, meta_size as f64 / 1024.0);
-            eprintln!("      • 命中类型: {} (优先完整原图/动图，跳过低质缩略图)", file.path.extension().and_then(|v| v.to_str()).unwrap_or(""));
-        }
-        let is_dat = file
-            .path
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case("dat"))
-            .unwrap_or(false);
-        let raw_bytes = fs::read(&file.path).unwrap_or_default();
-        let mut decrypted: Option<(Vec<u8>, &'static str)> = None;
-
-        // Emoticons: try the message's explicit aes_key first, then fall back to account emoticon_key
-        let emoticon_keys: Vec<&[u8; 16]> = [media.aes_key.as_ref(), emoticon_key.as_ref()]
-            .into_iter()
-            .flatten()
-            .collect();
-        for key in emoticon_keys {
-            if media.kind == MediaKind::Emoji || !is_dat {
-                if let Some((bytes, ext)) = decrypt_emoticon_bytes(&raw_bytes, key) {
-                    decrypted = Some((bytes, ext));
-                    break;
-                }
-            }
-        }
-        // V2 chat images: AES-128-ECB over the first region + single-byte XOR tail.
-        if decrypted.is_none() && is_dat {
-            if let Ok((bytes, ext)) = decrypt_dat_file(&file.path, image_key, image_xor_key) {
-                decrypted = Some((bytes, ext));
-            }
-        }
-        if decrypted.is_none() && is_image_header(&raw_bytes) {
-            decrypted = Some((raw_bytes.clone(), detect_image_ext(&raw_bytes)));
         }
 
-        // Thumb -> full original upgrade: Persist/<sha[0..2]>/<sha256-of-plaintext>.
-        // WeChat stores the full-res custom emoticon under the low-res preview's
-        // plaintext hash, so the decrypted Thumb gives us the exact lookup key.
-        if media.kind == MediaKind::Emoji {
-            if let Some((bytes, _)) = decrypted.as_ref() {
+        // Try every candidate, best first. A candidate is rejected when its decoded
+        // pixels or byte length are smaller than what the message declares, which is
+        // how a stale Thumb loses to an original living in cache/.../Emoticon/.
+        let mut selected: Option<(PathBuf, bool, Vec<u8>, &'static str)> = None;
+        let mut fallback: Option<(PathBuf, bool, Vec<u8>, &'static str, String)> = None;
+        let mut tried: Vec<String> = Vec::new();
+        for &ci in &candidates {
+            let cand = &index.files[ci];
+            let cand_is_dat = cand
+                .path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("dat"))
+                .unwrap_or(false);
+            let raw = fs::read(&cand.path).unwrap_or_default();
+            let Some((mut bytes, mut ext)) =
+                decrypt_candidate_bytes(&raw, &cand.path, &media, cand_is_dat, image_key, image_xor_key, emoticon_key)
+            else {
+                tried.push(format!("{} (无法解密)", cand.path.display()));
+                continue;
+            };
+
+            // Thumb -> full original upgrade by plaintext SHA-256. WeChat may keep the
+            // full asset under business/emoticon/Persist/<sha[0..2]>/<sha256>.
+            if media.kind == MediaKind::Emoji {
                 use sha2::{Digest, Sha256};
-                let digest = hex::encode(Sha256::digest(bytes));
+                let digest = hex::encode(Sha256::digest(&bytes));
                 if let Some(persist_path) = index.find_persist_by_sha256(&digest) {
                     let persist_bytes = fs::read(&persist_path).unwrap_or_default();
-                    let mut upgraded = None;
                     for key in [media.aes_key.as_ref(), emoticon_key.as_ref()]
                         .into_iter()
                         .flatten()
                     {
                         if let Some((pbytes, pext)) = decrypt_emoticon_bytes(&persist_bytes, key) {
-                            upgraded = Some((pbytes, pext));
-                            break;
-                        }
-                    }
-                    if let Some((pbytes, pext)) = upgraded {
-                        if pbytes != *bytes {
-                            if debug {
-                                eprintln!(
-                                    "      • 命中 Persist 原图: {} ({} 字节 -> {} 字节)",
-                                    persist_path.display(),
-                                    bytes.len(),
-                                    pbytes.len()
-                                );
+                            if pbytes != bytes {
+                                if debug {
+                                    eprintln!(
+                                        "      • 命中 Persist 原图: {} ({} 字节 -> {} 字节)",
+                                        persist_path.display(),
+                                        bytes.len(),
+                                        pbytes.len()
+                                    );
+                                }
+                                bytes = pbytes;
+                                ext = pext;
                             }
-                            decrypted = Some((pbytes, pext));
+                            break;
                         }
                     }
                 }
             }
+
+            if let Some(reason) = looks_like_thumbnail(&bytes, &media) {
+                if debug {
+                    eprintln!(
+                        "      • 候选 {} 判定为缩略图: {}",
+                        cand.path.display(),
+                        reason
+                    );
+                }
+                if fallback
+                    .as_ref()
+                    .map(|(_, _, existing, _, _)| existing.len() < bytes.len())
+                    .unwrap_or(true)
+                {
+                    fallback = Some((cand.path.clone(), cand_is_dat, bytes, ext, reason));
+                }
+                continue;
+            }
+
+            selected = Some((cand.path.clone(), cand_is_dat, bytes, ext));
+            break;
+        }
+
+        let (selected_path, is_dat, mut decrypted) = match selected {
+            Some((path, is_dat, bytes, ext)) => (path, is_dat, Some((bytes, ext))),
+            None => match fallback {
+                Some((path, is_dat, bytes, ext, reason)) => {
+                    if debug {
+                        eprintln!(
+                            "      • 所有候选均小于声明值，保留其中最大者: {} ({})",
+                            path.display(),
+                            reason
+                        );
+                    }
+                    (path, is_dat, Some((bytes, ext)))
+                }
+                None => {
+                    outcome.failed += 1;
+                    outcome.failures.push(format!(
+                        "message {}: media candidates unreadable [{}]",
+                        message.index,
+                        tried.join("; ")
+                    ));
+                    continue;
+                }
+            },
+        };
+        let raw_bytes = fs::read(&selected_path).unwrap_or_default();
+        let file = IndexedFile {
+            path: selected_path.clone(),
+            stem: String::new(),
+        };
+        if debug && is_target_media {
+            let meta_size = fs::metadata(&file.path).map(|m| m.len()).unwrap_or(0);
+            let dims = decrypted
+                .as_ref()
+                .and_then(|(bytes, _)| image_dimensions(bytes))
+                .map(|(w, h)| format!("{w}x{h}"))
+                .unwrap_or_else(|| "未知".to_string());
+            eprintln!("  [2] 本地寻址命中:");
+            eprintln!("      • 命中路径: {}", file.path.display());
+            eprintln!("      • 文件大小: {} 字节 ({:.1} KB)", meta_size, meta_size as f64 / 1024.0);
+            eprintln!("      • 解码尺寸: {} (声明 {:?}x{:?})", dims, media.width, media.height);
         }
 
         if debug && is_target_media {
@@ -1237,6 +1291,141 @@ fn download_from_cdn(url: &str, aes_key: Option<&[u8; 16]>) -> Option<(Vec<u8>, 
         }
     }
     Some((data, ext))
+}
+
+/// Pixel dimensions of a decoded image, used to tell an original from a thumbnail.
+fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
+        let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        if w > 0 && h > 0 {
+            return Some((w, h));
+        }
+    }
+    if bytes.starts_with(b"GIF8") && bytes.len() >= 10 {
+        let w = u16::from_le_bytes([bytes[6], bytes[7]]) as u32;
+        let h = u16::from_le_bytes([bytes[8], bytes[9]]) as u32;
+        if w > 0 && h > 0 {
+            return Some((w, h));
+        }
+    }
+    if bytes.starts_with(b"wxgf") && bytes.len() >= 12 {
+        let w = u16::from_le_bytes([bytes[8], bytes[9]]) as u32;
+        let h = u16::from_le_bytes([bytes[10], bytes[11]]) as u32;
+        if w > 0 && h > 0 {
+            return Some((w, h));
+        }
+    }
+    if bytes.starts_with(&[0xFF, 0xD8]) {
+        let mut i = 2usize;
+        while i + 9 < bytes.len() {
+            if bytes[i] != 0xFF {
+                i += 1;
+                continue;
+            }
+            let marker = bytes[i + 1];
+            if marker == 0xD8 || marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+                i += 2;
+                continue;
+            }
+            let seg_len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+            if seg_len < 2 {
+                break;
+            }
+            let is_sof = matches!(
+                marker,
+                0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF
+            );
+            if is_sof {
+                let h = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
+                let w = u16::from_be_bytes([bytes[i + 7], bytes[i + 8]]) as u32;
+                if w > 0 && h > 0 {
+                    return Some((w, h));
+                }
+            }
+            i += 2 + seg_len;
+        }
+    }
+    if bytes.starts_with(b"RIFF") && bytes.len() >= 30 && &bytes[8..12] == b"WEBP" {
+        match &bytes[12..16] {
+            b"VP8X" => {
+                let w = 1 + u32::from_le_bytes([bytes[24], bytes[25], bytes[26], 0]);
+                let h = 1 + u32::from_le_bytes([bytes[27], bytes[28], bytes[29], 0]);
+                return Some((w, h));
+            }
+            b"VP8 " => {
+                let w = u16::from_le_bytes([bytes[26], bytes[27]]) as u32 & 0x3FFF;
+                let h = u16::from_le_bytes([bytes[28], bytes[29]]) as u32 & 0x3FFF;
+                if w > 0 && h > 0 {
+                    return Some((w, h));
+                }
+            }
+            b"VP8L" => {
+                let bits = u32::from_le_bytes([bytes[21], bytes[22], bytes[23], bytes[24]]);
+                let w = (bits & 0x3FFF) + 1;
+                let h = ((bits >> 14) & 0x3FFF) + 1;
+                return Some((w, h));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Decide whether the decrypted bytes are a lower-resolution stand-in for the
+/// asset the message describes. Uses declared pixels first, then declared bytes.
+fn looks_like_thumbnail(bytes: &[u8], media: &super::model::MediaRef) -> Option<String> {
+    if let Some((w, h)) = image_dimensions(bytes) {
+        if let (Some(dw), Some(dh)) = (media.width, media.height) {
+            if w * 10 < dw * 9 || h * 10 < dh * 9 {
+                return Some(format!("实际 {w}x{h} < 声明 {dw}x{dh}"));
+            }
+            if w > dw || h > dh {
+                return None;
+            }
+        }
+    }
+    if let Some(declared) = media.declared_size {
+        if declared > 0 && (bytes.len() as u64) * 100 < declared * 95 {
+            return Some(format!(
+                "实际 {} 字节 < 声明 {} 字节",
+                bytes.len(),
+                declared
+            ));
+        }
+    }
+    None
+}
+
+/// Decrypt one on-disk candidate with the same key ladder used for the final export.
+fn decrypt_candidate_bytes(
+    raw: &[u8],
+    path: &Path,
+    media: &super::model::MediaRef,
+    is_dat: bool,
+    image_key: Option<[u8; 16]>,
+    image_xor_key: Option<u8>,
+    emoticon_key: Option<[u8; 16]>,
+) -> Option<(Vec<u8>, &'static str)> {
+    for key in [media.aes_key.as_ref(), emoticon_key.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        if media.kind == MediaKind::Emoji || !is_dat {
+            if let Some((bytes, ext)) = decrypt_emoticon_bytes(raw, key) {
+                return Some((bytes, ext));
+            }
+        }
+    }
+    if is_dat {
+        if let Ok((bytes, ext)) = decrypt_dat_file(path, image_key, image_xor_key) {
+            return Some((bytes, ext));
+        }
+    }
+    if is_image_header(raw) {
+        return Some((raw.to_vec(), detect_image_ext(raw)));
+    }
+    None
 }
 
 fn detect_image_ext(bytes: &[u8]) -> &'static str {
@@ -1640,6 +1829,86 @@ mod tests {
     }
 
     #[test]
+    fn parses_image_dimensions_from_headers() {
+        // PNG 240x240
+        let mut png = vec![0u8; 24];
+        png[0..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        png[16..20].copy_from_slice(&240u32.to_be_bytes());
+        png[20..24].copy_from_slice(&240u32.to_be_bytes());
+        assert_eq!(image_dimensions(&png), Some((240, 240)));
+
+        // GIF 120x90
+        let mut gif = vec![0u8; 10];
+        gif[0..6].copy_from_slice(b"GIF89a");
+        gif[6..8].copy_from_slice(&120u16.to_le_bytes());
+        gif[8..10].copy_from_slice(&90u16.to_le_bytes());
+        assert_eq!(image_dimensions(&gif), Some((120, 90)));
+
+        // wxgf header carries width/height as u16 LE at 8..12
+        let mut wxgf = vec![0u8; 32];
+        wxgf[0..4].copy_from_slice(b"wxgf");
+        wxgf[8..10].copy_from_slice(&160u16.to_le_bytes());
+        wxgf[10..12].copy_from_slice(&160u16.to_le_bytes());
+        assert_eq!(image_dimensions(&wxgf), Some((160, 160)));
+    }
+
+    #[test]
+    fn flags_smaller_candidate_as_thumbnail() {
+        let mut png = vec![0u8; 24];
+        png[0..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        png[16..20].copy_from_slice(&120u32.to_be_bytes());
+        png[20..24].copy_from_slice(&120u32.to_be_bytes());
+        let media = super::super::model::MediaRef {
+            md5: "b1fc57f4bf68c556fd0f30b417857e3a".into(),
+            candidate_md5s: Vec::new(),
+            file_name: String::new(),
+            kind: MediaKind::Emoji,
+            cdn_url: None,
+            aes_key: None,
+            width: Some(240),
+            height: Some(240),
+            declared_size: Some(90546),
+        };
+        assert!(looks_like_thumbnail(&png, &media).is_some());
+
+        let mut full = vec![0u8; 90546];
+        full[0..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        full[16..20].copy_from_slice(&240u32.to_be_bytes());
+        full[20..24].copy_from_slice(&240u32.to_be_bytes());
+        assert!(looks_like_thumbnail(&full, &media).is_none());
+    }
+
+    #[test]
+    fn ranks_cache_original_above_thumb_by_declared_size() {
+        let root = tempfile::TempDir::new().unwrap();
+        let thumb_dir = root.path().join("business").join("emoticon").join("Thumb").join("b1");
+        let cache_dir = root.path().join("cache").join("2026-09").join("Emoticon").join("b1");
+        std::fs::create_dir_all(&thumb_dir).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let md5 = "b1fc57f4bf68c556fd0f30b417857e3a";
+        let thumb = thumb_dir.join(format!("{md5}.thumb"));
+        let original = cache_dir.join(md5);
+        std::fs::write(&thumb, vec![0u8; 62128]).unwrap();
+        std::fs::write(&original, vec![0u8; 90546]).unwrap();
+
+        let index = MediaIndex::build(Some(root.path()));
+        let media = super::super::model::MediaRef {
+            md5: md5.to_string(),
+            candidate_md5s: Vec::new(),
+            file_name: String::new(),
+            kind: MediaKind::Emoji,
+            cdn_url: None,
+            aes_key: None,
+            width: Some(240),
+            height: Some(240),
+            declared_size: Some(90546),
+        };
+        let ranked = index.candidates(&media);
+        let top = &index.files[ranked[0]].path;
+        assert_eq!(top, &original, "candidate closest to declared size must win");
+    }
+
+    #[test]
     fn finds_full_emoticon_in_persist_by_plaintext_sha256() {
         let root = tempfile::TempDir::new().unwrap();
         let persist = root
@@ -1692,6 +1961,9 @@ mod tests {
             kind: MediaKind::Emoji,
             cdn_url: None,
             aes_key: None,
+            width: None,
+            height: None,
+            declared_size: None,
         };
         let found = index.find(&media).expect("media should resolve");
         assert_eq!(found.path, full, "Persist original must beat Thumb");

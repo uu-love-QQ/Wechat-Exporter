@@ -172,6 +172,36 @@ pub fn extract_cdn_url(xml: &str) -> Option<String> {
     None
 }
 
+fn first_attr_number(xml: &str, attrs: &[&str]) -> Option<u32> {
+    for attr in attrs {
+        for tag in ["emoji", "img", "videomsg", "appmsg", "appattach"] {
+            if let Some(val) = xml_attr(xml, tag, attr) {
+                if let Ok(parsed) = val.trim().parse::<u32>() {
+                    if parsed > 0 {
+                        return Some(parsed);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn first_attr_u64(xml: &str, attrs: &[&str]) -> Option<u64> {
+    for attr in attrs {
+        for tag in ["emoji", "img", "videomsg", "appmsg", "appattach"] {
+            if let Some(val) = xml_attr(xml, tag, attr) {
+                if let Ok(parsed) = val.trim().parse::<u64>() {
+                    if parsed > 0 {
+                        return Some(parsed);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn extract_aes_key(xml: &str) -> Option<[u8; 16]> {
     for tag in ["emoji", "img", "appattach", "appmsg"] {
         if let Some(val) = xml_attr(xml, tag, "aeskey") {
@@ -238,6 +268,9 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
     }
     let cdn_url = extract_cdn_url(xml);
     let aes_key = extract_aes_key(xml);
+    let width = first_attr_number(xml, &["width", "cdnthumbwidth"]);
+    let height = first_attr_number(xml, &["height", "cdnthumbheight"]);
+    let declared_size = first_attr_u64(xml, &["len", "androidlen", "totallen"]);
     let mut candidate_md5s = Vec::new();
     for attr in ["externmd5", "encryptmd5", "androidmd5", "s60v3md5", "s60v5md5", "rawmd5", "midmd5", "hdmd5"] {
         for tag in ["emoji", "img", "appmsg", "appattach"] {
@@ -269,6 +302,9 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
         kind,
         cdn_url,
         aes_key,
+        width,
+        height,
+        declared_size,
     })
 }
 

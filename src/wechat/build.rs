@@ -42,6 +42,9 @@ pub fn export_message(
                     kind,
                     cdn_url: crate::wechat::parse::extract_cdn_url(&raw.raw_content),
                     aes_key: crate::wechat::parse::extract_aes_key(&raw.raw_content),
+                    width: None,
+                    height: None,
+                    declared_size: None,
                 });
             }
         }
