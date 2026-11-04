@@ -136,7 +136,7 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
         34 => MediaKind::Voice,
         43 => MediaKind::Video,
         47 => MediaKind::Emoji,
-        49 if subtype == Some(6) || xml.contains("<appattach") || xml.contains("<filename>") => {
+        49 if subtype == Some(6) || (subtype.is_none() && xml_value(xml, "filename").is_some()) => {
             MediaKind::File
         }
         _ => return None,
@@ -151,7 +151,13 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
         .trim()
         .to_ascii_lowercase();
     let file_name = xml_value(xml, "filename")
-        .or_else(|| xml_value(xml, "title"))
+        .or_else(|| {
+            if subtype == Some(6) {
+                xml_value(xml, "title")
+            } else {
+                None
+            }
+        })
         .unwrap_or_default();
     if md5.is_empty() && file_name.is_empty() {
         return None;
@@ -506,13 +512,14 @@ mod tests {
         assert_eq!(parsed.type_name, "链接消息");
         assert!(parsed.text.contains("Example"));
         assert!(parsed.text.contains("https://e.test"));
+        assert!(parsed.media.is_none());
 
-        let quote = "<msg><appmsg><title>reply</title><type>57</type><refermsg><displayname>Alice</displayname><content>original</content></refermsg></appmsg></msg>";
+        let quote = "<msg><appmsg><title>reply</title><type>57</type><refermsg><displayname>Alice</displayname><content>original</content></refermsg><appattach><totallen>0</totallen></appattach></appmsg></msg>";
         let parsed = parse_content(quote, 49, 57, 244813135921);
         assert!(parsed.text.contains("original"));
         assert!(parsed.text.contains("reply"));
+        assert!(parsed.media.is_none());
     }
-
     #[test]
     fn parses_system_message() {
         let parsed = parse_content(

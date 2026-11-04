@@ -27,8 +27,7 @@ pub fn export_message(
                 43 => Some(MediaKind::Video),
                 47 => Some(MediaKind::Emoji),
                 49 if parsed.app_subtype == Some(6)
-                    || raw.raw_content.contains("<appattach")
-                    || raw.raw_content.contains("<filename>") =>
+                    || (parsed.app_subtype.is_none() && raw.raw_content.contains("<filename>")) =>
                 {
                     Some(MediaKind::File)
                 }
