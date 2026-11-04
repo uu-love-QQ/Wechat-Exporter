@@ -131,63 +131,76 @@ fn type_name_for_app(subtype: Option<i64>, content: &str) -> Option<&'static str
 }
 
 pub fn extract_cdn_url(xml: &str) -> Option<String> {
-    // Priority: externurl (original animated/high-res) > encrypturl > cdnurl > dataurl > url
+    // Verified against the live CDN and Alpha's own exports:
+    //   <emoji cdnurl=...>      -> plaintext original (md5 == message md5, len == declared)
+    //   <emoji encrypturl=...>  -> AES-encrypted variant
+    //   <emoji externurl=...>   -> AES-encrypted wxgf preview
+    //   <img cdnbigimgurl=...>  -> original, cdnmidimgurl -> mid, cdnthumburl -> thumb
+    // So the plaintext original always comes first, per message kind.
+    let ordered: &[(&str, &[&str])] = &[
+        ("emoji", &["cdnurl", "encrypturl", "externurl"]),
+        (
+            "img",
+            &["cdnbigimgurl", "cdnmidimgurl", "cdnthumburl", "cdnurl"],
+        ),
+        (
+            "videomsg",
+            &["cdnvideourl", "cdnthumburl", "cdnurl"],
+        ),
+        (
+            "appmsg",
+            &["cdnbigimgurl", "cdnmidimgurl", "cdnthumburl", "cdnurl"],
+        ),
+        (
+            "appattach",
+            &["cdnattachurl", "cdnthumburl", "cdnurl"],
+        ),
+    ];
+
+    let normalise = |raw: &str| -> Option<String> {
+        let value = raw.replace("&amp;", "&").trim().to_string();
+        if value.starts_with("http://") || value.starts_with("https://") {
+            Some(value)
+        } else {
+            None
+        }
+    };
+
+    for (tag, attrs) in ordered {
+        for attr in *attrs {
+            if let Some(value) = xml_attr(xml, tag, *attr).and_then(|v| normalise(&v)) {
+                return Some(value);
+            }
+        }
+    }
+    // Child-element form (<cdnurl>...</cdnurl>) used by some message versions.
     for attr in [
-        "externurl",
-        "cdnbigimgurl",
-        "encrypturl",
-        "cdnmidimgurl",
         "cdnurl",
+        "cdnbigimgurl",
+        "cdnmidimgurl",
+        "encrypturl",
+        "externurl",
         "cdnthumburl",
         "thumburl",
         "dataurl",
         "url",
     ] {
-        for tag in ["emoji", "img", "appmsg", "appattach"] {
-            if let Some(val) = xml_attr(xml, tag, attr) {
-                let trimmed = val.replace("&amp;", "&").trim().to_string();
-                if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-                    return Some(trimmed);
-                }
-            }
+        if let Some(value) = xml_value(xml, attr).and_then(|v| normalise(&v)) {
+            return Some(value);
         }
     }
-    for tag in [
-        "externurl",
-        "cdnbigimgurl",
-        "encrypturl",
-        "cdnmidimgurl",
-        "cdnurl",
-        "cdnthumburl",
-        "dataurl",
-        "url",
-    ] {
-        if let Some(val) = xml_value(xml, tag) {
-            let trimmed = val.replace("&amp;", "&").trim().to_string();
-            if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-                return Some(trimmed);
-            }
-        }
-    }
-    static CDN_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(
-            r#"(?:externurl|cdnbigimgurl|encrypturl|cdnmidimgurl|cdnurl|cdnthumburl|thumburl|dataurl)\s*=\s*"([^"]+)""#,
-        )
-        .unwrap()
-    });
-    if let Some(caps) = CDN_REGEX.captures(xml) {
-        if let Some(m) = caps.get(1) {
-            let val = m.as_str().replace("&amp;", "&");
-            if val.starts_with("http://") || val.starts_with("https://") {
-                return Some(val);
-            }
-        }
-    }
-    for tag in ["appattach", "msg", "appmsg"] {
-        if let Some(val) = xml_value(xml, "cdnattachurl").or_else(|| xml_attr(xml, tag, "cdnattachurl")) {
-            let trimmed = val.trim();
+
+    // Private attachments only expose an ASN.1 locator; the download is signed
+    // with a per-message authkey (see `extract_message_authkey`).
+    for tag in ["appattach", "appmsg", "msg"] {
+        if let Some(value) = xml_value(xml, "cdnattachurl")
+            .or_else(|| xml_attr(xml, tag, "cdnattachurl"))
+        {
+            let trimmed = value.trim();
             if !trimmed.is_empty() {
-                return Some(format!("https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_param={trimmed}"));
+                return Some(format!(
+                    "https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_param={trimmed}"
+                ));
             }
         }
     }
@@ -733,6 +746,21 @@ mod tests {
         ];
         let decoded = super::super::shards::decompress_payload(compressed.to_vec(), 4);
         assert_eq!(String::from_utf8(decoded).unwrap(), "compressed hello");
+    }
+
+    #[test]
+    fn prefers_plaintext_original_per_message_kind() {
+        let emoji = r#"<msg><emoji md5="a977c9bbc0cc67c2fd4f601f5219f16e" cdnurl="http://c/1.jpg" encrypturl="http://c/2.jpg" externurl="http://c/3.jpg"/></msg>"#;
+        assert_eq!(extract_cdn_url(emoji).as_deref(), Some("http://c/1.jpg"));
+
+        let image = r#"<msg><img cdnthumburl="http://c/t.jpg" cdnmidimgurl="http://c/m.jpg" cdnbigimgurl="http://c/b.jpg"/></msg>"#;
+        assert_eq!(extract_cdn_url(image).as_deref(), Some("http://c/b.jpg"));
+
+        let attachment = r#"<msg><appmsg><appattach><cdnattachurl>3057aa</cdnattachurl></appattach></appmsg></msg>"#;
+        assert_eq!(
+            extract_cdn_url(attachment).as_deref(),
+            Some("https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_param=3057aa")
+        );
     }
 
     #[test]

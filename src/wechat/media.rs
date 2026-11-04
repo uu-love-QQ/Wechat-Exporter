@@ -24,7 +24,6 @@ pub fn set_image_seed_cache(seed: u32, key: [u8; 16], xor_key: u8) {
 #[derive(Clone, Debug)]
 struct IndexedFile {
     path: PathBuf,
-    stem: String,
 }
 
 pub struct MediaIndex {
@@ -115,7 +114,7 @@ impl MediaIndex {
                         for token in tokens {
                             index.by_md5.entry(token).or_default().push(idx);
                         }
-                        index.files.push(IndexedFile { path, stem });
+                        index.files.push(IndexedFile { path });
                     }
                 }
             }
@@ -267,11 +266,6 @@ impl MediaIndex {
         indices
     }
 
-    fn find(&self, media: &super::model::MediaRef) -> Option<&IndexedFile> {
-        self.candidates(media)
-            .first()
-            .and_then(|index| self.files.get(*index))
-    }
 }
 
 pub struct MediaOutcome {
@@ -1166,7 +1160,6 @@ pub fn export_media(
         let raw_bytes = fs::read(&selected_path).unwrap_or_default();
         let file = IndexedFile {
             path: selected_path.clone(),
-            stem: String::new(),
         };
         if debug && is_target_media {
             let meta_size = fs::metadata(&file.path).map(|m| m.len()).unwrap_or(0);
@@ -1229,6 +1222,65 @@ pub fn export_media(
             continue;
         };
 
+        // Alpha keeps the byte-exact original from the CDN. When the local payload is a
+        // preview (shorter than the declared length), replace it before writing so no
+        // orphan preview is left on disk and the message points at the real file.
+        let mut bytes_to_write = bytes_to_write;
+        let mut ext = ext;
+        let path_lower = file.path.to_string_lossy().to_ascii_lowercase();
+        let local_is_thumb_path = path_lower.contains("thumb")
+            || path_lower.contains("bubble")
+            || path_lower.ends_with("_t.dat")
+            || path_lower.ends_with("_b.dat")
+            || path_lower.contains("/persist/")
+            || path_lower.contains("\\persist\\");
+        let declared = media.declared_size.unwrap_or(0);
+        let local_len = bytes_to_write.len() as u64;
+        let size_mismatch = declared_length_mismatch(declared, local_len);
+        let local_is_still = is_still_extension(&ext) && declared > local_len;
+        if (local_is_thumb_path || used_fallback || size_mismatch || local_is_still)
+            && media.kind != MediaKind::File
+        {
+            if let Some(url) = media.cdn_url.as_deref() {
+                if let Some((mut remote, mut remote_ext)) = download_from_cdn(
+                    url,
+                    media.aes_key.as_ref(),
+                    &session_cookie,
+                    media.auth_key.as_deref().unwrap_or(&session.auth_key),
+                ) {
+                    if remote_ext == "hevc" || remote.starts_with(b"wxgf") {
+                        match transcode_wxgf_to_image(&remote) {
+                            Some((img, img_ext)) => {
+                                remote = img;
+                                remote_ext = img_ext;
+                            }
+                            None => remote.clear(),
+                        }
+                    }
+                    if !remote.is_empty() {
+                        if prefer_remote(
+                            &bytes_to_write,
+                            &ext,
+                            &remote,
+                            remote_ext,
+                            declared,
+                        ) {
+                            if debug && is_target_media {
+                                eprintln!(
+                                    "  [+] CDN 原图替换本地预览: {} 字节 -> {} 字节 ({})",
+                                    bytes_to_write.len(),
+                                    remote.len(),
+                                    remote_ext
+                                );
+                            }
+                            bytes_to_write = remote;
+                            ext = remote_ext.to_string();
+                        }
+                    }
+                }
+            }
+        }
+
         let filename = if media.kind == MediaKind::File && !media.file_name.is_empty() {
             crate::util::sanitize_file_name(&media.file_name)
         } else {
@@ -1259,67 +1311,6 @@ pub fn export_media(
                     .replace('\\', "/");
                 message.media_path = Some(relative);
                 outcome.saved += 1;
-                let path_lower = file.path.to_string_lossy().to_ascii_lowercase();
-                let is_thumb_local = path_lower.contains("thumb")
-                    || path_lower.contains("bubble")
-                    || path_lower.ends_with("_t.dat")
-                    || path_lower.ends_with("_b.dat")
-                    || path_lower.contains("/persist/")
-                    || path_lower.contains("\\persist\\");
-                // A still JPEG standing in for a declared animated original, a low-res
-                // fallback, or a thumbnail: all are worth a CDN upgrade attempt.
-                let declared = media.declared_size.unwrap_or(0);
-                let local_len = bytes_to_write.len() as u64;
-                let size_mismatch = declared_length_mismatch(declared, local_len);
-                let local_is_still = is_still_extension(&ext) && declared > local_len;
-                if (is_thumb_local || used_fallback || size_mismatch || local_is_still)
-                    && media.kind != MediaKind::File
-                {
-                    if let Some(url) = media.cdn_url.as_deref() {
-                        if let Some((mut full_data, mut full_ext)) = download_from_cdn(
-                                    url,
-                                    media.aes_key.as_ref(),
-                                    &session_cookie,
-                                    media.auth_key.as_deref().unwrap_or(&session.auth_key),
-                                ) {
-                            if full_ext == "hevc" || full_data.starts_with(b"wxgf") {
-                                if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&full_data) {
-                                    full_data = img_bytes;
-                                    full_ext = img_ext;
-                                }
-                            }
-                            use sha2::{Digest, Sha256};
-                            let full_digest = hex::encode(Sha256::digest(&full_data));
-                            let full_filename = format!("{full_digest}.{full_ext}");
-                            let full_dest = media_dir.join(folder).join(&full_filename);
-                            if write_bytes(&full_dest, &full_data).is_ok() {
-                                if debug && is_target_media {
-                                    eprintln!("  [+] 成功从 CDN 补齐完整原图/动图: media/{}/{}", folder, full_filename);
-                                }
-                                let local_area = image_dimensions(&bytes_to_write)
-                                    .map(|(w, h)| w as u64 * h as u64)
-                                    .unwrap_or(0);
-                                let full_area = image_dimensions(&full_data)
-                                    .map(|(w, h)| w as u64 * h as u64)
-                                    .unwrap_or(0);
-                                let exact_original = declared > 0
-                                    && full_data.len() as u64 + declared / 100 >= declared
-                                    && (full_data.len() as u64) <= declared * 2;
-                                if exact_original
-                                    || (full_ext == "gif" && local_is_still)
-                                    || full_area > local_area
-                                {
-                                    let relative = full_dest
-                                        .strip_prefix(output_dir)
-                                        .unwrap_or(full_dest.as_path())
-                                        .to_string_lossy()
-                                        .replace('\\', "/");
-                                    message.media_path = Some(relative);
-                                }
-                            }
-                        }
-                    }
-                }
             }
             Err(error) => {
                 outcome.failed += 1;
@@ -1530,6 +1521,30 @@ fn looks_like_thumbnail(bytes: &[u8], media: &super::model::MediaRef) -> Option<
 /// biggest pixels first, then closest to the declared byte length, then raw size.
 /// Alpha's originals are byte-exact with the length declared in the message XML.
 /// A local plaintext even 1% smaller is a re-compressed preview, not the original.
+/// Should the remote payload replace the local one?
+fn prefer_remote(
+    local: &[u8],
+    local_ext: &str,
+    remote: &[u8],
+    remote_ext: &str,
+    declared: u64,
+) -> bool {
+    let remote_len = remote.len() as u64;
+    // Alpha's originals are byte-exact with the declared length.
+    let exact_original = declared > 0
+        && remote_len + declared / 100 >= declared
+        && remote_len <= declared * 2;
+    let local_area = image_dimensions(local)
+        .map(|(w, h)| w as u64 * h as u64)
+        .unwrap_or(0);
+    let remote_area = image_dimensions(remote)
+        .map(|(w, h)| w as u64 * h as u64)
+        .unwrap_or(0);
+    exact_original
+        || (remote_ext == "gif" && local_ext != "gif")
+        || remote_area > local_area
+}
+
 fn declared_length_mismatch(declared: u64, local_len: u64) -> bool {
     declared > 0 && local_len + declared / 100 < declared
 }
@@ -2167,6 +2182,18 @@ mod tests {
     }
 
     #[test]
+    fn prefers_byte_exact_original_over_preview() {
+        let declared = 29560u64;
+        let preview = vec![0u8; 21509];
+        let original = vec![0u8; 29560];
+        assert!(prefer_remote(&preview, "jpg", &original, "jpg", declared));
+        // A smaller, non-exact remote never wins on a non-animated local.
+        assert!(!prefer_remote(&original, "jpg", &preview, "jpg", declared));
+        // An animated original replaces a still preview of the same length band.
+        assert!(prefer_remote(&preview, "jpg", &original, "gif", declared));
+    }
+
+    #[test]
     fn detects_preview_smaller_than_declared_length() {
         // Message 17: local preview 21509 bytes, XML declares 29560.
         assert!(declared_length_mismatch(29560, 21509));
@@ -2400,8 +2427,9 @@ mod tests {
             declared_size: None,
         auth_key: None,
         };
-        let found = index.find(&media).expect("media should resolve");
-        assert_eq!(found.path, full, "Persist original must beat Thumb");
+        let ranked = index.candidates(&media);
+        let top = &index.files[ranked[0]].path;
+        assert_eq!(top, &full, "Persist original must beat Thumb");
     }
 
     #[test]
