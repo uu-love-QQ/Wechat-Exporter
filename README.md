@@ -113,3 +113,36 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
   --include-media `
   --output-dir "C:\Users\14744\Downloads\uuMovies\test"
 ```
+
+## 私有文件 CDN 鉴权（novac2c）
+
+微信 4.x 的私有文件（PDF/ZIP/APK 等）只给出：
+
+```xml
+<appattach>
+  <cdnattachurl>3057...</cdnattachurl>
+  <aeskey>...</aeskey>
+</appattach>
+```
+
+真实下载地址是 `https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_param=<cdnattachurl>`，
+但腾讯强制要求同请求携带 `authkey`（Hex 编码的 ASN.1 DER 票据）。实测服务端行为：
+
+| 请求 | 响应 |
+|---|---|
+| 不带 `authkey` | `403 authorization error!` |
+| `authkey` 为空 | `400 authkey param is empty` |
+| `authkey` 非 ASN.1 | `400 plain authkey ASN decode failed` |
+
+因此本工具提供三层凭据来源，按优先级使用：
+
+1. 消息 XML 自带的 `authkey` / `<tpauthkey>`（部分消息会携带）；
+2. 命令行 `--authkey <HEX>`；
+3. `.wechat-exporter.json` 中由 `init` 捕获的会话凭据。
+
+同时 `--cookie "wxuin=..; wxsid=..; skey=..; pass_ticket=.."` 可手动注入登录 Cookie；
+`init` 会从运行中的 `Weixin.exe` 私有堆扫描并保存 Cookie 与 authkey，之后运行完全离线可用。
+
+> 说明：`authkey` 由微信客户端在与腾讯服务器完成 MMTLS 交互后签发。对于从未在客户端
+> 触发过下载的文件，内存中可能不存在对应票据；此时导出会记录失败原因而不是写入损坏文件。
+

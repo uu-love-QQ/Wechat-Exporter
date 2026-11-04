@@ -149,6 +149,14 @@ pub struct Cli {
     /// 开启详细调试输出 (打印图片/表情的原图与缩略图信息、寻址过程及解密导出细节)
     #[arg(long = "debug", action = ArgAction::SetTrue)]
     pub debug: bool,
+
+    /// 手动指定微信登录 Cookie (`wxuin=..; wxsid=..; skey=..; pass_ticket=..`)
+    #[arg(long = "cookie", value_name = "COOKIE")]
+    pub cookie: Option<String>,
+
+    /// 手动指定腾讯 C2C CDN 下载票据 (`authkey`, Hex 编码的 ASN.1 DER)
+    #[arg(long = "authkey", value_name = "HEX")]
+    pub authkey: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -258,6 +266,8 @@ pub struct ValidatedCli {
     pub key: Option<[u8; 32]>,
     pub plaintext: bool,
     pub debug: bool,
+    pub cookie: Option<String>,
+    pub authkey: Option<String>,
 }
 
 impl Cli {
@@ -282,6 +292,8 @@ impl Cli {
                 key: None,
                 plaintext: true,
                 debug: self.debug,
+                cookie: self.cookie.clone(),
+                authkey: self.authkey.clone(),
             });
         }
 
@@ -477,6 +489,8 @@ impl Cli {
             key,
             plaintext: self.plaintext,
             debug: self.debug,
+            cookie: self.cookie,
+            authkey: self.authkey,
         })
     }
 }

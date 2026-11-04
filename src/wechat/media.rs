@@ -904,8 +904,10 @@ pub fn export_media(
     image_key: Option<[u8; 16]>,
     account_id: &str,
     debug: bool,
+    session: &super::auth::WechatSession,
 ) -> MediaOutcome {
     let (image_key, image_xor_key, image_seed) = resolve_image_keys(index, account_id, image_key);
+    let session_cookie = session.cookie_header();
     let emoticon_key = image_seed.and_then(|seed| emoticon_key_from_seed(seed, account_id));
     let media_dir = output_dir.join("media");
     let mut outcome = MediaOutcome {
@@ -948,7 +950,12 @@ pub fn export_media(
                 if debug && is_target_media {
                     eprintln!("  [3] CDN 远程补齐: 发起网络请求拉取: {}", url);
                 }
-                if let Some((mut data, mut ext)) = download_from_cdn(url, media.aes_key.as_ref()) {
+                if let Some((mut data, mut ext)) = download_from_cdn(
+                                    url,
+                                    media.aes_key.as_ref(),
+                                    &session_cookie,
+                                    media.auth_key.as_deref().unwrap_or(&session.auth_key),
+                                ) {
                     if ext == "hevc" || data.starts_with(b"wxgf") {
                         if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
                             data = img_bytes;
@@ -1109,7 +1116,12 @@ pub fn export_media(
                             eprintln!("  [3] 本地全部候选解码失败，改用 CDN 拉取: {}", url);
                         }
                         if let Some((mut data, mut ext)) =
-                            download_from_cdn(url, media.aes_key.as_ref())
+                            download_from_cdn(
+                                    url,
+                                    media.aes_key.as_ref(),
+                                    &session_cookie,
+                                    media.auth_key.as_deref().unwrap_or(&session.auth_key),
+                                )
                         {
                             if ext == "hevc" || data.starts_with(b"wxgf") {
                                 if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
@@ -1264,7 +1276,12 @@ pub fn export_media(
                     && media.kind != MediaKind::File
                 {
                     if let Some(url) = media.cdn_url.as_deref() {
-                        if let Some((mut full_data, mut full_ext)) = download_from_cdn(url, media.aes_key.as_ref()) {
+                        if let Some((mut full_data, mut full_ext)) = download_from_cdn(
+                                    url,
+                                    media.aes_key.as_ref(),
+                                    &session_cookie,
+                                    media.auth_key.as_deref().unwrap_or(&session.auth_key),
+                                ) {
                             if full_ext == "hevc" || full_data.starts_with(b"wxgf") {
                                 if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&full_data) {
                                     full_data = img_bytes;
@@ -1353,12 +1370,20 @@ fn decrypt_aes_cbc_key_iv(data: &[u8], key: &[u8; 16]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn download_from_cdn(url: &str, aes_key: Option<&[u8; 16]>) -> Option<(Vec<u8>, &'static str)> {
-    let resp = match ureq::get(url)
+fn download_from_cdn(
+    url: &str,
+    aes_key: Option<&[u8; 16]>,
+    cookie: &str,
+    auth_key: &str,
+) -> Option<(Vec<u8>, &'static str)> {
+    let signed_url = super::auth::with_auth_key(url, auth_key);
+    let mut request = ureq::get(&signed_url)
         .set("User-Agent", "MicroMessenger Client")
-        .timeout(std::time::Duration::from_secs(10))
-        .call()
-    {
+        .timeout(std::time::Duration::from_secs(10));
+    if !cookie.is_empty() {
+        request = request.set("Cookie", cookie);
+    }
+    let resp = match request.call() {
         Ok(r) => r,
         Err(ureq::Error::Status(403, _)) => {
             static WARNED_403: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -2172,6 +2197,7 @@ mod tests {
             width: Some(416),
             height: Some(440),
             declared_size: Some(29560),
+        auth_key: None,
         };
         // 21509 < 29560 but pixels match: this is the original, not a thumbnail.
         assert!(looks_like_thumbnail(&jpg_like, &media).is_none());
@@ -2189,6 +2215,7 @@ mod tests {
             width: Some(240),
             height: Some(240),
             declared_size: Some(20563),
+        auth_key: None,
         };
         let mut big_pixels = vec![0u8; 24];
         big_pixels[0..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
@@ -2224,6 +2251,7 @@ mod tests {
             width: None,
             height: None,
             declared_size: None,
+        auth_key: None,
         };
         let (bytes, ext) =
             decrypt_candidate_bytes(&payload, &path, &media, false, None, None, None)
@@ -2272,6 +2300,7 @@ mod tests {
             width: Some(240),
             height: Some(240),
             declared_size: Some(90546),
+        auth_key: None,
         };
         assert!(looks_like_thumbnail(&png, &media).is_some());
 
@@ -2306,6 +2335,7 @@ mod tests {
             width: Some(240),
             height: Some(240),
             declared_size: Some(90546),
+        auth_key: None,
         };
         let ranked = index.candidates(&media);
         let top = &index.files[ranked[0]].path;
@@ -2368,6 +2398,7 @@ mod tests {
             width: None,
             height: None,
             declared_size: None,
+        auth_key: None,
         };
         let found = index.find(&media).expect("media should resolve");
         assert_eq!(found.path, full, "Persist original must beat Thumb");

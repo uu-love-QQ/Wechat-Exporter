@@ -56,6 +56,8 @@ pub struct MediaRef {
     pub height: Option<u32>,
     /// Plaintext byte length declared by the message XML (`len` / `androidlen`).
     pub declared_size: Option<u64>,
+    /// Per-message C2C download ticket carried by the XML, when present.
+    pub auth_key: Option<String>,
 }
 
 /// Readable notes recovered from WeChat's compressed `<msgsource>` column.

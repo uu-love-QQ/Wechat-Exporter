@@ -45,6 +45,7 @@ pub fn export_message(
                     width: None,
                     height: None,
                     declared_size: None,
+                    auth_key: crate::wechat::parse::extract_message_authkey(&raw.raw_content),
                 });
             }
         }
@@ -59,6 +60,9 @@ pub fn export_message(
         }
         if m.aes_key.is_none() {
             m.aes_key = crate::wechat::parse::extract_aes_key(&raw.raw_content);
+        }
+        if m.auth_key.is_none() {
+            m.auth_key = crate::wechat::parse::extract_message_authkey(&raw.raw_content);
         }
     }
     let mut sender_id = raw.sender_id.clone();
