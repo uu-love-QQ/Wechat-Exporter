@@ -935,11 +935,16 @@ pub fn export_media(
         let raw_bytes = fs::read(&file.path).unwrap_or_default();
         let mut decrypted: Option<(Vec<u8>, &'static str)> = None;
 
-        // Emoticons are AES-128-CBC with key == IV, derived from the account seed.
-        if let Some(key) = emoticon_key.as_ref() {
+        // Emoticons: try the message's explicit aes_key first, then fall back to account emoticon_key
+        let emoticon_keys: Vec<&[u8; 16]> = [media.aes_key.as_ref(), emoticon_key.as_ref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        for key in emoticon_keys {
             if media.kind == MediaKind::Emoji || !is_dat {
                 if let Some((bytes, ext)) = decrypt_emoticon_bytes(&raw_bytes, key) {
                     decrypted = Some((bytes, ext));
+                    break;
                 }
             }
         }
@@ -982,17 +987,23 @@ pub fn export_media(
 
         let (ext, bytes_to_write): (String, Vec<u8>) = if let Some((bytes, ext)) = decrypted {
             (ext.to_string(), bytes)
-        } else {
-            let mut ext = file
+        } else if is_image_header(&raw_bytes) {
+            (detect_image_ext(&raw_bytes).to_string(), raw_bytes)
+        } else if media.kind == MediaKind::File {
+            let ext = file
                 .path
                 .extension()
                 .and_then(|value| value.to_str())
                 .unwrap_or("bin")
                 .to_string();
-            if ext.eq_ignore_ascii_case("thumb") {
-                ext = "jpg".to_string();
-            }
             (ext, raw_bytes)
+        } else {
+            outcome.failed += 1;
+            outcome.failures.push(format!(
+                "message {}: media decryption failed and not a plain image ({})",
+                message.index, file.path.display()
+            ));
+            continue;
         };
 
         let filename = if media.kind == MediaKind::File && !media.file_name.is_empty() {
@@ -1025,6 +1036,29 @@ pub fn export_media(
                     .replace('\\', "/");
                 message.media_path = Some(relative);
                 outcome.saved += 1;
+                let is_thumb_local = file.path.to_string_lossy().contains("Thumb")
+                    || file.path.extension().and_then(|v| v.to_str()).map(|e| e.eq_ignore_ascii_case("thumb")).unwrap_or(false);
+                if is_thumb_local {
+                    if let Some(url) = media.cdn_url.as_deref() {
+                        if let Some((mut full_data, mut full_ext)) = download_from_cdn(url, media.aes_key.as_ref()) {
+                            if full_ext == "hevc" || full_data.starts_with(b"wxgf") {
+                                if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&full_data) {
+                                    full_data = img_bytes;
+                                    full_ext = img_ext;
+                                }
+                            }
+                            use sha2::{Digest, Sha256};
+                            let full_digest = hex::encode(Sha256::digest(&full_data));
+                            let full_filename = format!("{full_digest}.{full_ext}");
+                            let full_dest = media_dir.join(folder).join(&full_filename);
+                            if write_bytes(&full_dest, &full_data).is_ok() {
+                                if debug && is_target_media {
+                                    eprintln!("  [+] 成功从 CDN 补齐完整原图/动图: media/{}/{}", folder, full_filename);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Err(error) => {
                 outcome.failed += 1;
