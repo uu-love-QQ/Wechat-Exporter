@@ -164,6 +164,7 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
     }
     Some(MediaRef {
         md5,
+        candidate_md5s: Vec::new(),
         file_name,
         kind,
     })

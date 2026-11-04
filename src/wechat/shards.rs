@@ -433,19 +433,29 @@ fn decode_zstd(data: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-pub fn media_from_packed_info(blob: &[u8]) -> Option<String> {
+pub fn all_media_from_packed_info(blob: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
     if blob.is_empty() {
-        return None;
+        return out;
     }
     let hex_chars = |byte: u8| byte.is_ascii_hexdigit();
     let mut i = 0;
     while i + 32 <= blob.len() {
         if blob[i..i + 32].iter().all(|byte| hex_chars(*byte)) {
             if let Ok(value) = std::str::from_utf8(&blob[i..i + 32]) {
-                return Some(value.to_ascii_lowercase());
+                let lower = value.to_ascii_lowercase();
+                if !out.contains(&lower) {
+                    out.push(lower);
+                }
             }
+            i += 32;
+            continue;
         }
         i += 1;
     }
-    None
+    out
+}
+
+pub fn media_from_packed_info(blob: &[u8]) -> Option<String> {
+    all_media_from_packed_info(blob).into_iter().next()
 }

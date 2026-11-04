@@ -107,17 +107,20 @@ impl MediaIndex {
     }
 
     fn find(&self, media: &super::model::MediaRef) -> Option<&IndexedFile> {
-        if !media.md5.is_empty() {
-            if let Some(indices) = self.by_md5.get(&media.md5.to_ascii_lowercase()) {
+        let all_md5s = std::iter::once(&media.md5)
+            .chain(media.candidate_md5s.iter())
+            .filter(|s| !s.is_empty());
+        for md5_candidate in all_md5s {
+            let lower = md5_candidate.to_ascii_lowercase();
+            if let Some(indices) = self.by_md5.get(&lower) {
                 if let Some(index) = self.pick(indices, media.kind) {
                     return self.files.get(index);
                 }
             }
             // Some builds store an uppercase or truncated md5 in the XML.
-            let prefix = media.md5.to_ascii_lowercase();
-            if prefix.len() >= 16 {
+            if lower.len() >= 16 {
                 for (token, indices) in &self.by_md5 {
-                    if token.starts_with(&prefix) || prefix.starts_with(token.as_str()) {
+                    if token.starts_with(&lower) || lower.starts_with(token.as_str()) {
                         if let Some(index) = self.pick(indices, media.kind) {
                             return self.files.get(index);
                         }
@@ -146,7 +149,7 @@ impl MediaIndex {
     }
 
     fn pick(&self, indices: &[usize], kind: MediaKind) -> Option<usize> {
-        let mut best = None;
+        let mut best: Option<(usize, i32, u64)> = None;
         for &index in indices {
             let file = self.files.get(index)?;
             let ext = file
@@ -155,40 +158,47 @@ impl MediaIndex {
                 .and_then(|value| value.to_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
+            let size = fs::metadata(&file.path).map(|m| m.len()).unwrap_or(0);
             let score = match kind {
                 MediaKind::Image => match ext.as_str() {
-                    "dat" => 5,
-                    "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "heic" | "hevc" => 10,
+                    "jpg" | "jpeg" | "png" | "webp" => 20,
+                    "gif" => 15,
+                    "dat" => 10,
                     _ => 1,
                 },
                 MediaKind::Video => match ext.as_str() {
-                    "mp4" | "mov" | "m4v" => 10,
-                    "dat" => 4,
+                    "mp4" | "mov" | "m4v" => 20,
+                    "dat" => 10,
                     _ => 1,
                 },
                 MediaKind::Voice => match ext.as_str() {
-                    "silk" | "amr" | "mp3" | "wav" | "aud" => 10,
-                    "dat" => 3,
+                    "wav" | "silk" | "mp3" | "amr" => 20,
+                    "dat" => 10,
                     _ => 1,
                 },
                 MediaKind::Emoji => match ext.as_str() {
-                    "gif" | "png" | "jpg" | "jpeg" | "webp" => 10,
-                    "dat" => 4,
+                    "gif" => 30, // Strongly prefer genuine GIF animations over static preview PNGs!
+                    "png" | "jpg" | "jpeg" | "webp" => 15,
+                    "dat" => 10,
                     _ => 1,
                 },
                 MediaKind::File => {
                     if ext == "dat" {
                         1
                     } else {
-                        10
+                        20
                     }
                 }
             };
-            if best.map(|(_, best_score)| score > best_score).unwrap_or(true) {
-                best = Some((index, score));
+            // Prefer higher format score; on tie, prefer larger file size (original over thumbnail)
+            if best
+                .map(|(_, best_score, best_size)| score > best_score || (score == best_score && size > best_size))
+                .unwrap_or(true)
+            {
+                best = Some((index, score, size));
             }
         }
-        best.map(|(index, _)| index)
+        best.map(|(index, _, _)| index)
     }
 }
 
@@ -1021,7 +1031,7 @@ fn transcode_wxgf_to_gif(data: &[u8]) -> Option<Vec<u8>> {
         .args([
             "-hide_banner",
             "-loglevel",
-            "error",
+            "fatal",
             "-y",
             "-r",
             &fps,

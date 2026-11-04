@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::model::{Contact, ExportMessage, MediaKind, RawMessage};
 use super::parse::{parse_content, strip_sender_prefix};
-use super::shards::media_from_packed_info;
+use super::shards::all_media_from_packed_info;
 use crate::util::is_group_id;
 
 pub fn export_message(
@@ -19,8 +19,9 @@ pub fn export_message(
         raw.local_type,
     );
     let mut media = parsed.media;
+    let from_packed = all_media_from_packed_info(&raw.packed_info);
     if media.is_none() {
-        if let Some(md5) = media_from_packed_info(&raw.packed_info) {
+        if let Some(md5) = from_packed.first().cloned() {
             let kind = match raw.base_type {
                 3 => Some(MediaKind::Image),
                 34 => Some(MediaKind::Voice),
@@ -36,9 +37,16 @@ pub fn export_message(
             if let Some(kind) = kind {
                 media = Some(super::model::MediaRef {
                     md5,
+                    candidate_md5s: from_packed.clone(),
                     file_name: String::new(),
                     kind,
                 });
+            }
+        }
+    } else if let Some(m) = &mut media {
+        for cand in from_packed {
+            if !m.candidate_md5s.contains(&cand) && cand != m.md5 {
+                m.candidate_md5s.push(cand);
             }
         }
     }

@@ -42,9 +42,10 @@ pub struct Conversation {
     pub message_count: i64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct MediaRef {
     pub md5: String,
+    pub candidate_md5s: Vec<String>,
     pub file_name: String,
     pub kind: MediaKind,
 }
@@ -55,8 +56,9 @@ pub struct MessageSource {
     pub notes: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MediaKind {
+    #[default]
     Image,
     Video,
     Voice,
