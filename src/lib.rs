@@ -140,22 +140,11 @@ fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result
         .unwrap_or_else(|| "unknown".to_string());
 
     // 3. Scan image seed and derive V2 AES & XOR keys
-    let mut image_seed = None;
-    let mut image_aes_key = options.image_key.map(|k| hex::encode(k));
-    let mut image_xor_key = None;
-
-    if image_aes_key.is_none() {
-        println!("[i] 正在从 Weixin.exe 内存中提取图片种子及 V2 AES/XOR 密钥...");
-        let _media_index = wechat::media::MediaIndex::build(layout.account_root.as_deref());
-        if let Some((seed, aes_bytes, xor)) = wechat::media::auto_scan_image_seed_from_process(&account_id, &|_| true) {
-            println!("[+] 图片种子提取成功: {} (AES: {}, XOR: 0x{:02x})", seed, String::from_utf8_lossy(&aes_bytes), xor);
-            image_seed = Some(seed);
-            image_aes_key = Some(String::from_utf8_lossy(&aes_bytes).to_string());
-            image_xor_key = Some(xor);
-        } else {
-            println!("[!] 未能从当前内存提取图片种子，后续导出图片可能需要微信保持运行");
-        }
-    }
+    println!("[i] 正在提取图片种子及 V2 AES/XOR 密钥...");
+    let media_index = wechat::media::MediaIndex::build(layout.account_root.as_deref());
+    let (image_key_bytes, image_xor_key, image_seed) =
+        wechat::media::resolve_image_keys(&media_index, &account_id, options.image_key);
+    let image_aes_key = image_key_bytes.map(|k| String::from_utf8_lossy(&k).to_string());
 
     // 4. Save to config
     let config = config::ExporterConfig {

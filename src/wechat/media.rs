@@ -695,13 +695,11 @@ pub fn auto_scan_image_seed_from_process(
     None
 }
 
-pub fn export_media(
-    messages: &mut [ExportMessage],
+pub fn resolve_image_keys(
     index: &MediaIndex,
-    output_dir: &Path,
-    mut image_key: Option<[u8; 16]>,
     account_id: &str,
-) -> MediaOutcome {
+    mut image_key: Option<[u8; 16]>,
+) -> (Option<[u8; 16]>, Option<u8>, Option<u32>) {
     let mut image_xor_key: Option<u8> = None;
     let mut image_seed: Option<u32> = None;
 
@@ -825,6 +823,17 @@ pub fn export_media(
         }
     }
 
+    (image_key, image_xor_key, image_seed)
+}
+
+pub fn export_media(
+    messages: &mut [ExportMessage],
+    index: &MediaIndex,
+    output_dir: &Path,
+    image_key: Option<[u8; 16]>,
+    account_id: &str,
+) -> MediaOutcome {
+    let (image_key, image_xor_key, image_seed) = resolve_image_keys(index, account_id, image_key);
     let emoticon_key = image_seed.and_then(|seed| emoticon_key_from_seed(seed, account_id));
     let media_dir = output_dir.join("media");
     let mut outcome = MediaOutcome {
