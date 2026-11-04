@@ -658,7 +658,7 @@ pub fn scan_master_passphrase_alpha(page1: &[u8]) -> Option<[u8; 32]> {
                 }
             }
             eprintln!(
-                "[i] 其中 {} 个组合通过 Alpha 字节过滤器，开始 PBKDF2 校验",
+                "[i] 其中 {} 个组合通过特征字节过滤器，开始 PBKDF2 校验",
                 filtered
             );
             let found = verify_all(&candidates, &masks, &salt, page1);

@@ -262,7 +262,7 @@ fn run_search(
 
 fn default_output_dir() -> PathBuf {
     let millis = now_ms();
-    std::env::temp_dir().join(format!("alpha-exports-{millis}"))
+    std::env::temp_dir().join(format!("wechat-exports-{millis}"))
 }
 
 fn run_export(
@@ -398,7 +398,7 @@ fn run_export(
         "formats": options.formats.iter().map(|format| format.name()).collect::<Vec<_>>(),
         "keep_output": options.keep_output || options.output_dir.is_some(),
     });
-    println!("Alpha exports retained at {}", output_dir.display());
+    println!("WeChat chat records exported to {}", output_dir.display());
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }

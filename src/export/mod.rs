@@ -281,7 +281,7 @@ fn write_chatlab_json(context: &ExportContext<'_>, path: &Path, jsonl: bool) -> 
         "version": "0.0.2",
         "exportedAt": context.exported_at_sec(),
         "generator": GENERATOR,
-        "description": format!("Alpha chat export of {}", context.conversation.id)
+        "description": format!("WeChat chat export of {}", context.conversation.id)
     });
     if jsonl {
         let mut output = String::new();

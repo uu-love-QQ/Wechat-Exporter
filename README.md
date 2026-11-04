@@ -1,9 +1,7 @@
 # Wechat-Exporter
 
-微信 4.x 本地数据库解密、全文检索与多格式聊天记录导出工具（Rust 跨平台 1:1 复刻版）。
-
-基于对 `Alpha-0.3.5-x64-Setup.exe` 内部二进制（`wechat-exporter.exe`、`alpha_native.dll`、`alpha_xkey.dll`、`alpha-engine.exe`）的反汇编逆向与架构分析重写。无需依赖 Windows 平台特定的 Alpha 守护进程或私有安全运行时（DRM），即可在 **Windows** 与 **Linux** 两端独立运行。
-
+微信 4.x 本地数据库解密、全文检索与多格式聊天记录导出独立工具（纯 Rust 跨平台实现）。
+基于标准 SQLCipher 4 密码学算法与内存扫描技术直接解密微信本地存储，独立运行于 **Windows** 与 **Linux** 两端。
 ---
 
 ## 一、双端构建产物
@@ -58,10 +56,8 @@ wechat-exporter --key <64位Hex密钥> --list-conversations
 ---
 
 ## 三、密钥自动获取与图片解密机制
-
-### 1. 主通行码自动提取（对齐 Alpha 原生 `RecoverDbKey`）
-未传入 `--key` 时，CLI 完全复刻 Alpha 的扫描链路：
-
+### 1. 主通行码自动提取
+未传入 `--key` 时，CLI 自动执行内存安全扫描：
 1. 打开 `Weixin.exe`，通过 Toolhelp 模块快照定位 `Weixin.dll`；
 2. 读取 `Weixin.dll`，按 Alpha 的机器码特征提取 32 字节内部密钥掩码：
    ```

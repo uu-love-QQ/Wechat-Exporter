@@ -12,10 +12,8 @@ use std::path::PathBuf;
 wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格式导出工具
 ================================================================================
 
-本工具由底层逆向复刻实现，支持 Windows 与 Linux 双端原生运行。
-无需依赖官方 Alpha 引擎守护进程或 DRM 授权，直接基于 SQLCipher 4 密码学算法
-（AES-256-CBC + HMAC-SHA512 + zstd）解密微信 4.x 本地数据库并完成聊天记录提取。
-
+本工具支持 Windows 与 Linux 双端原生运行。基于 SQLCipher 4 密码学算法
+（AES-256-CBC + HMAC-SHA512 + zstd）直接解密微信 4.x 本地数据库并完成聊天记录提取。
 【核心功能】
   1. 自动检索：缺省 --source-database 时自动扫描系统标准微信存储目录（Windows/Linux）
   2. 完整解码：支持普通文本、群聊发件人、图片、语音、视频、表情、名片、位置、
@@ -63,14 +61,13 @@ pub struct Cli {
     #[arg(long = "detect-databases", short = 'D', action = ArgAction::SetTrue)]
     pub detect_databases: bool,
 
-    /// 兼容选项：Alpha 原版参数，纯 Rust 实现已内置解密能力，无需额外动态库
+    /// 兼容选项：保留用于兼容第三方调用参数，纯 Rust 实现已内置解密能力，无需额外动态库
     #[arg(long = "native-library", value_name = "PATH")]
     pub native_library: Option<PathBuf>,
 
-    /// 兼容选项：Alpha 原版参数，纯 Rust 实现已内置解密能力，无需额外动态库
+    /// 兼容选项：保留用于兼容第三方调用参数，纯 Rust 实现已内置解密能力，无需额外动态库
     #[arg(long = "wcdb-library", value_name = "PATH")]
     pub wcdb_library: Option<PathBuf>,
-
     /// 从正在运行的微信进程中抓取密钥 (本构建不含驱动级注入，请用外部工具提取密钥后传入)
     #[arg(long = "xkey-process-id", value_name = "PID")]
     pub xkey_process_id: Option<u32>,
@@ -309,7 +306,7 @@ impl Cli {
             bail!("--xkey-process-id must be greater than zero");
         }
         if self.xkey_process_id.is_some() {
-            bail!("XKey acquisition is not available in alpha-cli-rs; pipe the 64-hex database key on stdin");
+            bail!("XKey process acquisition is not available; pipe the 64-hex database key on stdin");
         }
         if self.list_conversations && self.search.is_some() {
             bail!("--search conflicts with --list-conversations");

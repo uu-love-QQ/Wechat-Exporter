@@ -29,7 +29,7 @@ use std::fs;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA: &str = "alpha.chat-export.v1";
+pub const SCHEMA: &str = "wechat.chat-export.v1";
 pub const GENERATOR: &str = concat!("wechat-exporter/", env!("CARGO_PKG_VERSION"));
 
 pub fn md5_hex(value: &str) -> String {

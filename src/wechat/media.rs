@@ -947,7 +947,7 @@ fn is_strict_image_header(bytes: &[u8]) -> bool {
 }
 
 fn find_ffmpeg() -> Option<PathBuf> {
-    if let Ok(custom) = std::env::var("ALPHA_FFMPEG_PATH") {
+    if let Ok(custom) = std::env::var("WECHAT_FFMPEG_PATH").or_else(|_| std::env::var("FFMPEG_PATH")) {
         let p = PathBuf::from(custom);
         if p.exists() {
             return Some(p);
@@ -955,24 +955,9 @@ fn find_ffmpeg() -> Option<PathBuf> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            for candidate in [
-                dir.join("ffmpeg.exe"),
-                dir.join("ffmpeg"),
-                dir.join("resources").join("bin").join("ffmpeg.exe"),
-                dir.join("bin").join("ffmpeg.exe"),
-            ] {
+            for candidate in [dir.join("ffmpeg.exe"), dir.join("ffmpeg")] {
                 if candidate.exists() {
                     return Some(candidate);
-                }
-            }
-            if let Some(parent) = dir.parent() {
-                for candidate in [
-                    parent.join("resources").join("bin").join("ffmpeg.exe"),
-                    parent.join("ffmpeg.exe"),
-                ] {
-                    if candidate.exists() {
-                        return Some(candidate);
-                    }
                 }
             }
         }
@@ -1059,6 +1044,11 @@ fn decrypt_emoticon_bytes(data: &[u8], key: &[u8; 16]) -> Option<(Vec<u8>, &'sta
         if ext == "hevc" {
             if let Some(gif_bytes) = transcode_wxgf_to_gif(&out) {
                 return Some((gif_bytes, "gif"));
+            }
+            static FFMPEG_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !FFMPEG_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("[!] 发现微信动画表情(HEVC/wxgf)，未在系统 PATH 或程序同级目录检测到 ffmpeg。如需自动转为 GIF 动图，请安装 ffmpeg 并加入系统 PATH。");
             }
         }
         Some((out, ext))
