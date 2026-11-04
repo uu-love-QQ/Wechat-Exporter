@@ -1125,7 +1125,9 @@ pub fn export_media(
                                     data.clear();
                                 }
                             }
-                            if !data.is_empty() {
+                            if !data.is_empty()
+                                && (media.kind == MediaKind::File || ext != "bin")
+                            {
                                 use sha2::{Digest, Sha256};
                                 let digest = hex::encode(Sha256::digest(&data));
                                 let dest = media_dir
@@ -1257,7 +1259,7 @@ pub fn export_media(
                             None => remote.clear(),
                         }
                     }
-                    if !remote.is_empty() {
+                    if !remote.is_empty() && remote_ext != "bin" {
                         if prefer_remote(
                             &bytes_to_write,
                             &ext,

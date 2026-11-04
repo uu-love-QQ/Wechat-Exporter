@@ -750,7 +750,7 @@ mod tests {
 
     #[test]
     fn prefers_plaintext_original_per_message_kind() {
-        let emoji = r#"<msg><emoji md5="a977c9bbc0cc67c2fd4f601f5219f16e" cdnurl="http://c/1.jpg" encrypturl="http://c/2.jpg" externurl="http://c/3.jpg"/></msg>"#;
+        let emoji = r#"<msg><emoji md5 = "a977c9bbc0cc67c2fd4f601f5219f16e" cdnurl = "http://c/1.jpg" encrypturl = "http://c/2.jpg" externurl = "http://c/3.jpg"/></msg>"#;
         assert_eq!(extract_cdn_url(emoji).as_deref(), Some("http://c/1.jpg"));
 
         let image = r#"<msg><img cdnthumburl="http://c/t.jpg" cdnmidimgurl="http://c/m.jpg" cdnbigimgurl="http://c/b.jpg"/></msg>"#;
