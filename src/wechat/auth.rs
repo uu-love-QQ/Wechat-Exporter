@@ -169,6 +169,7 @@ pub fn scan_from_process() -> Option<WechatSession> {
     type HANDLE = *mut c_void;
     type DWORD = u32;
     type BOOL = i32;
+    #[allow(non_camel_case_types)]
     type SIZE_T = usize;
 
     const TH32CS_SNAPPROCESS: DWORD = 0x00000002;
