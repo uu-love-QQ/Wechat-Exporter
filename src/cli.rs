@@ -53,7 +53,13 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
 "#
 )]
 pub struct Cli {
-    /// 微信 session.db、db_storage 目录或账号根目录 (缺省时自动检索本机微信路径)
+    /// 执行子命令 (如 'init' 初始化配置并持久化密钥)
+    #[arg(value_name = "COMMAND", index = 1)]
+    pub command: Option<String>,
+
+    /// 初始化配置：提取主密钥、图片 AES 和 XOR 密钥并保存到本地配置文件，后续直接免扫运行
+    #[arg(long = "init", short = 'i', action = ArgAction::SetTrue)]
+    pub init: bool,
     #[arg(long = "source-database", short = 's', value_name = "PATH")]
     pub source_database: Option<PathBuf>,
 
@@ -226,6 +232,7 @@ pub enum Mode {
     List,
     Search(String),
     DetectDatabases,
+    Init,
 }
 
 #[derive(Clone, Debug)]
@@ -272,6 +279,7 @@ impl Cli {
             });
         }
 
+        let is_init = self.command.as_deref() == Some("init") || self.init;
         // Automatic discovery if --source-database is not provided
         let source_database = match self.source_database {
             Some(path) => {
@@ -345,7 +353,9 @@ impl Cli {
             }
         }
 
-        let mode = if self.list_conversations {
+        let mode = if is_init {
+            Mode::Init
+        } else if self.list_conversations {
             Mode::List
         } else if let Some(text) = self.search.clone() {
             Mode::Search(text)

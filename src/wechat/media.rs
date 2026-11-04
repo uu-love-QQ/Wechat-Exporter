@@ -15,6 +15,12 @@ const V2_MAGIC: &[u8] = b"\x07\x08V2\x08\x07";
 static IMAGE_SEED_CACHE: std::sync::Mutex<Option<(u32, [u8; 16], u8)>> =
     std::sync::Mutex::new(None);
 
+pub fn set_image_seed_cache(seed: u32, key: [u8; 16], xor_key: u8) {
+    if let Ok(mut lock) = IMAGE_SEED_CACHE.lock() {
+        *lock = Some((seed, key, xor_key));
+    }
+}
+
 #[derive(Clone, Debug)]
 struct IndexedFile {
     path: PathBuf,
@@ -994,14 +1000,21 @@ fn decrypt_aes_cbc_key_iv(data: &[u8], key: &[u8; 16]) -> Option<Vec<u8>> {
 }
 
 fn download_from_cdn(url: &str, aes_key: Option<&[u8; 16]>) -> Option<(Vec<u8>, &'static str)> {
-    let resp = ureq::get(url)
+    let resp = match ureq::get(url)
         .set("User-Agent", "MicroMessenger Client")
         .timeout(std::time::Duration::from_secs(10))
         .call()
-        .ok()?;
-    if resp.status() != 200 {
-        return None;
-    }
+    {
+        Ok(r) => r,
+        Err(ureq::Error::Status(403, _)) => {
+            static WARNED_403: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !WARNED_403.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("[!] 腾讯 CDN 返回 403 权限拦截：私有文件拉取需依赖微信在线会话凭据(authkey)");
+            }
+            return None;
+        }
+        Err(_) => return None,
+    };
     let mut reader = resp.into_reader();
     let mut data = Vec::new();
     use std::io::Read;

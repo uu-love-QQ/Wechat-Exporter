@@ -3,6 +3,7 @@ pub mod db;
 pub mod export;
 pub mod util;
 pub mod wechat;
+pub mod config;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -102,6 +103,95 @@ fn run_detect_databases() -> Result<()> {
     Ok(())
 }
 
+fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result<()> {
+    println!("================================================================================");
+    println!("[i] 正在执行微信配置与密钥初始化...");
+    println!("    数据库路径: {}", options.source_database.display());
+    // 1. Resolve master database key
+    let mut db_key = options.key;
+    if db_key.is_none() {
+        println!("[i] 正在从 Weixin.exe 进程内存中提取主通行码...");
+        let p1 = match &layout.session_db {
+            Some(p) => std::fs::read(p).ok(),
+            None => None,
+        };
+        let p2 = if p1.is_none() {
+            layout.message_dbs.first().and_then(|p| std::fs::read(p).ok())
+        } else {
+            None
+        };
+        let p1_ref = p1.as_deref().or(p2.as_deref());
+        db_key = db::auto_scan_wechat_key_from_process(p1_ref);
+    }
+
+    let Some(raw_key) = db_key else {
+        anyhow::bail!("无法从 Weixin.exe 提取主通行码，请确保微信正在运行且已登录，或通过 --key 手动指定");
+    };
+    let key_hex = hex::encode(raw_key);
+    println!("[+] 主通行码就绪: {}", key_hex);
+
+    // 2. Discover account id
+    let account_id = layout
+        .account_root
+        .as_ref()
+        .and_then(|r| r.file_name())
+        .and_then(|s| s.to_str())
+        .map(util::clean_account_id)
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // 3. Scan image seed and derive V2 AES & XOR keys
+    let mut image_seed = None;
+    let mut image_aes_key = options.image_key.map(|k| hex::encode(k));
+    let mut image_xor_key = None;
+
+    if image_aes_key.is_none() {
+        println!("[i] 正在从 Weixin.exe 内存中提取图片种子及 V2 AES/XOR 密钥...");
+        let _media_index = wechat::media::MediaIndex::build(layout.account_root.as_deref());
+        if let Some((seed, aes_bytes, xor)) = wechat::media::auto_scan_image_seed_from_process(&account_id, &|_| true) {
+            println!("[+] 图片种子提取成功: {} (AES: {}, XOR: 0x{:02x})", seed, String::from_utf8_lossy(&aes_bytes), xor);
+            image_seed = Some(seed);
+            image_aes_key = Some(String::from_utf8_lossy(&aes_bytes).to_string());
+            image_xor_key = Some(xor);
+        } else {
+            println!("[!] 未能从当前内存提取图片种子，后续导出图片可能需要微信保持运行");
+        }
+    }
+
+    // 4. Save to config
+    let config = config::ExporterConfig {
+        account_id: account_id.clone(),
+        source_database: options.source_database.to_string_lossy().to_string(),
+        key: key_hex.clone(),
+        image_seed,
+        image_aes_key: image_aes_key.clone(),
+        image_xor_key,
+        updated_at: now_ms(),
+    };
+
+    let cwd_path = config.save(None)?;
+    println!("[+] 配置文件已成功保存至当前目录: {}", cwd_path.display());
+    if let Some(root) = layout.account_root.as_ref() {
+        if let Ok(acc_path) = config.save(Some(root)) {
+            println!("[+] 配置文件已备份至账号目录: {}", acc_path.display());
+        }
+    }
+
+    println!("================================================================================");
+    println!("[✓] 初始化完成！已将密钥持久化至本地：");
+    println!("    • 微信账号: {}", account_id);
+    println!("    • 数据库通行码: {}", key_hex);
+    if let Some(aes) = image_aes_key {
+        println!("    • 图片 AES 密钥: {}", aes);
+    }
+    if let Some(xor) = image_xor_key {
+        println!("    • 图片 XOR 密钥: 0x{:02x} ({})", xor, xor);
+    }
+    println!("================================================================================");
+    println!("后续执行导出 (--conversation-id) 或查询 (--list-conversations) 时，");
+    println!("程序将自动读取 .wechat-exporter.json 配置文件，无需进行内存扫描，即使微信退出也能完整离线导出！");
+    Ok(())
+}
+
 pub fn run() -> Result<()> {
     if std::env::args().len() <= 1 {
         print_welcome_help();
@@ -109,13 +199,49 @@ pub fn run() -> Result<()> {
     }
 
     let cli = Cli::parse();
-    let options = cli.validate()?;
+    let mut options = cli.validate()?;
 
     if matches!(options.mode, Mode::DetectDatabases) {
         return run_detect_databases();
     }
 
     let layout = discover(&options.source_database)?;
+
+    if matches!(options.mode, Mode::Init) {
+        return run_init(&options, &layout);
+    }
+
+    // Auto-load config if key is not passed on command line
+    let search_roots = [
+        options.source_database.as_path(),
+        layout.account_root.as_deref().unwrap_or(options.source_database.as_path()),
+    ];
+    if let Some(cfg) = config::ExporterConfig::load(&search_roots) {
+        if options.key.is_none() {
+            if let Some(k) = cfg.db_key_bytes() {
+                options.key = Some(k);
+                println!(
+                    "[+] 从本地配置 ({}) 加载数据库通行码: {}...",
+                    config::CONFIG_FILE_NAME,
+                    &cfg.key[..16]
+                );
+            }
+        }
+        if options.image_key.is_none() {
+            if let Some(ik) = cfg.image_aes_key_bytes() {
+                options.image_key = Some(ik);
+                if let (Some(seed), Some(xor)) = (cfg.image_seed, cfg.image_xor_key) {
+                    wechat::media::set_image_seed_cache(seed, ik, xor);
+                    println!(
+                        "[+] 从本地配置读取图片密钥: AES {}, XOR 0x{:02x} (跳过内存扫描)",
+                        cfg.image_aes_key.as_deref().unwrap_or(""),
+                        xor
+                    );
+                }
+            }
+        }
+    }
+
     let store = Store::open(&layout.message_dbs, options.key.as_ref(), options.plaintext)?;
     let contacts = wechat::contact::load_contacts(
         layout.contact_db.as_deref(),
@@ -149,7 +275,7 @@ pub fn run() -> Result<()> {
         });
 
     match &options.mode {
-        Mode::DetectDatabases => unreachable!(),
+        Mode::DetectDatabases | Mode::Init => unreachable!(),
         Mode::List => run_list(&options, &conversations, account_id.as_deref()),
         Mode::Search(query) => run_search(
             &options,

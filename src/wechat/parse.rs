@@ -161,6 +161,14 @@ pub fn extract_cdn_url(xml: &str) -> Option<String> {
             }
         }
     }
+    for tag in ["appattach", "msg", "appmsg"] {
+        if let Some(val) = xml_value(xml, "cdnattachurl").or_else(|| xml_attr(xml, tag, "cdnattachurl")) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(format!("https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_param={trimmed}"));
+            }
+        }
+    }
     None
 }
 
