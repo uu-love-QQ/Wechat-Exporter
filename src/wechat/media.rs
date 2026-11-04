@@ -829,15 +829,6 @@ pub fn export_media(
             continue;
         };
         let folder = media.kind.as_str();
-        let stem = if media.kind == MediaKind::File && !file.stem.is_empty() {
-            file.stem.clone()
-        } else if !media.md5.is_empty() {
-            media.md5.clone()
-        } else {
-            file.stem.clone()
-        };
-        let safe_stem = crate::util::sanitize_file_name(&stem);
-        let prefix = format!("{:05}_{}", message.index, safe_stem);
         let is_dat = file
             .path
             .extension()
@@ -865,9 +856,8 @@ pub fn export_media(
             decrypted = Some((raw_bytes.clone(), detect_image_ext(&raw_bytes)));
         }
 
-        let result = if let Some((bytes, ext)) = decrypted {
-            let dest = media_dir.join(folder).join(format!("{prefix}.{ext}"));
-            write_bytes(&dest, &bytes).map(|_| dest)
+        let (ext, bytes_to_write): (String, Option<Vec<u8>>) = if let Some((bytes, ext)) = decrypted {
+            (ext.to_string(), Some(bytes))
         } else {
             let mut ext = file
                 .path
@@ -876,10 +866,30 @@ pub fn export_media(
                 .unwrap_or("bin")
                 .to_string();
             if ext.eq_ignore_ascii_case("thumb") {
-                // Windows cannot open .thumb; keep the raw bytes under a safe name.
                 ext = "jpg".to_string();
             }
-            let dest = media_dir.join(folder).join(format!("{prefix}.{ext}"));
+            (ext, None)
+        };
+
+        let filename = if media.kind == MediaKind::File && !media.file_name.is_empty() {
+            crate::util::sanitize_file_name(&media.file_name)
+        } else if !media.md5.is_empty() {
+            format!("{}.{ext}", media.md5)
+        } else {
+            let stem = if !file.stem.is_empty() {
+                &file.stem
+            } else {
+                "media"
+            };
+            format!("{}.{ext}", crate::util::sanitize_file_name(stem))
+        };
+
+        let dest = media_dir.join(folder).join(&filename);
+        let result = if dest.exists() {
+            Ok(dest)
+        } else if let Some(bytes) = bytes_to_write {
+            write_bytes(&dest, &bytes).map(|_| dest)
+        } else {
             crate::util::copy_media_file(&file.path, &dest)
                 .map(|_| dest)
                 .map_err(anyhow::Error::from)
@@ -975,6 +985,23 @@ fn find_ffmpeg() -> Option<PathBuf> {
     None
 }
 
+fn detect_wxgf_fps(data: &[u8]) -> u32 {
+    if data.len() >= 24 && data.starts_with(b"wxgf") {
+        for &offset in &[19, 23, 20, 22] {
+            if offset < data.len() {
+                let dur = data[offset] as u32;
+                if (40..=300).contains(&dur) {
+                    let fps = 1000 / dur;
+                    if (2..=25).contains(&fps) {
+                        return fps;
+                    }
+                }
+            }
+        }
+    }
+    10
+}
+
 fn transcode_wxgf_to_gif(data: &[u8]) -> Option<Vec<u8>> {
     let ffmpeg = find_ffmpeg()?;
     let nal_offset = data
@@ -985,6 +1012,7 @@ fn transcode_wxgf_to_gif(data: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let hevc_data = &data[nal_offset..];
+    let fps = detect_wxgf_fps(data).to_string();
     let temp_dir = tempfile::TempDir::new().ok()?;
     let in_path = temp_dir.path().join("input.hevc");
     let out_path = temp_dir.path().join("output.gif");
@@ -995,10 +1023,14 @@ fn transcode_wxgf_to_gif(data: &[u8]) -> Option<Vec<u8>> {
             "-loglevel",
             "error",
             "-y",
+            "-r",
+            &fps,
             "-f",
             "hevc",
             "-i",
             in_path.to_str()?,
+            "-r",
+            &fps,
             out_path.to_str()?,
         ])
         .status()
