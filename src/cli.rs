@@ -421,8 +421,8 @@ impl Cli {
                         bail!("output directory parent does not exist");
                     }
                 }
-                if dir.exists() {
-                    bail!("output directory already exists");
+                if dir.is_file() {
+                    bail!("output directory is an existing file, not a directory");
                 }
             }
         }

@@ -236,8 +236,8 @@ pub fn normalize_path(path: &Path) -> PathBuf {
 }
 
 pub fn ensure_output_dir(path: &Path) -> Result<()> {
-    if path.exists() {
-        bail!("output directory already exists");
+    if path.is_file() {
+        bail!("output directory is an existing file, not a directory");
     }
     if !path.is_absolute() {
         bail!("output directory must be an absolute path");
