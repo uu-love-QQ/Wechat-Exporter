@@ -40,6 +40,7 @@ pub fn export_message(
                     candidate_md5s: from_packed.clone(),
                     file_name: String::new(),
                     kind,
+                    cdn_url: crate::wechat::parse::extract_cdn_url(&raw.raw_content),
                 });
             }
         }
@@ -48,6 +49,9 @@ pub fn export_message(
             if !m.candidate_md5s.contains(&cand) && cand != m.md5 {
                 m.candidate_md5s.push(cand);
             }
+        }
+        if m.cdn_url.is_none() {
+            m.cdn_url = crate::wechat::parse::extract_cdn_url(&raw.raw_content);
         }
     }
 

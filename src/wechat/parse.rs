@@ -130,6 +130,31 @@ fn type_name_for_app(subtype: Option<i64>, content: &str) -> Option<&'static str
     }
 }
 
+pub fn extract_cdn_url(xml: &str) -> Option<String> {
+    for attr in ["cdnurl", "thumburl", "url"] {
+        for tag in ["emoji", "img", "appmsg", "appattach"] {
+            if let Some(val) = xml_attr(xml, tag, attr) {
+                let trimmed = val.replace("&amp;", "&").trim().to_string();
+                if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                    return Some(trimmed);
+                }
+            }
+        }
+    }
+    static CDN_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?:cdnurl|thumburl)\s*=\s*"([^"]+)""#).unwrap()
+    });
+    if let Some(caps) = CDN_REGEX.captures(xml) {
+        if let Some(m) = caps.get(1) {
+            let val = m.as_str().replace("&amp;", "&");
+            if val.starts_with("http://") || val.starts_with("https://") {
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
 fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef> {
     let kind = match base_type {
         3 => MediaKind::Image,
@@ -162,11 +187,13 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
     if md5.is_empty() && file_name.is_empty() {
         return None;
     }
+    let cdn_url = extract_cdn_url(xml);
     Some(MediaRef {
         md5,
         candidate_md5s: Vec::new(),
         file_name,
         kind,
+        cdn_url,
     })
 }
 

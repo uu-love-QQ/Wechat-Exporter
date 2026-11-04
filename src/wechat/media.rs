@@ -830,7 +830,37 @@ pub fn export_media(
         let Some(media) = message.media.clone() else {
             continue;
         };
+        let folder = media.kind.as_str();
         let Some(file) = index.find(&media) else {
+            // Fallback: attempt to complement missing media from CDN URL if present
+            if let Some(url) = media.cdn_url.as_deref() {
+                if let Some((mut data, mut ext)) = download_from_cdn(url) {
+                    if ext == "hevc" || data.starts_with(b"wxgf") {
+                        if let Some(gif_bytes) = transcode_wxgf_to_gif(&data) {
+                            data = gif_bytes;
+                            ext = "gif";
+                        }
+                    }
+                    let stem = if !media.md5.is_empty() {
+                        media.md5.clone()
+                    } else if !media.file_name.is_empty() {
+                        crate::util::sanitize_file_name(&media.file_name)
+                    } else {
+                        format!("cdn_{}", message.index)
+                    };
+                    let dest = media_dir.join(folder).join(format!("{stem}.{ext}"));
+                    if write_bytes(&dest, &data).is_ok() {
+                        let relative = dest
+                            .strip_prefix(output_dir)
+                            .unwrap_or(dest.as_path())
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        message.media_path = Some(relative);
+                        outcome.saved += 1;
+                        continue;
+                    }
+                }
+            }
             outcome.failed += 1;
             outcome.failures.push(format!(
                 "message {}: media not found (md5={}, name={})",
@@ -838,7 +868,6 @@ pub fn export_media(
             ));
             continue;
         };
-        let folder = media.kind.as_str();
         let is_dat = file
             .path
             .extension()
@@ -866,6 +895,16 @@ pub fn export_media(
             decrypted = Some((raw_bytes.clone(), detect_image_ext(&raw_bytes)));
         }
 
+        // If decrypted payload is wxgf / hevc (including in chat images), transcode to gif
+        if let Some((bytes, ext)) = &mut decrypted {
+            if *ext == "hevc" || bytes.starts_with(b"wxgf") {
+                if let Some(gif_bytes) = transcode_wxgf_to_gif(bytes) {
+                    *bytes = gif_bytes;
+                    *ext = "gif";
+                }
+            }
+        }
+
         let (ext, bytes_to_write): (String, Option<Vec<u8>>) = if let Some((bytes, ext)) = decrypted {
             (ext.to_string(), Some(bytes))
         } else {
@@ -881,17 +920,46 @@ pub fn export_media(
             (ext, None)
         };
 
-        let filename = if media.kind == MediaKind::File && !media.file_name.is_empty() {
+        let stem = if media.kind == MediaKind::File && !media.file_name.is_empty() {
             crate::util::sanitize_file_name(&media.file_name)
         } else if !media.md5.is_empty() {
-            format!("{}.{ext}", media.md5)
+            media.md5.clone()
         } else {
-            let stem = if !file.stem.is_empty() {
+            let s = if !file.stem.is_empty() {
                 &file.stem
             } else {
                 "media"
             };
-            format!("{}.{ext}", crate::util::sanitize_file_name(stem))
+            crate::util::sanitize_file_name(s)
+        };
+
+        // If a full animated GIF already exists for this stem, never downgrade or duplicate with a thumbnail
+        let gif_dest = media_dir.join(folder).join(format!("{stem}.gif"));
+        if gif_dest.exists() && (ext == "png" || ext == "jpg" || ext == "jpeg") {
+            let relative = gif_dest
+                .strip_prefix(output_dir)
+                .unwrap_or(gif_dest.as_path())
+                .to_string_lossy()
+                .replace('\\', "/");
+            message.media_path = Some(relative);
+            outcome.saved += 1;
+            continue;
+        }
+
+        // When saving a full GIF, clean up any obsolete static thumbnail with the same stem
+        if ext == "gif" {
+            for obsolete_ext in ["png", "jpg", "jpeg", "hevc"] {
+                let obsolete_file = media_dir.join(folder).join(format!("{stem}.{obsolete_ext}"));
+                if obsolete_file.exists() {
+                    let _ = fs::remove_file(obsolete_file);
+                }
+            }
+        }
+
+        let filename = if media.kind == MediaKind::File && !media.file_name.is_empty() {
+            crate::util::sanitize_file_name(&media.file_name)
+        } else {
+            format!("{stem}.{ext}")
         };
 
         let dest = media_dir.join(folder).join(&filename);
@@ -934,6 +1002,26 @@ fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     fs::write(path, bytes)?;
     Ok(())
+}
+
+fn download_from_cdn(url: &str) -> Option<(Vec<u8>, &'static str)> {
+    let resp = ureq::get(url)
+        .set("User-Agent", "MicroMessenger Client")
+        .timeout(std::time::Duration::from_secs(8))
+        .call()
+        .ok()?;
+    if resp.status() != 200 {
+        return None;
+    }
+    let mut reader = resp.into_reader();
+    let mut data = Vec::new();
+    use std::io::Read;
+    reader.read_to_end(&mut data).ok()?;
+    if data.is_empty() {
+        return None;
+    }
+    let ext = detect_image_ext(&data);
+    Some((data, ext))
 }
 
 fn detect_image_ext(bytes: &[u8]) -> &'static str {
