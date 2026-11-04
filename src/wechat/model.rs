@@ -49,6 +49,7 @@ pub struct MediaRef {
     pub file_name: String,
     pub kind: MediaKind,
     pub cdn_url: Option<String>,
+    pub aes_key: Option<[u8; 16]>,
 }
 
 /// Readable notes recovered from WeChat's compressed `<msgsource>` column.

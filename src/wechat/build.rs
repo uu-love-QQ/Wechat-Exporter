@@ -41,6 +41,7 @@ pub fn export_message(
                     file_name: String::new(),
                     kind,
                     cdn_url: crate::wechat::parse::extract_cdn_url(&raw.raw_content),
+                    aes_key: crate::wechat::parse::extract_aes_key(&raw.raw_content),
                 });
             }
         }
@@ -53,8 +54,10 @@ pub fn export_message(
         if m.cdn_url.is_none() {
             m.cdn_url = crate::wechat::parse::extract_cdn_url(&raw.raw_content);
         }
+        if m.aes_key.is_none() {
+            m.aes_key = crate::wechat::parse::extract_aes_key(&raw.raw_content);
+        }
     }
-
     let mut sender_id = raw.sender_id.clone();
     let (_, prefixed) = strip_sender_prefix(&raw.raw_content);
     if let Some((sender, _)) = prefixed {

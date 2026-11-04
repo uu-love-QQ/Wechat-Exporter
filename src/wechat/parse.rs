@@ -131,7 +131,8 @@ fn type_name_for_app(subtype: Option<i64>, content: &str) -> Option<&'static str
 }
 
 pub fn extract_cdn_url(xml: &str) -> Option<String> {
-    for attr in ["cdnurl", "thumburl", "url", "dataurl"] {
+    // Priority: externurl (original animated/high-res) > encrypturl > cdnurl > dataurl > url
+    for attr in ["externurl", "encrypturl", "cdnurl", "thumburl", "dataurl", "url"] {
         for tag in ["emoji", "img", "appmsg", "appattach"] {
             if let Some(val) = xml_attr(xml, tag, attr) {
                 let trimmed = val.replace("&amp;", "&").trim().to_string();
@@ -141,7 +142,7 @@ pub fn extract_cdn_url(xml: &str) -> Option<String> {
             }
         }
     }
-    for tag in ["cdnurl", "dataurl", "url", "thumburl"] {
+    for tag in ["externurl", "encrypturl", "cdnurl", "dataurl", "url", "thumburl"] {
         if let Some(val) = xml_value(xml, tag) {
             let trimmed = val.replace("&amp;", "&").trim().to_string();
             if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -150,13 +151,45 @@ pub fn extract_cdn_url(xml: &str) -> Option<String> {
         }
     }
     static CDN_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"(?:cdnurl|thumburl|dataurl)\s*=\s*"([^"]+)""#).unwrap()
+        regex::Regex::new(r#"(?:externurl|encrypturl|cdnurl|thumburl|dataurl)\s*=\s*"([^"]+)""#).unwrap()
     });
     if let Some(caps) = CDN_REGEX.captures(xml) {
         if let Some(m) = caps.get(1) {
             let val = m.as_str().replace("&amp;", "&");
             if val.starts_with("http://") || val.starts_with("https://") {
                 return Some(val);
+            }
+        }
+    }
+    None
+}
+
+pub fn extract_aes_key(xml: &str) -> Option<[u8; 16]> {
+    for tag in ["emoji", "img", "appattach", "appmsg"] {
+        if let Some(val) = xml_attr(xml, tag, "aeskey") {
+            let trimmed = val.trim();
+            if trimmed.len() == 32 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+                if let Ok(bytes) = hex::decode(trimmed) {
+                    if bytes.len() == 16 {
+                        let mut key = [0u8; 16];
+                        key.copy_from_slice(&bytes);
+                        return Some(key);
+                    }
+                }
+            }
+        }
+    }
+    static AESKEY_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"aeskey\s*=\s*"([0-9a-fA-F]{32})""#).unwrap()
+    });
+    if let Some(caps) = AESKEY_REGEX.captures(xml) {
+        if let Some(m) = caps.get(1) {
+            if let Ok(bytes) = hex::decode(m.as_str()) {
+                if bytes.len() == 16 {
+                    let mut key = [0u8; 16];
+                    key.copy_from_slice(&bytes);
+                    return Some(key);
+                }
             }
         }
     }
@@ -196,12 +229,14 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
         return None;
     }
     let cdn_url = extract_cdn_url(xml);
+    let aes_key = extract_aes_key(xml);
     Some(MediaRef {
         md5,
         candidate_md5s: Vec::new(),
         file_name,
         kind,
         cdn_url,
+        aes_key,
     })
 }
 

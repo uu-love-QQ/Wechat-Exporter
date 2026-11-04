@@ -834,7 +834,7 @@ pub fn export_media(
         let Some(file) = index.find(&media) else {
             // Fallback: attempt to complement missing media from CDN URL if present
             if let Some(url) = media.cdn_url.as_deref() {
-                if let Some((mut data, mut ext)) = download_from_cdn(url) {
+                if let Some((mut data, mut ext)) = download_from_cdn(url, media.aes_key.as_ref()) {
                     if ext == "hevc" || data.starts_with(b"wxgf") {
                         if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
                             data = img_bytes;
@@ -966,10 +966,37 @@ fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn download_from_cdn(url: &str) -> Option<(Vec<u8>, &'static str)> {
+fn decrypt_aes_cbc_key_iv(data: &[u8], key: &[u8; 16]) -> Option<Vec<u8>> {
+    if data.len() < 16 || data.len() % 16 != 0 {
+        return None;
+    }
+    let cipher = Aes128::new_from_slice(key).ok()?;
+    let mut previous = *key;
+    let mut out = Vec::with_capacity(data.len());
+    for chunk in data.chunks_exact(16) {
+        let mut current = [0u8; 16];
+        current.copy_from_slice(chunk);
+        let mut block = current;
+        let generic = aes::cipher::generic_array::GenericArray::from_mut_slice(&mut block);
+        cipher.decrypt_block(generic);
+        for i in 0..16 {
+            block[i] ^= previous[i];
+        }
+        previous = current;
+        out.extend_from_slice(&block);
+    }
+    let pad = *out.last()? as usize;
+    if pad == 0 || pad > 16 || pad > out.len() {
+        return None;
+    }
+    out.truncate(out.len() - pad);
+    Some(out)
+}
+
+fn download_from_cdn(url: &str, aes_key: Option<&[u8; 16]>) -> Option<(Vec<u8>, &'static str)> {
     let resp = ureq::get(url)
         .set("User-Agent", "MicroMessenger Client")
-        .timeout(std::time::Duration::from_secs(8))
+        .timeout(std::time::Duration::from_secs(10))
         .call()
         .ok()?;
     if resp.status() != 200 {
@@ -982,8 +1009,14 @@ fn download_from_cdn(url: &str) -> Option<(Vec<u8>, &'static str)> {
     if data.is_empty() {
         return None;
     }
+    if !is_image_header(&data) {
+        if let Some(key) = aes_key {
+            if let Some(decrypted) = decrypt_aes_cbc_key_iv(&data, key) {
+                data = decrypted;
+            }
+        }
+    }
     let mut ext = detect_image_ext(&data);
-    let mut data = data;
     if ext == "hevc" || data.starts_with(b"wxgf") {
         if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
             data = img_bytes;
