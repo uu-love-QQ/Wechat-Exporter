@@ -836,19 +836,19 @@ pub fn export_media(
             if let Some(url) = media.cdn_url.as_deref() {
                 if let Some((mut data, mut ext)) = download_from_cdn(url) {
                     if ext == "hevc" || data.starts_with(b"wxgf") {
-                        if let Some(gif_bytes) = transcode_wxgf_to_gif(&data) {
-                            data = gif_bytes;
-                            ext = "gif";
+                        if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
+                            data = img_bytes;
+                            ext = img_ext;
                         }
                     }
-                    let stem = if !media.md5.is_empty() {
-                        media.md5.clone()
-                    } else if !media.file_name.is_empty() {
+                    let filename = if media.kind == MediaKind::File && !media.file_name.is_empty() {
                         crate::util::sanitize_file_name(&media.file_name)
                     } else {
-                        format!("cdn_{}", message.index)
+                        use sha2::{Digest, Sha256};
+                        let digest = hex::encode(Sha256::digest(&data));
+                        format!("{digest}.{ext}")
                     };
-                    let dest = media_dir.join(folder).join(format!("{stem}.{ext}"));
+                    let dest = media_dir.join(folder).join(&filename);
                     if write_bytes(&dest, &data).is_ok() {
                         let relative = dest
                             .strip_prefix(output_dir)
@@ -895,18 +895,18 @@ pub fn export_media(
             decrypted = Some((raw_bytes.clone(), detect_image_ext(&raw_bytes)));
         }
 
-        // If decrypted payload is wxgf / hevc (including in chat images), transcode to gif
+        // If decrypted payload is wxgf / hevc (including in chat images), transcode appropriately
         if let Some((bytes, ext)) = &mut decrypted {
             if *ext == "hevc" || bytes.starts_with(b"wxgf") {
-                if let Some(gif_bytes) = transcode_wxgf_to_gif(bytes) {
-                    *bytes = gif_bytes;
-                    *ext = "gif";
+                if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(bytes) {
+                    *bytes = img_bytes;
+                    *ext = img_ext;
                 }
             }
         }
 
-        let (ext, bytes_to_write): (String, Option<Vec<u8>>) = if let Some((bytes, ext)) = decrypted {
-            (ext.to_string(), Some(bytes))
+        let (ext, bytes_to_write): (String, Vec<u8>) = if let Some((bytes, ext)) = decrypted {
+            (ext.to_string(), bytes)
         } else {
             let mut ext = file
                 .path
@@ -917,60 +917,22 @@ pub fn export_media(
             if ext.eq_ignore_ascii_case("thumb") {
                 ext = "jpg".to_string();
             }
-            (ext, None)
+            (ext, raw_bytes)
         };
-
-        let stem = if media.kind == MediaKind::File && !media.file_name.is_empty() {
-            crate::util::sanitize_file_name(&media.file_name)
-        } else if !media.md5.is_empty() {
-            media.md5.clone()
-        } else {
-            let s = if !file.stem.is_empty() {
-                &file.stem
-            } else {
-                "media"
-            };
-            crate::util::sanitize_file_name(s)
-        };
-
-        // If a full animated GIF already exists for this stem, never downgrade or duplicate with a thumbnail
-        let gif_dest = media_dir.join(folder).join(format!("{stem}.gif"));
-        if gif_dest.exists() && (ext == "png" || ext == "jpg" || ext == "jpeg") {
-            let relative = gif_dest
-                .strip_prefix(output_dir)
-                .unwrap_or(gif_dest.as_path())
-                .to_string_lossy()
-                .replace('\\', "/");
-            message.media_path = Some(relative);
-            outcome.saved += 1;
-            continue;
-        }
-
-        // When saving a full GIF, clean up any obsolete static thumbnail with the same stem
-        if ext == "gif" {
-            for obsolete_ext in ["png", "jpg", "jpeg", "hevc"] {
-                let obsolete_file = media_dir.join(folder).join(format!("{stem}.{obsolete_ext}"));
-                if obsolete_file.exists() {
-                    let _ = fs::remove_file(obsolete_file);
-                }
-            }
-        }
 
         let filename = if media.kind == MediaKind::File && !media.file_name.is_empty() {
             crate::util::sanitize_file_name(&media.file_name)
         } else {
-            format!("{stem}.{ext}")
+            use sha2::{Digest, Sha256};
+            let digest = hex::encode(Sha256::digest(&bytes_to_write));
+            format!("{digest}.{ext}")
         };
 
         let dest = media_dir.join(folder).join(&filename);
         let result = if dest.exists() {
             Ok(dest)
-        } else if let Some(bytes) = bytes_to_write {
-            write_bytes(&dest, &bytes).map(|_| dest)
         } else {
-            crate::util::copy_media_file(&file.path, &dest)
-                .map(|_| dest)
-                .map_err(anyhow::Error::from)
+            write_bytes(&dest, &bytes_to_write).map(|_| dest)
         };
         match result {
             Ok(dest) => {
@@ -1020,7 +982,14 @@ fn download_from_cdn(url: &str) -> Option<(Vec<u8>, &'static str)> {
     if data.is_empty() {
         return None;
     }
-    let ext = detect_image_ext(&data);
+    let mut ext = detect_image_ext(&data);
+    let mut data = data;
+    if ext == "hevc" || data.starts_with(b"wxgf") {
+        if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
+            data = img_bytes;
+            ext = img_ext;
+        }
+    }
     Some((data, ext))
 }
 
@@ -1100,7 +1069,7 @@ fn detect_wxgf_fps(data: &[u8]) -> u32 {
     10
 }
 
-fn transcode_wxgf_to_gif(data: &[u8]) -> Option<Vec<u8>> {
+fn transcode_wxgf_to_image(data: &[u8]) -> Option<(Vec<u8>, &'static str)> {
     let ffmpeg = find_ffmpeg()?;
     let nal_offset = data
         .windows(4)
@@ -1110,34 +1079,64 @@ fn transcode_wxgf_to_gif(data: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let hevc_data = &data[nal_offset..];
-    let fps = detect_wxgf_fps(data).to_string();
+    let frames = if data.len() >= 14 && data.starts_with(b"wxgf") {
+        u16::from_le_bytes([data[12], data[13]])
+    } else {
+        0
+    };
     let temp_dir = tempfile::TempDir::new().ok()?;
     let in_path = temp_dir.path().join("input.hevc");
-    let out_path = temp_dir.path().join("output.gif");
     fs::write(&in_path, hevc_data).ok()?;
-    let status = std::process::Command::new(ffmpeg)
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "fatal",
-            "-y",
-            "-r",
-            &fps,
-            "-f",
-            "hevc",
-            "-i",
-            in_path.to_str()?,
-            "-r",
-            &fps,
-            out_path.to_str()?,
-        ])
-        .status()
-        .ok()?;
-    if status.success() && out_path.exists() {
-        fs::read(out_path).ok()
+
+    if frames > 1 {
+        let fps = detect_wxgf_fps(data).to_string();
+        let out_path = temp_dir.path().join("output.gif");
+        let status = std::process::Command::new(ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "fatal",
+                "-y",
+                "-r",
+                &fps,
+                "-f",
+                "hevc",
+                "-i",
+                in_path.to_str()?,
+                "-r",
+                &fps,
+                out_path.to_str()?,
+            ])
+            .status()
+            .ok()?;
+        if status.success() && out_path.exists() {
+            return Some((fs::read(out_path).ok()?, "gif"));
+        }
     } else {
-        None
+        let out_path = temp_dir.path().join("output.jpg");
+        let status = std::process::Command::new(ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "fatal",
+                "-y",
+                "-f",
+                "hevc",
+                "-i",
+                in_path.to_str()?,
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                out_path.to_str()?,
+            ])
+            .status()
+            .ok()?;
+        if status.success() && out_path.exists() {
+            return Some((fs::read(out_path).ok()?, "jpg"));
+        }
     }
+    None
 }
 
 /// AES-128-CBC (key == IV) + PKCS7 for WeChat emoticon `Thumb` / `Persist`
@@ -1172,8 +1171,8 @@ fn decrypt_emoticon_bytes(data: &[u8], key: &[u8; 16]) -> Option<(Vec<u8>, &'sta
     if is_image_header(&out) {
         let ext = detect_image_ext(&out);
         if ext == "hevc" {
-            if let Some(gif_bytes) = transcode_wxgf_to_gif(&out) {
-                return Some((gif_bytes, "gif"));
+            if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&out) {
+                return Some((img_bytes, img_ext));
             }
             static FFMPEG_WARNED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
