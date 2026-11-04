@@ -131,7 +131,7 @@ fn type_name_for_app(subtype: Option<i64>, content: &str) -> Option<&'static str
 }
 
 pub fn extract_cdn_url(xml: &str) -> Option<String> {
-    for attr in ["cdnurl", "thumburl", "url"] {
+    for attr in ["cdnurl", "thumburl", "url", "dataurl"] {
         for tag in ["emoji", "img", "appmsg", "appattach"] {
             if let Some(val) = xml_attr(xml, tag, attr) {
                 let trimmed = val.replace("&amp;", "&").trim().to_string();
@@ -141,8 +141,16 @@ pub fn extract_cdn_url(xml: &str) -> Option<String> {
             }
         }
     }
+    for tag in ["cdnurl", "dataurl", "url", "thumburl"] {
+        if let Some(val) = xml_value(xml, tag) {
+            let trimmed = val.replace("&amp;", "&").trim().to_string();
+            if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                return Some(trimmed);
+            }
+        }
+    }
     static CDN_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"(?:cdnurl|thumburl)\s*=\s*"([^"]+)""#).unwrap()
+        regex::Regex::new(r#"(?:cdnurl|thumburl|dataurl)\s*=\s*"([^"]+)""#).unwrap()
     });
     if let Some(caps) = CDN_REGEX.captures(xml) {
         if let Some(m) = caps.get(1) {
