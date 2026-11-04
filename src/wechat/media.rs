@@ -40,6 +40,14 @@ impl MediaIndex {
         };
         if let Some(root) = account_root {
             let mut stack = vec![(root.to_path_buf(), 0usize)];
+            if let Some(parent) = root.parent() {
+                for sibling in ["FileStorage", "All Users"] {
+                    let extra = parent.join(sibling);
+                    if extra.is_dir() {
+                        stack.push((extra, 0usize));
+                    }
+                }
+            }
             while let Some((dir, depth)) = stack.pop() {
                 if depth > 12 || index.files.len() > 1_000_000 {
                     continue;
@@ -938,6 +946,85 @@ fn is_strict_image_header(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47])
 }
 
+fn find_ffmpeg() -> Option<PathBuf> {
+    if let Ok(custom) = std::env::var("ALPHA_FFMPEG_PATH") {
+        let p = PathBuf::from(custom);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for candidate in [
+                dir.join("ffmpeg.exe"),
+                dir.join("ffmpeg"),
+                dir.join("resources").join("bin").join("ffmpeg.exe"),
+                dir.join("bin").join("ffmpeg.exe"),
+            ] {
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+            if let Some(parent) = dir.parent() {
+                for candidate in [
+                    parent.join("resources").join("bin").join("ffmpeg.exe"),
+                    parent.join("ffmpeg.exe"),
+                ] {
+                    if candidate.exists() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+    if std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        return Some(PathBuf::from("ffmpeg"));
+    }
+    None
+}
+
+fn transcode_wxgf_to_gif(data: &[u8]) -> Option<Vec<u8>> {
+    let ffmpeg = find_ffmpeg()?;
+    let nal_offset = data
+        .windows(4)
+        .position(|w| w == [0, 0, 0, 1])
+        .unwrap_or(26);
+    if nal_offset >= data.len() {
+        return None;
+    }
+    let hevc_data = &data[nal_offset..];
+    let temp_dir = tempfile::TempDir::new().ok()?;
+    let in_path = temp_dir.path().join("input.hevc");
+    let out_path = temp_dir.path().join("output.gif");
+    fs::write(&in_path, hevc_data).ok()?;
+    let status = std::process::Command::new(ffmpeg)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "hevc",
+            "-i",
+            in_path.to_str()?,
+            out_path.to_str()?,
+        ])
+        .status()
+        .ok()?;
+    if status.success() && out_path.exists() {
+        fs::read(out_path).ok()
+    } else {
+        None
+    }
+}
+
 /// AES-128-CBC (key == IV) + PKCS7 for WeChat emoticon `Thumb` / `Persist`
 /// files, matching the account seed derivation.
 fn decrypt_emoticon_bytes(data: &[u8], key: &[u8; 16]) -> Option<(Vec<u8>, &'static str)> {
@@ -969,6 +1056,11 @@ fn decrypt_emoticon_bytes(data: &[u8], key: &[u8; 16]) -> Option<(Vec<u8>, &'sta
     out.truncate(out.len() - pad);
     if is_image_header(&out) {
         let ext = detect_image_ext(&out);
+        if ext == "hevc" {
+            if let Some(gif_bytes) = transcode_wxgf_to_gif(&out) {
+                return Some((gif_bytes, "gif"));
+            }
+        }
         Some((out, ext))
     } else {
         None
