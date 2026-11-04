@@ -760,14 +760,19 @@ pub fn resolve_image_keys(
     let emoticon_samples: Vec<[u8; 16]> =
         emoticon_candidates.into_iter().map(|(_, block)| block).collect();
 
-    if image_key.is_none() {
-        if let Some((seed, key, xor_key)) = *IMAGE_SEED_CACHE.lock().unwrap() {
-            image_seed = Some(seed);
+    if let Some((seed, key, xor_key)) = *IMAGE_SEED_CACHE.lock().unwrap() {
+        if image_key.is_none() {
             image_key = Some(key);
+        }
+        if image_xor_key.is_none() {
             image_xor_key = Some(xor_key);
         }
+        if image_seed.is_none() {
+            image_seed = Some(seed);
+        }
     }
-    if image_key.is_none() && !v2_samples.is_empty() {
+    let need_scan = image_key.is_none() || image_xor_key.is_none() || image_seed.is_none();
+    if need_scan && !v2_samples.is_empty() {
         eprintln!(
             "[i] 使用 {} 个 V2 图片样本交叉确认图片种子",
             v2_samples.len()
@@ -791,7 +796,7 @@ pub fn resolve_image_keys(
             *IMAGE_SEED_CACHE.lock().unwrap() = Some((seed, key, xor_key));
         }
     }
-    if image_key.is_none() && !emoticon_samples.is_empty() {
+    if (image_key.is_none() || image_xor_key.is_none() || image_seed.is_none()) && !emoticon_samples.is_empty() {
         eprintln!(
             "[i] 使用 {} 个表情样本交叉确认图片种子",
             emoticon_samples.len()
@@ -1354,11 +1359,15 @@ fn decrypt_dat_aes_xor(data: &[u8], key: &[u8; 16], xor_key: Option<u8>) -> Resu
         let generic = aes::cipher::generic_array::GenericArray::from_mut_slice(chunk);
         cipher.decrypt_block(generic);
     }
-    let pad = *block.last().unwrap_or(&0) as usize;
-    if pad == 0 || pad > 16 || pad > block.len() {
-        bail!("invalid .dat AES padding");
+    // The header explicitly declares the exact plaintext aes_size; truncate directly to it
+    if aes_size <= block.len() {
+        block.truncate(aes_size);
+    } else {
+        let pad = *block.last().unwrap_or(&0) as usize;
+        if pad > 0 && pad <= 16 && pad <= block.len() {
+            block.truncate(block.len() - pad);
+        }
     }
-    block.truncate(block.len() - pad);
 
     let raw_end = data
         .len()
@@ -1375,13 +1384,13 @@ fn decrypt_dat_aes_xor(data: &[u8], key: &[u8; 16], xor_key: Option<u8>) -> Resu
             let k1 = xor[xor.len() - 2] ^ 0xFF;
             let k2 = xor[xor.len() - 1] ^ 0xD9;
             if k1 == k2 {
-                k1
-            } else {
-                0x88
+                return k1;
             }
-        } else {
-            0x88
         }
+        if let Some((_, _, k)) = *IMAGE_SEED_CACHE.lock().unwrap() {
+            return k;
+        }
+        0x14
     });
 
     let mut out = Vec::with_capacity(block.len() + raw.len() + xor.len());
@@ -1499,7 +1508,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("x.dat");
         std::fs::write(&path, &data).unwrap();
-        let (bytes, ext) = decrypt_dat_file(&path, Some(key), None).unwrap();
+        let (bytes, ext) = decrypt_dat_file(&path, Some(key), Some(0x88)).unwrap();
         assert_eq!(ext, "png");
         let mut expected = png.to_vec();
         expected.extend_from_slice(&tail);
