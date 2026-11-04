@@ -31,10 +31,11 @@ pub struct MediaIndex {
     files: Vec<IndexedFile>,
     by_name: HashMap<String, Vec<usize>>,
     by_md5: HashMap<String, Vec<usize>>,
+    persist_roots: Vec<PathBuf>,
 }
 
-fn is_md5_token(value: &str) -> bool {
-    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+fn is_hash_token(value: &str) -> bool {
+    (value.len() == 32 || value.len() == 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 impl MediaIndex {
@@ -43,8 +44,21 @@ impl MediaIndex {
             files: Vec::new(),
             by_name: HashMap::new(),
             by_md5: HashMap::new(),
+            persist_roots: Vec::new(),
         };
         if let Some(root) = account_root {
+            for base in [root.to_path_buf()] {
+                let persist = base.join("business").join("emoticon").join("Persist");
+                if persist.is_dir() {
+                    index.persist_roots.push(persist);
+                }
+            }
+            if let Some(parent) = root.parent() {
+                let persist = parent.join("business").join("emoticon").join("Persist");
+                if persist.is_dir() {
+                    index.persist_roots.push(persist);
+                }
+            }
             let mut stack = vec![(root.to_path_buf(), 0usize)];
             if let Some(parent) = root.parent() {
                 for sibling in ["FileStorage", "All Users"] {
@@ -91,11 +105,11 @@ impl MediaIndex {
                         index.by_name.entry(lower_name.clone()).or_default().push(idx);
                         let mut tokens = Vec::new();
                         for token in stem.split(['_', '-', '.']) {
-                            if is_md5_token(token) {
+                            if is_hash_token(token) {
                                 tokens.push(token.to_string());
                             }
                         }
-                        if is_md5_token(&stem) {
+                        if is_hash_token(&stem) {
                             tokens.push(stem.clone());
                         }
                         for token in tokens {
@@ -115,40 +129,57 @@ impl MediaIndex {
     fn find(&self, media: &super::model::MediaRef) -> Option<&IndexedFile> {
         let all_md5s = std::iter::once(&media.md5)
             .chain(media.candidate_md5s.iter())
-            .filter(|s| !s.is_empty());
-        for md5_candidate in all_md5s {
-            let lower = md5_candidate.to_ascii_lowercase();
-            if let Some(indices) = self.by_md5.get(&lower) {
-                if let Some(index) = self.pick(indices, media.kind) {
-                    return self.files.get(index);
-                }
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+
+        // Collect every candidate index from every bucket, then score them all at once.
+        // Returning the first bucket hit would keep the low-res Thumb when the same
+        // asset also exists at higher resolution.
+        let mut indices: Vec<usize> = Vec::new();
+        for lower in &all_md5s {
+            if let Some(list) = self.by_md5.get(lower) {
+                indices.extend(list.iter().copied());
             }
-            // Some builds store an uppercase or truncated md5 in the XML.
             if lower.len() >= 16 {
-                for (token, indices) in &self.by_md5 {
-                    if token.starts_with(&lower) || lower.starts_with(token.as_str()) {
-                        if let Some(index) = self.pick(indices, media.kind) {
-                            return self.files.get(index);
-                        }
+                for (token, list) in &self.by_md5 {
+                    if token.starts_with(lower.as_str()) || lower.starts_with(token.as_str()) {
+                        indices.extend(list.iter().copied());
                     }
                 }
             }
         }
+
         if !media.file_name.is_empty() {
             let wanted = media.file_name.to_ascii_lowercase();
-            if let Some(indices) = self.by_name.get(&wanted) {
-                if let Some(index) = self.pick(indices, media.kind) {
-                    return self.files.get(index);
-                }
+            if let Some(list) = self.by_name.get(&wanted) {
+                indices.extend(list.iter().copied());
             }
             let stem = Path::new(&wanted)
                 .file_stem()
                 .and_then(|value| value.to_str())
                 .unwrap_or("");
-            if let Some(indices) = self.by_name.get(&format!("{stem}.dat")) {
-                if let Some(index) = self.pick(indices, media.kind) {
-                    return self.files.get(index);
-                }
+            if let Some(list) = self.by_name.get(&format!("{stem}.dat")) {
+                indices.extend(list.iter().copied());
+            }
+        }
+
+        indices.sort_unstable();
+        indices.dedup();
+        self.pick(&indices, media.kind).and_then(|i| self.files.get(i))
+    }
+
+    /// Full-res custom emoticons are stored at Persist/<sha[0..2]>/<sha256-of-plaintext>.
+    /// The low-res Thumb decrypts to that same plaintext, so its hash is the lookup key.
+    fn find_persist_by_sha256(&self, sha256: &str) -> Option<PathBuf> {
+        let sha = sha256.to_ascii_lowercase();
+        if sha.len() != 64 {
+            return None;
+        }
+        for root in &self.persist_roots {
+            let candidate = root.join(&sha[..2]).join(&sha);
+            if candidate.is_file() {
+                return Some(candidate);
             }
         }
         None
@@ -165,7 +196,7 @@ impl MediaIndex {
                 .unwrap_or("")
                 .to_ascii_lowercase();
             let size = fs::metadata(&file.path).map(|m| m.len()).unwrap_or(0);
-            let score = match kind {
+            let base_score = match kind {
                 MediaKind::Image => match ext.as_str() {
                     "jpg" | "jpeg" | "png" | "webp" => 20,
                     "gif" => 15,
@@ -183,9 +214,12 @@ impl MediaIndex {
                     _ => 1,
                 },
                 MediaKind::Emoji => match ext.as_str() {
-                    "gif" => 30, // Strongly prefer genuine GIF animations over static preview PNGs!
+                    "gif" => 30,
                     "png" | "jpg" | "jpeg" | "webp" => 15,
-                    "dat" => 10,
+                    "bin" => 8,
+                    "dat" => 6,
+                    "thumb" => 2,
+                    "" => 15, // extension-less files under Persist are full originals
                     _ => 1,
                 },
                 MediaKind::File => {
@@ -196,6 +230,26 @@ impl MediaIndex {
                     }
                 }
             };
+            // Directory-aware weighting: originals in Persist beat thumbnails and
+            // in-chat Bubble previews even when both are extension-less.
+            let path_lower = file.path.to_string_lossy().to_ascii_lowercase();
+            let mut dir_score = 0;
+            if path_lower.contains("\\persist\\") || path_lower.contains("/persist/") {
+                dir_score += 100;
+            }
+            if path_lower.contains("\\thumb\\") || path_lower.contains("/thumb/") {
+                dir_score -= 40;
+            }
+            if path_lower.contains("\\bubble\\") || path_lower.contains("/bubble/") {
+                dir_score -= 30;
+            }
+            if path_lower.ends_with("_t.dat") || path_lower.ends_with("_b.dat") {
+                dir_score -= 20;
+            }
+            if path_lower.contains("_h.dat") {
+                dir_score += 30;
+            }
+            let score = (base_score + dir_score).max(1);
             // Prefer higher format score; on tie, prefer larger file size (original over thumbnail)
             if best
                 .map(|(_, best_score, best_size)| score > best_score || (score == best_score && size > best_size))
@@ -958,6 +1012,42 @@ pub fn export_media(
             decrypted = Some((raw_bytes.clone(), detect_image_ext(&raw_bytes)));
         }
 
+        // Thumb -> full original upgrade: Persist/<sha[0..2]>/<sha256-of-plaintext>.
+        // WeChat stores the full-res custom emoticon under the low-res preview's
+        // plaintext hash, so the decrypted Thumb gives us the exact lookup key.
+        if media.kind == MediaKind::Emoji {
+            if let Some((bytes, _)) = decrypted.as_ref() {
+                use sha2::{Digest, Sha256};
+                let digest = hex::encode(Sha256::digest(bytes));
+                if let Some(persist_path) = index.find_persist_by_sha256(&digest) {
+                    let persist_bytes = fs::read(&persist_path).unwrap_or_default();
+                    let mut upgraded = None;
+                    for key in [media.aes_key.as_ref(), emoticon_key.as_ref()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some((pbytes, pext)) = decrypt_emoticon_bytes(&persist_bytes, key) {
+                            upgraded = Some((pbytes, pext));
+                            break;
+                        }
+                    }
+                    if let Some((pbytes, pext)) = upgraded {
+                        if pbytes != *bytes {
+                            if debug {
+                                eprintln!(
+                                    "      • 命中 Persist 原图: {} ({} 字节 -> {} 字节)",
+                                    persist_path.display(),
+                                    bytes.len(),
+                                    pbytes.len()
+                                );
+                            }
+                            decrypted = Some((pbytes, pext));
+                        }
+                    }
+                }
+            }
+        }
+
         if debug && is_target_media {
             eprintln!("  [3] 解密与转码:");
             if media.kind == MediaKind::Emoji {
@@ -1547,6 +1637,64 @@ mod tests {
         let mut expected = png.to_vec();
         expected.extend_from_slice(&tail);
         assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn finds_full_emoticon_in_persist_by_plaintext_sha256() {
+        let root = tempfile::TempDir::new().unwrap();
+        let persist = root
+            .path()
+            .join("business")
+            .join("emoticon")
+            .join("Persist")
+            .join("c2");
+        std::fs::create_dir_all(&persist).unwrap();
+        let sha = "c2a92741dae62b23cadd16c30fc053ac9043a37900e78f635bf41ebb9e3b965d";
+        let full = persist.join(sha);
+        std::fs::write(&full, b"full-emoticon-bytes").unwrap();
+
+        let index = MediaIndex::build(Some(root.path()));
+        assert_eq!(index.find_persist_by_sha256(sha), Some(full));
+        assert_eq!(
+            index.find_persist_by_sha256("00000000000000000000000000000000000000000000000000000000000000ff"),
+            None
+        );
+    }
+
+    #[test]
+    fn prefers_persist_original_over_thumb_for_same_md5() {
+        let root = tempfile::TempDir::new().unwrap();
+        let thumb_dir = root
+            .path()
+            .join("business")
+            .join("emoticon")
+            .join("Thumb")
+            .join("b1");
+        let persist_dir = root
+            .path()
+            .join("business")
+            .join("emoticon")
+            .join("Persist")
+            .join("b1");
+        std::fs::create_dir_all(&thumb_dir).unwrap();
+        std::fs::create_dir_all(&persist_dir).unwrap();
+        let md5 = "b1fc57f4bf68c556fd0f30b417857e3a";
+        let thumb = thumb_dir.join(format!("{md5}.thumb"));
+        let full = persist_dir.join(md5);
+        std::fs::write(&thumb, vec![0u8; 4096]).unwrap();
+        std::fs::write(&full, vec![0u8; 90546]).unwrap();
+
+        let index = MediaIndex::build(Some(root.path()));
+        let media = super::super::model::MediaRef {
+            md5: md5.to_string(),
+            candidate_md5s: Vec::new(),
+            file_name: String::new(),
+            kind: MediaKind::Emoji,
+            cdn_url: None,
+            aes_key: None,
+        };
+        let found = index.find(&media).expect("media should resolve");
+        assert_eq!(found.path, full, "Persist original must beat Thumb");
     }
 
     #[test]

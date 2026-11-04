@@ -238,9 +238,33 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
     }
     let cdn_url = extract_cdn_url(xml);
     let aes_key = extract_aes_key(xml);
+    let mut candidate_md5s = Vec::new();
+    for attr in ["externmd5", "encryptmd5", "androidmd5", "s60v3md5", "s60v5md5", "rawmd5", "midmd5", "hdmd5"] {
+        for tag in ["emoji", "img", "appmsg", "appattach"] {
+            if let Some(val) = xml_attr(xml, tag, attr) {
+                let lower = val.trim().to_ascii_lowercase();
+                if (lower.len() == 32 || lower.len() == 64) && lower.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    if !candidate_md5s.contains(&lower) && lower != md5 {
+                        candidate_md5s.push(lower);
+                    }
+                }
+            }
+        }
+    }
+    static M_PARAM_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"[?&]m=([0-9a-fA-F]{32})"#).unwrap()
+    });
+    for caps in M_PARAM_REGEX.captures_iter(xml) {
+        if let Some(m) = caps.get(1) {
+            let lower = m.as_str().to_ascii_lowercase();
+            if !candidate_md5s.contains(&lower) && lower != md5 {
+                candidate_md5s.push(lower);
+            }
+        }
+    }
     Some(MediaRef {
         md5,
-        candidate_md5s: Vec::new(),
+        candidate_md5s,
         file_name,
         kind,
         cdn_url,
