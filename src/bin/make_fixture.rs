@@ -365,7 +365,7 @@ fn main() -> Result<()> {
     let out = std::env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("alpha-fixture"));
+        .unwrap_or_else(|| std::env::temp_dir().join("wechat-fixture"));
     if out.exists() {
         fs::remove_dir_all(&out)?;
     }

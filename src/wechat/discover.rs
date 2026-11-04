@@ -287,7 +287,7 @@ pub fn candidate_search_roots() -> Vec<PathBuf> {
     }
 
     // 6. Temporary fixture path for tests
-    let fixture_root = PathBuf::from("/tmp/alpha-fixture/xwechat_files");
+    let fixture_root = PathBuf::from("/tmp/wechat-fixture/xwechat_files");
     if fixture_root.exists() {
         roots.push(fixture_root);
     }

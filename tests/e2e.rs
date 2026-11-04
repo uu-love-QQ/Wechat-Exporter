@@ -11,7 +11,7 @@ const ALICE: &str = "wxid_alice";
 fn fixture() -> (TempDir, PathBuf) {
     let temp = TempDir::new().expect("temp dir");
     let root = temp.path().join("data");
-    let status = Command::new(env!("CARGO_BIN_EXE_alpha-fixture"))
+    let status = Command::new(env!("CARGO_BIN_EXE_wechat-fixture"))
         .arg(&root)
         .status()
         .expect("run fixture");
@@ -24,7 +24,7 @@ fn fixture() -> (TempDir, PathBuf) {
 }
 
 fn run_with_key(args: &[&str]) -> (i32, String, String) {
-    let mut output = Command::new(env!("CARGO_BIN_EXE_alpha-cli"))
+    let mut output = Command::new(env!("CARGO_BIN_EXE_wechat-exporter"))
         .args(["--key", KEY])
         .args(args)
         .output()
@@ -184,7 +184,7 @@ fn auto_detects_database_and_lists() {
     let (_temp, source) = fixture();
     // Set XWECHAT_FILES_DIR to point to parent of account
     let parent = source.parent().unwrap().parent().unwrap();
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_alpha-cli"));
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wechat-exporter"));
     cmd.env("XWECHAT_FILES_DIR", parent)
         .args(["--key", KEY, "--list-conversations", "--page-size", "10"]);
     let output = cmd.output().expect("run alpha-cli auto-detect");
@@ -198,7 +198,7 @@ fn auto_detects_database_and_lists() {
 fn detects_databases_flag() {
     let (_temp, source) = fixture();
     let parent = source.parent().unwrap().parent().unwrap();
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_alpha-cli"));
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wechat-exporter"));
     cmd.env("XWECHAT_FILES_DIR", parent)
         .arg("--detect-databases");
     let output = cmd.output().expect("run alpha-cli -D");

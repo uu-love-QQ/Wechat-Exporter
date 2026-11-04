@@ -14,11 +14,7 @@ name = "wechat-exporter"
 path = "src/bin/wechat_exporter.rs"
 
 [[bin]]
-name = "alpha-cli"
-path = "src/bin/alpha_cli.rs"
-
-[[bin]]
-name = "alpha-fixture"
+name = "wechat-fixture"
 path = "src/bin/make_fixture.rs"
 
 [dependencies]
