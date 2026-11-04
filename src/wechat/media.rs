@@ -832,6 +832,7 @@ pub fn export_media(
     output_dir: &Path,
     image_key: Option<[u8; 16]>,
     account_id: &str,
+    debug: bool,
 ) -> MediaOutcome {
     let (image_key, image_xor_key, image_seed) = resolve_image_keys(index, account_id, image_key);
     let emoticon_key = image_seed.and_then(|seed| emoticon_key_from_seed(seed, account_id));
@@ -846,9 +847,36 @@ pub fn export_media(
             continue;
         };
         let folder = media.kind.as_str();
+        let is_target_media = media.kind == MediaKind::Image || media.kind == MediaKind::Emoji || media.kind == MediaKind::File;
+        if debug && is_target_media {
+            eprintln!("\n--------------------------------------------------------------------------------");
+            eprintln!(
+                "[DEBUG] 消息 #{:04} [{}] (LocalId: {}, 发送者: {})",
+                message.index, message.type_name, message.local_id, message.sender_name
+            );
+            eprintln!("  [1] 原始属性与哈希:");
+            if !media.md5.is_empty() {
+                eprintln!("      • 消息主哈希 (XML MD5): {}", media.md5);
+            }
+            if !media.candidate_md5s.is_empty() {
+                eprintln!("      • 候选哈希列表 (原图/中图/缩略图): {:?}", media.candidate_md5s);
+            }
+            if let Some(url) = media.cdn_url.as_deref() {
+                eprintln!("      • 远端 CDN 链接: {}", url);
+            }
+            if let Some(key) = media.aes_key {
+                eprintln!("      • 消息独立 AES Key: {}", hex::encode(key));
+            }
+        }
         let Some(file) = index.find(&media) else {
+            if debug && is_target_media {
+                eprintln!("  [2] 本地寻址: 未在本地数据库/附件缓存中命中对应文件");
+            }
             // Fallback: attempt to complement missing media from CDN URL if present
             if let Some(url) = media.cdn_url.as_deref() {
+                if debug && is_target_media {
+                    eprintln!("  [3] CDN 远程补齐: 发起网络请求拉取: {}", url);
+                }
                 if let Some((mut data, mut ext)) = download_from_cdn(url, media.aes_key.as_ref()) {
                     if ext == "hevc" || data.starts_with(b"wxgf") {
                         if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
@@ -865,6 +893,9 @@ pub fn export_media(
                     };
                     let dest = media_dir.join(folder).join(&filename);
                     if write_bytes(&dest, &data).is_ok() {
+                        if debug && is_target_media {
+                            eprintln!("      • 远程补齐成功: 拉取 {} 字节，落盘至 {}", data.len(), dest.display());
+                        }
                         let relative = dest
                             .strip_prefix(output_dir)
                             .unwrap_or(dest.as_path())
@@ -883,6 +914,13 @@ pub fn export_media(
             ));
             continue;
         };
+        if debug && is_target_media {
+            let meta_size = fs::metadata(&file.path).map(|m| m.len()).unwrap_or(0);
+            eprintln!("  [2] 本地寻址命中:");
+            eprintln!("      • 命中路径: {}", file.path.display());
+            eprintln!("      • 文件大小: {} 字节 ({:.1} KB)", meta_size, meta_size as f64 / 1024.0);
+            eprintln!("      • 命中类型: {} (优先完整原图/动图，跳过低质缩略图)", file.path.extension().and_then(|v| v.to_str()).unwrap_or(""));
+        }
         let is_dat = file
             .path
             .extension()
@@ -910,10 +948,27 @@ pub fn export_media(
             decrypted = Some((raw_bytes.clone(), detect_image_ext(&raw_bytes)));
         }
 
+        if debug && is_target_media {
+            eprintln!("  [3] 解密与转码:");
+            if media.kind == MediaKind::Emoji {
+                eprintln!("      • 解密算法: 表情 AES-128-CBC (key==IV 由图片种子派生)");
+            } else if is_dat {
+                eprintln!("      • 解密算法: V2 .dat (AES-128-ECB 头部 + XOR 尾部, XOR: {:?})", image_xor_key);
+            } else {
+                eprintln!("      • 数据状态: 本地明文数据");
+            }
+        }
+
         // If decrypted payload is wxgf / hevc (including in chat images), transcode appropriately
         if let Some((bytes, ext)) = &mut decrypted {
             if *ext == "hevc" || bytes.starts_with(b"wxgf") {
+                if debug && is_target_media {
+                    eprintln!("      • 码流识别: 检测为微信 wxgf (HEVC 码流)，调用 ffmpeg 进行解码转码...");
+                }
                 if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(bytes) {
+                    if debug && is_target_media {
+                        eprintln!("      • 转码完成: 成功输出 {} 格式 ({} 字节)", img_ext, img_bytes.len());
+                    }
                     *bytes = img_bytes;
                     *ext = img_ext;
                 }
@@ -944,11 +999,18 @@ pub fn export_media(
         };
 
         let dest = media_dir.join(folder).join(&filename);
-        let result = if dest.exists() {
-            Ok(dest)
+        let existed = dest.exists();
+        let result = if existed {
+            Ok(dest.clone())
         } else {
-            write_bytes(&dest, &bytes_to_write).map(|_| dest)
+            write_bytes(&dest, &bytes_to_write).map(|_| dest.clone())
         };
+        if debug && is_target_media {
+            eprintln!("  [4] 导出落盘:");
+            eprintln!("      • 内容寻址 SHA-256: {}", &filename[..filename.find('.').unwrap_or(filename.len())]);
+            eprintln!("      • 输出相对路径: media/{}/{}", folder, filename);
+            eprintln!("      • 写入状态: {}", if existed { "已存在相同内容，直接复用 (自动去重)" } else { "写入新文件" });
+        }
         match result {
             Ok(dest) => {
                 let relative = dest

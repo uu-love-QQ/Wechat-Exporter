@@ -448,6 +448,7 @@ fn run_export(
                 &conversation_dir,
                 options.image_key,
                 account_id.as_deref().unwrap_or(""),
+                options.debug,
             ))
         } else {
             None

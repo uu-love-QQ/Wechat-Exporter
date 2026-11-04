@@ -145,6 +145,10 @@ pub struct Cli {
     /// 将数据库作为普通未加密的 SQLite 数据库打开
     #[arg(long = "plaintext", action = ArgAction::SetTrue)]
     pub plaintext: bool,
+
+    /// 开启详细调试输出 (打印图片/表情的原图与缩略图信息、寻址过程及解密导出细节)
+    #[arg(long = "debug", action = ArgAction::SetTrue)]
+    pub debug: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -253,6 +257,7 @@ pub struct ValidatedCli {
     pub image_key: Option<[u8; 16]>,
     pub key: Option<[u8; 32]>,
     pub plaintext: bool,
+    pub debug: bool,
 }
 
 impl Cli {
@@ -276,6 +281,7 @@ impl Cli {
                 image_key: None,
                 key: None,
                 plaintext: true,
+                debug: self.debug,
             });
         }
 
@@ -470,6 +476,7 @@ impl Cli {
             image_key,
             key,
             plaintext: self.plaintext,
+            debug: self.debug,
         })
     }
 }
