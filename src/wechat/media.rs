@@ -899,6 +899,8 @@ pub fn export_media(
     account_id: &str,
     debug: bool,
     session: &super::auth::WechatSession,
+    conversation_id: &str,
+    voice: Option<&super::voice::VoiceIndex>,
 ) -> MediaOutcome {
     let (image_key, image_xor_key, image_seed) = resolve_image_keys(index, account_id, image_key);
     let session_cookie = session.cookie_header();
@@ -935,6 +937,47 @@ pub fn export_media(
                 eprintln!("      • 消息独立 AES Key: {}", hex::encode(key));
             }
         }
+        if media.kind == MediaKind::Voice {
+            let payload = voice.and_then(|index| {
+                index.extract(
+                    message.server_id,
+                    message.local_id,
+                    conversation_id,
+                    message.create_time,
+                )
+            });
+            if let Some(payload) = payload {
+                use sha2::{Digest, Sha256};
+                let filename = if media.kind == MediaKind::File && !media.file_name.is_empty() {
+                    crate::util::sanitize_file_name(&media.file_name)
+                } else {
+                    let digest = hex::encode(Sha256::digest(&payload.bytes));
+                    format!("{digest}.{}", payload.ext)
+                };
+                let dest = media_dir.join(folder).join(&filename);
+                if write_bytes(&dest, &payload.bytes).is_ok() {
+                    if debug {
+                        eprintln!(
+                            "      • 语音库命中: {} 字节 -> media/{}/{}",
+                            payload.bytes.len(),
+                            folder,
+                            filename
+                        );
+                    }
+                    let relative = dest
+                        .strip_prefix(output_dir)
+                        .unwrap_or(dest.as_path())
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    message.media_path = Some(relative);
+                    outcome.saved += 1;
+                    continue;
+                }
+            } else if debug {
+                eprintln!("      • 语音库未命中：尝试本地文件与 CDN");
+            }
+        }
+
         let candidates = index.candidates(&media);
         if candidates.is_empty() {
             if debug && is_target_media {
@@ -1673,7 +1716,7 @@ fn is_strict_image_header(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47])
 }
 
-fn find_ffmpeg() -> Option<PathBuf> {
+pub(crate) fn find_ffmpeg() -> Option<PathBuf> {
     if let Ok(custom) = std::env::var("WECHAT_FFMPEG_PATH").or_else(|_| std::env::var("FFMPEG_PATH")) {
         let p = PathBuf::from(custom);
         if p.exists() {

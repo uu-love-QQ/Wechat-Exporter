@@ -325,7 +325,9 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
             }
         })
         .unwrap_or_default();
-    if md5.is_empty() && file_name.is_empty() {
+    // Voice payloads are stored in a media database, not by md5/filename, so they
+    // must still produce a MediaRef even when both are empty.
+    if md5.is_empty() && file_name.is_empty() && base_type != 34 {
         return None;
     }
     let cdn_url = extract_cdn_url(xml);

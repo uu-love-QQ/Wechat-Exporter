@@ -472,6 +472,14 @@ fn run_export(
     } else {
         None
     };
+    let voice_index = match (options.include_media, layout.db_storage.as_deref()) {
+        (true, Some(db_storage)) => Some(wechat::voice::VoiceIndex::build(
+            db_storage,
+            options.key.as_ref(),
+            options.plaintext,
+        )),
+        _ => None,
+    };
     let single_direct = selected.len() == 1 && !options.conversation_ids.is_empty();
 
     let mut report_conversations = Vec::new();
@@ -503,6 +511,8 @@ fn run_export(
                 account_id.as_deref().unwrap_or(""),
                 options.debug,
                 session,
+                &conversation.id,
+                voice_index.as_ref(),
             ))
         } else {
             None

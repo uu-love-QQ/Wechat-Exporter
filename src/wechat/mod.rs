@@ -9,3 +9,4 @@ pub mod parse;
 pub mod search;
 pub mod session;
 pub mod shards;
+pub mod voice;

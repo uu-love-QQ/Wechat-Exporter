@@ -63,6 +63,65 @@ impl WechatSession {
     }
 }
 
+/// Encode an ASCII needle as UTF-16LE bytes.
+fn utf16le_needle(value: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(value.len() * 2);
+    for unit in value.encode_utf16() {
+        out.extend_from_slice(&unit.to_le_bytes());
+    }
+    out
+}
+
+fn utf16le_value_after(buffer: &[u8], mut i: usize) -> Option<String> {
+    while i + 1 < buffer.len() {
+        let unit = u16::from_le_bytes([buffer[i], buffer[i + 1]]);
+        if !matches!(unit as u8, b'=' | b':' | b'"' | b'\'' | b' ' | b'\t' | 0) || unit > 0x7f {
+            break;
+        }
+        i += 2;
+    }
+    let mut out = String::new();
+    while i + 1 < buffer.len() {
+        let unit = u16::from_le_bytes([buffer[i], buffer[i + 1]]);
+        if unit > 0x7f {
+            break;
+        }
+        let byte = unit as u8;
+        let allowed = byte.is_ascii_alphanumeric()
+            || matches!(byte, b'%' | b'_' | b'-' | b'.' | b'+' | b'/' | b'=' | b'@' | b':');
+        if !allowed {
+            break;
+        }
+        out.push(byte as char);
+        i += 2;
+        if out.len() > 2048 {
+            break;
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Extract a hex token whose key is followed by `=`, `:`, quotes or spaces.
+fn hex_after_key(buffer: &[u8], start: usize) -> Option<String> {
+    let mut i = start;
+    while i < buffer.len() && matches!(buffer[i], b'=' | b':' | b'"' | b'\'' | b' ' | b'\t') {
+        i += 1;
+    }
+    let mut out = String::new();
+    while i < buffer.len() && buffer[i].is_ascii_hexdigit() {
+        out.push(buffer[i] as char);
+        i += 1;
+        if out.len() >= 4096 {
+            break;
+        }
+    }
+    Some(out)
+}
+
 /// Extract the value that follows `needle` in `buffer`, stopping at a delimiter.
 fn value_after(buffer: &[u8], start: usize) -> Option<String> {
     let mut out = Vec::new();
@@ -122,15 +181,64 @@ pub fn scan_buffer_for_cookies(buffer: &[u8], session: &mut WechatSession) {
         }
     }
 
-    // `authkey` is hex-encoded ASN.1 DER; keep a syntactically valid candidate.
-    for start in find_all(buffer, b"authkey=") {
-        if let Some(value) = value_after(buffer, start) {
+    // `authkey` is hex-encoded ASN.1 DER. WeChat stores it as `authkey=HEX`,
+    // `"authkey":"HEX"`, or inside a protobuf/JSON blob, so accept any of those.
+    for start in find_all(buffer, b"authkey") {
+        if let Some(value) = hex_after_key(buffer, start) {
             let hex_like = value.len() >= 16
                 && value.len() % 2 == 0
                 && value.bytes().all(|b| b.is_ascii_hexdigit());
-            if hex_like {
-                if value.len() > session.auth_key.len() {
-                    session.auth_key = value;
+            if hex_like && value.len() > session.auth_key.len() {
+                session.auth_key = value;
+            }
+        }
+    }
+
+    // WeChat stores some session strings as UTF-16LE. Scan those too.
+    for (name, slot) in [
+        ("wxuin", &mut session.wxuin),
+        ("wxsid", &mut session.wxsid),
+        ("skey", &mut session.skey),
+        ("pass_ticket", &mut session.pass_ticket),
+        ("data_ticket", &mut session.data_ticket),
+    ] {
+        let needle = utf16le_needle(name);
+        for start in find_all(buffer, &needle) {
+            if let Some(value) = utf16le_value_after(buffer, start) {
+                assign(slot, value);
+            }
+        }
+    }
+    for start in find_all(buffer, &utf16le_needle("authkey")) {
+        if let Some(value) = utf16le_value_after(buffer, start) {
+            let hex_like = value.len() >= 16
+                && value.len() % 2 == 0
+                && value.bytes().all(|b| b.is_ascii_hexdigit());
+            if hex_like && value.len() > session.auth_key.len() {
+                session.auth_key = value;
+            }
+        }
+    }
+
+    // Cookies may also be stored as `"skey":"..."` inside JSON.
+    for (name, slot) in [
+        ("skey", &mut session.skey),
+        ("wxsid", &mut session.wxsid),
+        ("wxuin", &mut session.wxuin),
+        ("pass_ticket", &mut session.pass_ticket),
+        ("data_ticket", &mut session.data_ticket),
+    ] {
+        let quoted = format!("\"{name}\"");
+        for start in find_all(buffer, quoted.as_bytes()) {
+            let mut i = start;
+            while i < buffer.len() && matches!(buffer[i], b':' | b' ' | b'\t') {
+                i += 1;
+            }
+            if i < buffer.len() && buffer[i] == b'"' {
+                if let Some(value) = value_after(buffer, i + 1) {
+                    if value.len() > slot.len() {
+                        *slot = value;
+                    }
                 }
             }
         }
@@ -177,6 +285,7 @@ pub fn scan_from_process() -> Option<WechatSession> {
     const PROCESS_VM_READ: DWORD = 0x0010;
     const MEM_COMMIT: DWORD = 0x1000;
     const MEM_PRIVATE: DWORD = 0x20000;
+    const MEM_IMAGE: DWORD = 0x1000000;
 
     #[repr(C)]
     #[allow(non_snake_case)]
@@ -227,6 +336,14 @@ pub fn scan_from_process() -> Option<WechatSession> {
         fn CloseHandle(hObject: HANDLE) -> BOOL;
     }
 
+    fn session_complete(session: &WechatSession) -> bool {
+        !session.wxuin.is_empty()
+            && !session.wxsid.is_empty()
+            && !session.skey.is_empty()
+            && !session.pass_ticket.is_empty()
+            && !session.auth_key.is_empty()
+    }
+
     let mut session = WechatSession::default();
     const CHUNK: usize = 4 * 1024 * 1024;
     const OVERLAP: usize = 96;
@@ -257,7 +374,7 @@ pub fn scan_from_process() -> Option<WechatSession> {
         CloseHandle(snapshot);
 
         let mut buffer = vec![0u8; CHUNK + OVERLAP];
-        for pid in pids {
+        'processes: for pid in pids {
             let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
             if handle.is_null() {
                 continue;
@@ -273,7 +390,10 @@ pub fn scan_from_process() -> Option<WechatSession> {
                 if region == 0 {
                     break;
                 }
-                let readable = mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE;
+                let readable = mbi.State == MEM_COMMIT
+                    && (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE)
+                    && (mbi.Protect & 0x01) == 0
+                    && (mbi.Protect & 0x100) == 0;
                 if readable {
                     let mut offset = 0usize;
                     while offset < region {
@@ -290,6 +410,9 @@ pub fn scan_from_process() -> Option<WechatSession> {
                         {
                             let end = (read + OVERLAP).min(buffer.len());
                             scan_buffer_for_cookies(&buffer[..end], &mut session);
+                            if session_complete(&session) {
+                                break 'processes;
+                            }
                         }
                         offset += want;
                         if want < CHUNK {
@@ -300,9 +423,6 @@ pub fn scan_from_process() -> Option<WechatSession> {
                 address = (mbi.BaseAddress as usize).saturating_add(region);
             }
             CloseHandle(handle);
-            if !session.is_empty() {
-                break;
-            }
         }
     }
 
@@ -351,6 +471,22 @@ mod tests {
         assert_eq!(session.auth_key, "00112233445566778899aabbccddeeff");
     }
 
+
+    #[test]
+    fn extracts_material_from_utf16_buffer() {
+        let mut buffer = Vec::new();
+        for ch in "wxuin=123456789;".encode_utf16() {
+            buffer.extend_from_slice(&ch.to_le_bytes());
+        }
+        for ch in "authkey=0011223344556677".encode_utf16() {
+            buffer.extend_from_slice(&ch.to_le_bytes());
+        }
+        let mut session = WechatSession::default();
+        scan_buffer_for_cookies(&buffer, &mut session);
+        assert_eq!(session.wxuin, "123456789");
+        assert_eq!(session.auth_key, "0011223344556677");
+    }
+
     #[test]
     fn ignores_non_hex_auth_key() {
         let mut session = WechatSession::default();
@@ -389,3 +525,4 @@ mod tests {
         assert_eq!(base.skey, "@k");
     }
 }
+

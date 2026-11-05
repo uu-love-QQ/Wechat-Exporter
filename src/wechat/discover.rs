@@ -9,6 +9,8 @@ pub struct Layout {
     pub session_db: Option<PathBuf>,
     pub contact_db: Option<PathBuf>,
     pub message_dbs: Vec<PathBuf>,
+    /// `db_storage` root, used to locate the media database for voice payloads.
+    pub db_storage: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -476,5 +478,6 @@ pub fn discover(source: &Path) -> Result<Layout> {
         session_db,
         contact_db,
         message_dbs,
+        db_storage: Some(db_storage),
     })
 }
