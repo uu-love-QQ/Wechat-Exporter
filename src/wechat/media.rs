@@ -916,7 +916,10 @@ pub fn export_media(
             continue;
         };
         let folder = media.kind.as_str();
-        let is_target_media = media.kind == MediaKind::Image || media.kind == MediaKind::Emoji || media.kind == MediaKind::File;
+        let is_target_media = matches!(
+            media.kind,
+            MediaKind::Image | MediaKind::Emoji | MediaKind::File | MediaKind::Voice
+        );
         if debug && is_target_media {
             eprintln!("\n--------------------------------------------------------------------------------");
             eprintln!(

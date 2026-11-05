@@ -31,6 +31,21 @@ pub struct VoicePayload {
     pub ext: &'static str,
 }
 
+/// A column that may hold the voice payload.
+fn find_voice_blob_column(columns: &[String]) -> Option<String> {
+    // Exact names first, then anything voice-ish, then generic blob names.
+    if let Some(found) = find_column(columns, &["voice_data", "voicebuf", "voice_blob"]) {
+        return Some(found);
+    }
+    if let Some(column) = columns
+        .iter()
+        .find(|column| column.to_ascii_lowercase().contains("voice"))
+    {
+        return Some(column.clone());
+    }
+    find_column(columns, &["data", "buf", "blob", "content"])
+}
+
 fn find_column(columns: &[String], names: &[&str]) -> Option<String> {
     columns.iter().find_map(|column| {
         let lower = column.to_ascii_lowercase();
@@ -46,10 +61,12 @@ impl VoiceIndex {
         db_storage: &Path,
         key: Option<&[u8; 32]>,
         plaintext: bool,
+        debug: bool,
     ) -> Self {
+        let mut probe = Vec::new();
         // Prefer dedicated media databases; fall back to message shards only when
-        // none of them exposes a `voice_data` column.
-        let mut databases = collect_voice_databases(db_storage, key, plaintext);
+        // none of them exposes a voice payload column.
+        let mut databases = collect_voice_databases(db_storage, key, plaintext, &mut probe);
         if databases.is_empty() {
             let shards = db_storage.join("message");
             if let Ok(entries) = std::fs::read_dir(&shards) {
@@ -62,10 +79,27 @@ impl VoiceIndex {
                     if !lower.ends_with(".db") || !lower.starts_with("message_") {
                         continue;
                     }
-                    if let Some(database) = open_voice_database(&path, key, plaintext) {
+                    if let Some(database) =
+                        open_voice_database(&path, key, plaintext, &mut probe)
+                    {
                         databases.push(database);
                     }
                 }
+            }
+        }
+        if debug {
+            if probe.is_empty() {
+                eprintln!("[i] 语音库: 未发现候选数据库");
+            } else {
+                eprintln!("[i] 语音库探测:");
+                for line in &probe {
+                    eprintln!("    {line}");
+                }
+                eprintln!(
+                    "[i] 语音库: {} 个数据库, {} 张语音表",
+                    databases.len(),
+                    databases.iter().map(|db| db.tables.len()).sum::<usize>()
+                );
             }
         }
         Self { databases }
@@ -114,23 +148,39 @@ fn query_table(
         let mut attempts: Vec<(String, Vec<Box<dyn rusqlite::ToSql>>)> = Vec::new();
         if let Some(col) = &table.server_col {
             if server_id > 0 {
+                let sql = format!("{select} WHERE {} = ?1 LIMIT 2", crate::db::quote_ident(col));
                 attempts.push((
-                    format!("{select} WHERE {} = ?1 LIMIT 2", crate::db::quote_ident(col)),
+                    sql.clone(),
                     vec![Box::new(server_id) as Box<dyn rusqlite::ToSql>],
+                ));
+                // Columns with TEXT affinity need the textual form.
+                attempts.push((
+                    sql,
+                    vec![Box::new(server_id.to_string()) as Box<dyn rusqlite::ToSql>],
                 ));
             }
         }
         if let Some(col) = &table.local_col {
+            let sql = format!("{select} WHERE {} = ?1 LIMIT 2", crate::db::quote_ident(col));
             attempts.push((
-                format!("{select} WHERE {} = ?1 LIMIT 2", crate::db::quote_ident(col)),
+                sql.clone(),
                 vec![Box::new(local_id) as Box<dyn rusqlite::ToSql>],
+            ));
+            attempts.push((
+                sql,
+                vec![Box::new(local_id.to_string()) as Box<dyn rusqlite::ToSql>],
             ));
         }
         if let Some(col) = &table.msg_col {
             if server_id > 0 {
+                let sql = format!("{select} WHERE {} = ?1 LIMIT 2", crate::db::quote_ident(col));
                 attempts.push((
-                    format!("{select} WHERE {} = ?1 LIMIT 2", crate::db::quote_ident(col)),
+                    sql.clone(),
                     vec![Box::new(server_id.to_string()) as Box<dyn rusqlite::ToSql>],
+                ));
+                attempts.push((
+                    sql,
+                    vec![Box::new(server_id) as Box<dyn rusqlite::ToSql>],
                 ));
             }
         }
@@ -226,31 +276,82 @@ fn collect_voice_databases(
     db_storage: &Path,
     key: Option<&[u8; 32]>,
     plaintext: bool,
+    probe: &mut Vec<String>,
 ) -> Vec<VoiceDatabase> {
     let mut out = Vec::new();
     for path in voice_database_candidates(db_storage) {
-        if let Some(database) = open_voice_database(&path, key, plaintext) {
+        if let Some(database) = open_voice_database(&path, key, plaintext, probe) {
             out.push(database);
         }
     }
     out
 }
 
+fn blob_looks_like_audio(blob: &[u8]) -> bool {
+    blob.starts_with(b"RIFF") || blob.starts_with(b"#!SILK") || blob.starts_with(b"#!AMR")
+}
+
+fn table_has_audio_sample(
+    db: &crate::db::Db,
+    table: &VoiceTable,
+) -> bool {
+    let sql = format!(
+        "SELECT {} FROM {} WHERE {} IS NOT NULL LIMIT 1",
+        crate::db::quote_ident(&table.blob_col),
+        crate::db::quote_ident(&table.name),
+        crate::db::quote_ident(&table.blob_col)
+    );
+    let Ok(mut stmt) = db.conn().prepare(&sql) else {
+        return false;
+    };
+    let Ok(mut rows) = stmt.query([]) else {
+        return false;
+    };
+    match rows.next() {
+        Ok(Some(row)) => row
+            .get::<_, Vec<u8>>(0)
+            .map(|blob| blob_looks_like_audio(&blob))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 fn open_voice_database(
     path: &Path,
     key: Option<&[u8; 32]>,
     plaintext: bool,
+    probe: &mut Vec<String>,
 ) -> Option<VoiceDatabase> {
-    let db = crate::db::Db::open(path, key, plaintext).ok()?;
-    let tables = db.tables().ok()?;
+    // Some builds ship an unencrypted media database; detect it by header.
+    let plaintext = plaintext || looks_like_plain_sqlite(path);
+    let db = match crate::db::Db::open(path, key, plaintext) {
+        Ok(db) => db,
+        Err(error) => {
+            probe.push(format!("{}: 打开失败 ({error})", path.display()));
+            return None;
+        }
+    };
+    let tables = match db.tables() {
+        Ok(tables) => tables,
+        Err(error) => {
+            probe.push(format!("{}: 列表失败 ({error})", path.display()));
+            return None;
+        }
+    };
+    probe.push(format!("{}: {} 张表", path.display(), tables.len()));
     let mut voice_tables = Vec::new();
     for name in tables {
         let Ok(columns) = db.columns(&name) else {
             continue;
         };
-        let Some(blob_col) = find_column(&columns, &["voice_data", "voicebuf"]) else {
+        let Some(blob_col) = find_voice_blob_column(&columns) else {
+            probe.push(format!("  {name}: 无语音 BLOB 列 [{}]", columns.join(",")));
             continue;
         };
+        probe.push(format!(
+            "  {name}: blob={blob_col} cols=[{}]",
+            columns.join(",")
+        ));
         voice_tables.push(VoiceTable {
             name,
             blob_col,
@@ -261,6 +362,13 @@ fn open_voice_database(
             time_col: find_column(&columns, &["create_time", "time", "insert_time", "msg_time"]),
         });
     }
+    // A generic `data` BLOB column may hold images or files; only keep tables whose
+    // name/column says "voice" or whose sample starts with an audio magic.
+    voice_tables.retain(|table| {
+        let named = table.name.to_ascii_lowercase().contains("voice")
+            || table.blob_col.to_ascii_lowercase().contains("voice");
+        named || table_has_audio_sample(&db, table)
+    });
     if voice_tables.is_empty() {
         return None;
     }
@@ -270,6 +378,15 @@ fn open_voice_database(
     })
 }
 
+fn looks_like_plain_sqlite(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 16];
+    file.read_exact(&mut header).is_ok() && &header == b"SQLite format 3\0"
+}
+
 fn voice_database_candidates(db_storage: &Path) -> Vec<PathBuf> {
     let mut named = Vec::new();
     let mut shards = Vec::new();
@@ -277,6 +394,9 @@ fn voice_database_candidates(db_storage: &Path) -> Vec<PathBuf> {
         db_storage.join("media"),
         db_storage.to_path_buf(),
         db_storage.join("message"),
+        db_storage.join("message").join("media"),
+        db_storage.join("message").join("voice"),
+        db_storage.join("voice"),
     ] {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
@@ -328,7 +448,7 @@ mod tests {
             rusqlite::params![123456789i64, 42i64, "wxid_chat", 1_700_000_000_000i64, wav],
         )
         .unwrap();
-        VoiceIndex::build(dir, None, true)
+        VoiceIndex::build(dir, None, true, false)
     }
 
     #[test]
@@ -367,7 +487,7 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        let index = VoiceIndex::build(dir.path(), None, true);
+        let index = VoiceIndex::build(dir.path(), None, true, false);
         assert!(index.extract(123456789, 0, "wxid_chat", 0).is_none());
         assert!(!index.is_empty());
     }

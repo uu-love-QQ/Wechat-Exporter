@@ -477,6 +477,7 @@ fn run_export(
             db_storage,
             options.key.as_ref(),
             options.plaintext,
+            options.debug,
         )),
         _ => None,
     };
