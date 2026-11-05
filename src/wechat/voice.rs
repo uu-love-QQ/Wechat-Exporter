@@ -20,6 +20,8 @@ struct VoiceTable {
 struct VoiceDatabase {
     db: crate::db::Db,
     tables: Vec<VoiceTable>,
+    /// `chat_name_id` is a rowid into `Name2Id(user_name)`, not a wxid string.
+    chat_rowids: std::collections::HashMap<String, i64>,
 }
 
 pub struct VoiceIndex {
@@ -121,8 +123,17 @@ impl VoiceIndex {
         timestamp: i64,
     ) -> Option<VoicePayload> {
         for database in &self.databases {
+            let chat_rowid = database.chat_rowids.get(chat_id).copied();
             for table in &database.tables {
-                if let Some(blob) = query_table(&database.db, table, server_id, local_id, chat_id, timestamp) {
+                if let Some(blob) = query_table(
+                    &database.db,
+                    table,
+                    server_id,
+                    local_id,
+                    chat_id,
+                    chat_rowid,
+                    timestamp,
+                ) {
                     return classify(blob);
                 }
             }
@@ -137,6 +148,7 @@ fn query_table(
     server_id: i64,
     local_id: i64,
     chat_id: &str,
+    chat_rowid: Option<i64>,
     timestamp: i64,
 ) -> Option<Vec<u8>> {
     let select = format!(
@@ -188,20 +200,34 @@ fn query_table(
             }
         }
         if let (Some(time_col), true) = (&table.time_col, timestamp > 0) {
-            let mut sql = format!(
+            let base = format!(
                 "{select} WHERE {} BETWEEN ?1 AND ?2",
                 crate::db::quote_ident(time_col)
             );
-            let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![
-                Box::new(timestamp - 2000) as Box<dyn rusqlite::ToSql>,
-                Box::new(timestamp + 2000) as Box<dyn rusqlite::ToSql>,
-            ];
+            let window = || -> Vec<Box<dyn rusqlite::ToSql>> {
+                vec![
+                    Box::new(timestamp - 2000) as Box<dyn rusqlite::ToSql>,
+                    Box::new(timestamp + 2000) as Box<dyn rusqlite::ToSql>,
+                ]
+            };
             if let Some(chat_col) = &table.chat_col {
-                sql.push_str(&format!(" AND {} = ?3", crate::db::quote_ident(chat_col)));
+                if let Some(rowid) = chat_rowid {
+                    let mut sql = format!("{base} AND {} = ?3", crate::db::quote_ident(chat_col));
+                    sql.push_str(" LIMIT 2");
+                    let mut args = window();
+                    args.push(Box::new(rowid) as Box<dyn rusqlite::ToSql>);
+                    attempts.push((sql, args));
+                }
+                let mut sql = format!("{base} AND {} = ?3", crate::db::quote_ident(chat_col));
+                sql.push_str(" LIMIT 2");
+                let mut args = window();
                 args.push(Box::new(chat_id.to_string()) as Box<dyn rusqlite::ToSql>);
+                attempts.push((sql, args));
             }
-            sql.push_str(" LIMIT 2");
-            attempts.push((sql, args));
+            // Without a chat column the ±2s window is the only key available.
+            if table.chat_col.is_none() {
+                attempts.push((format!("{base} LIMIT 2"), window()));
+            }
         }
         attempts
     };
@@ -358,7 +384,10 @@ fn open_voice_database(
         voice_tables.push(VoiceTable {
             name,
             blob_col,
-            server_col: find_column(&columns, &["server_id", "svrid", "msg_svr_id"]),
+            server_col: find_column(
+                &columns,
+                &["svr_id", "server_id", "svrid", "serverid", "msg_svr_id"],
+            ),
             local_col: find_column(&columns, &["local_id", "msg_local_id"]),
             msg_col: find_column(&columns, &["msg_id", "message_id"]),
             chat_col: find_column(&columns, &["chat_name_id", "chatnameid", "username", "talker"]),
@@ -375,9 +404,30 @@ fn open_voice_database(
     if voice_tables.is_empty() {
         return None;
     }
+    for table in &voice_tables {
+        let rows = db.count(&table.name).unwrap_or(0);
+        probe.push(format!("  {}: {} 行语音", table.name, rows));
+    }
+    let mut chat_rowids = std::collections::HashMap::new();
+    if let Ok(mut stmt) = db
+        .conn()
+        .prepare("SELECT rowid, user_name FROM Name2Id")
+    {
+        if let Ok(mut rows) = stmt.query([]) {
+            while let Ok(Some(row)) = rows.next() {
+                let id: i64 = row.get(0).unwrap_or(0);
+                let name: String = row.get(1).unwrap_or_default();
+                if id > 0 && !name.is_empty() {
+                    chat_rowids.insert(name, id);
+                }
+            }
+        }
+    }
+    probe.push(format!("  Name2Id: {} 条会话映射", chat_rowids.len()));
     Some(VoiceDatabase {
         db,
         tables: voice_tables,
+        chat_rowids,
     })
 }
 
@@ -452,6 +502,56 @@ mod tests {
         )
         .unwrap();
         VoiceIndex::build(dir, None, true, false)
+    }
+
+    fn wechat_fixture(dir: &Path) -> VoiceIndex {
+        let media = dir.join("message");
+        std::fs::create_dir_all(&media).unwrap();
+        let path = media.join("media_0.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE Name2Id (user_name TEXT);
+             CREATE TABLE VoiceInfo (
+                 chat_name_id INTEGER,
+                 create_time INTEGER,
+                 local_id INTEGER,
+                 svr_id INTEGER,
+                 voice_data BLOB,
+                 data_index INTEGER
+             );",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO Name2Id (user_name) VALUES ('wxid_chat')", [])
+            .unwrap();
+        let wav = b"RIFF....WAVEfmt voice".to_vec();
+        conn.execute(
+            "INSERT INTO VoiceInfo VALUES (1, ?1, 42, 987654321, ?2, 0)",
+            rusqlite::params![1_700_000_000_000i64, wav],
+        )
+        .unwrap();
+        VoiceIndex::build(dir, None, true, false)
+    }
+
+    #[test]
+    fn matches_wechat_voice_info_schema_by_svr_id() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = wechat_fixture(dir.path());
+        assert!(!index.is_empty());
+        let payload = index
+            .extract(987654321, 42, "wxid_chat", 1_700_000_000_000)
+            .expect("voice payload by svr_id");
+        assert!(payload.bytes.starts_with(b"RIFF"));
+    }
+
+    #[test]
+    fn matches_voice_info_through_name2id_rowid() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = wechat_fixture(dir.path());
+        // server/local do not match; chat rowid + time window must resolve it.
+        let payload = index
+            .extract(0, 999, "wxid_chat", 1_700_000_001_500)
+            .expect("voice payload through Name2Id mapping");
+        assert!(payload.bytes.starts_with(b"RIFF"));
     }
 
     #[test]
