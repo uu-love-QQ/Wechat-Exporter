@@ -171,9 +171,12 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 1. 启动时扫描 `db_storage` 及其 `message`、`message/media`、`message/voice`、`voice` 子目录中的数据库，
    自动识别明文/加密库，并按表名、列名或首条 BLOB 的音频魔数（RIFF/#!SILK/#!AMR）定位语音表；
 2. `chat_name_id` 按 `Name2Id.rowid` 映射；查询依次尝试
-   `svr_id` → `local_id`(+chat) → `msg_id` → 聊天+时间窗；
-   时间窗同时兼容秒与毫秒（`create_time` 单位为毫秒），窗口 ±60s 内取 `abs(create_time-消息时间)` 最近的一行，
-   与 Alpha 的 `chat_name_id IN (SELECT rowid FROM Name2Id …) AND create_time BETWEEN …` 语义一致；
+   `svr_id`（全局唯一，实测与 Alpha 导出逐字节一致）→ `msg_id` → 聊天+时间窗；
+   时间窗同时兼容秒与毫秒（`create_time` 单位为毫秒），窗口 ±300s 内取
+   `abs(create_time-消息时间)` 最近的一行，与 Alpha 的
+   `chat_name_id IN (SELECT rowid FROM Name2Id …) AND create_time BETWEEN …` 语义一致。
+   **WeChat 4.x 的 `VoiceInfo.local_id` 是媒体行号，不是消息的 `local_id`**，跨会话大量重复，
+   因此绝不作为查询键（v0.1.3 曾直查该列，导致 7 条语音串到其他会话）；
 3. `RIFF` 开头直接按 `.wav` 保存；
    `#!SILK`（含腾讯前缀 `\x02#!SILK_V3` 及 H3/L3/VH3/VL3 变体）用内置 `silk-codec` 解码为
    24 kHz / 单声道 / 16-bit PCM WAV，与 Alpha 导出的 WAV 规格一致，不依赖外部 ffmpeg；

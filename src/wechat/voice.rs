@@ -373,25 +373,11 @@ fn query_table(
         }
     }
 
-    if let Some(local_col) = &table.local_col {
-        if let Some(chat_col) = &table.chat_col {
-            if let Some(rowid) = chat_rowid {
-                let sql = format!(
-                    "{select} WHERE {not_empty} AND {} = ?1 AND {} = ?2 LIMIT 2",
-                    quote(local_col),
-                    quote(chat_col)
-                );
-                attempts.push((
-                    sql,
-                    vec![
-                        Box::new(local_id) as Box<dyn rusqlite::ToSql>,
-                        Box::new(rowid) as Box<dyn rusqlite::ToSql>,
-                    ],
-                    "local_id+chat".into(),
-                    true,
-                ));
-            }
-        }
+    // In WeChat 4.x `VoiceInfo.local_id` is a media-row id, not the message's
+    // local_id; matching it unscoped returns another conversation's voice (local
+    // ids repeat per chat). Alpha never uses it: chat + create_time is the only
+    // reliable locator. Keep the key solely for legacy tables with no chat column.
+    if let (Some(local_col), None) = (&table.local_col, &table.chat_col) {
         let sql = format!("{select} WHERE {not_empty} AND {} = ?1 LIMIT 2", quote(local_col));
         attempts.push((
             sql,
@@ -427,7 +413,7 @@ fn query_table(
         } else {
             (timestamp.saturating_mul(1000), timestamp)
         };
-        let units: [(i64, i64, &str); 2] = [(stamp_ms, 60_000, "ms"), (stamp_s, 60, "s")];
+        let units: [(i64, i64, &str); 2] = [(stamp_ms, 300_000, "ms"), (stamp_s, 300, "s")];
         for (stamp, window, unit) in units {
             let base = format!(
                 "{select} WHERE {not_empty} AND {} BETWEEN ?1 AND ?2",
@@ -946,6 +932,50 @@ mod tests {
         let payload = decode_voice(b"\x00\x01weird".to_vec(), false).expect("raw fallback");
         assert_eq!(payload.ext, "bin");
         assert_eq!(payload.bytes, b"\x00\x01weird");
+    }
+
+    #[test]
+    fn never_matches_another_chats_voice_by_local_id() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let media = dir.path().join("message");
+        std::fs::create_dir_all(&media).unwrap();
+        let path = media.join("media_0.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE Name2Id (user_name TEXT);
+             CREATE TABLE VoiceInfo (
+                 chat_name_id INTEGER,
+                 create_time INTEGER,
+                 local_id INTEGER,
+                 svr_id INTEGER,
+                 voice_data BLOB,
+                 data_index INTEGER
+             );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO Name2Id(rowid,user_name) VALUES (1,'wxid_chat'),(2,'wxid_other')",
+            [],
+        )
+        .unwrap();
+        // Another conversation owns media row 197; our message has local_id 197 too.
+        conn.execute(
+            "INSERT INTO VoiceInfo VALUES (2, 1700000000000, 197, 0, ?1, 0)",
+            rusqlite::params![b"RIFFother".to_vec()],
+        )
+        .unwrap();
+        // Our chat's voice is located by chat + time, its media local_id differs.
+        conn.execute(
+            "INSERT INTO VoiceInfo VALUES (1, 1700000005000, 1, 0, ?1, 0)",
+            rusqlite::params![b"RIFFours".to_vec()],
+        )
+        .unwrap();
+        drop(conn);
+        let index = VoiceIndex::build(dir.path(), None, true, false);
+        let payload = index
+            .extract(0, 197, "wxid_chat", 1_700_000_000)
+            .expect("voice of our chat");
+        assert_eq!(payload.bytes, b"RIFFours");
     }
 
     #[test]
