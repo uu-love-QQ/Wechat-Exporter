@@ -92,8 +92,11 @@ impl VoiceIndex {
                 eprintln!("[i] 语音库: 未发现候选数据库");
             } else {
                 eprintln!("[i] 语音库探测:");
-                for line in &probe {
+                for line in probe.iter().take(60) {
                     eprintln!("    {line}");
+                }
+                if probe.len() > 60 {
+                    eprintln!("    ... 其余 {} 行省略", probe.len() - 60);
                 }
                 eprintln!(
                     "[i] 语音库: {} 个数据库, {} 张语音表",

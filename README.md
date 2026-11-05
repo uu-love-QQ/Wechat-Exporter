@@ -168,7 +168,8 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 微信 4.x 的语音不在消息库里，而在 `db_storage/media/*.db`（或消息分片）的
 `voice_data` 列中，按 `server_id` / `local_id` / 聊天+时间定位。导出流程：
 
-1. 启动时扫描 `media`/`voice` 命名的数据库，寻找含 `voice_data` 列的表；
+1. 启动时扫描 `db_storage` 及其 `message`、`message/media`、`message/voice`、`voice` 子目录中的数据库，
+   自动识别明文/加密库，并按表名、列名或首条 BLOB 的音频魔数（RIFF/#!SILK/#!AMR）定位语音表；
 2. 按 `server_id` → `local_id` → `msg_id` → 聊天+时间窗 依次尝试，命中 2 行视为歧义并跳过；
 3. `RIFF` 开头直接按 `.wav` 保存（字节与 Alpha 输出一致）；
    `#!AMR`/`#!SILK` 先尝试 ffmpeg 转码，失败则保留原始容器（`.amr`/`.silk`）而不是丢弃消息。
