@@ -27,6 +27,12 @@ jobs:
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
 
+      - name: Configure libclang for bindgen
+        shell: pwsh
+        run: |
+          $llvm = "C:\Program Files\LLVM\bin"
+          if (Test-Path $llvm) { "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+
       - name: Run Tests (Native MSVC)
         run: cargo test --release --target x86_64-pc-windows-msvc
 

@@ -170,9 +170,16 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 
 1. 启动时扫描 `db_storage` 及其 `message`、`message/media`、`message/voice`、`voice` 子目录中的数据库，
    自动识别明文/加密库，并按表名、列名或首条 BLOB 的音频魔数（RIFF/#!SILK/#!AMR）定位语音表；
-2. 按 `server_id` → `local_id` → `msg_id` → 聊天+时间窗 依次尝试，命中 2 行视为歧义并跳过；
-3. `RIFF` 开头直接按 `.wav` 保存（字节与 Alpha 输出一致）；
-   `#!AMR`/`#!SILK` 先尝试 ffmpeg 转码，失败则保留原始容器（`.amr`/`.silk`）而不是丢弃消息。
+2. `chat_name_id` 按 `Name2Id.rowid` 映射；查询依次尝试
+   `svr_id` → `local_id`(+chat) → `msg_id` → 聊天+时间窗；
+   时间窗同时兼容秒与毫秒（`create_time` 单位为毫秒），窗口 ±60s 内取 `abs(create_time-消息时间)` 最近的一行，
+   与 Alpha 的 `chat_name_id IN (SELECT rowid FROM Name2Id …) AND create_time BETWEEN …` 语义一致；
+3. `RIFF` 开头直接按 `.wav` 保存；
+   `#!SILK`（含腾讯前缀 `\x02#!SILK_V3` 及 H3/L3/VH3/VL3 变体）用内置 `silk-codec` 解码为
+   24 kHz / 单声道 / 16-bit PCM WAV，与 Alpha 导出的 WAV 规格一致，不依赖外部 ffmpeg；
+   `#!AMR` 先尝试 ffmpeg 转码，失败则保留 `.amr`；无法识别的 BLOB 以 `.bin` 落盘而不是丢弃。
 
-`--debug` 会打印 `• 语音库命中: N 字节 -> media/voice/<sha256>.wav`。
+`--debug` 会打印 `[voice] 命中 …: N 字节, 头部 …`、`[voice] SILK 解码成功: … -> WAV 24000Hz`
+以及 `• 语音库命中: N 字节 -> media/voice/<sha256>.wav`；未命中时打印 `chat_rowid`、各键命中行数
+和按时间最近的三行样本，便于定位库内 id/时间单位。
 

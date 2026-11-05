@@ -131,7 +131,7 @@ impl VoiceIndex {
         for database in &self.databases {
             let chat_rowid = database.chat_rowids.get(chat_id).copied();
             for table in &database.tables {
-                if let Some(blob) = query_table(
+                if let Some((blob, source)) = query_table(
                     &database.db,
                     table,
                     server_id,
@@ -140,7 +140,15 @@ impl VoiceIndex {
                     chat_rowid,
                     timestamp,
                 ) {
-                    return classify(blob);
+                    if self.debug {
+                        eprintln!(
+                            "[voice] 命中 {}: {} 字节, 头部 {}",
+                            source,
+                            blob.len(),
+                            preview_hex(&blob)
+                        );
+                    }
+                    return decode_voice(blob, self.debug);
                 }
             }
         }
@@ -166,6 +174,34 @@ impl VoiceIndex {
         }
         None
     }
+}
+
+fn preview_hex(bytes: &[u8]) -> String {
+    hex::encode(&bytes[..bytes.len().min(16)])
+}
+
+fn pcm_to_wav(pcm: &[u8], sample_rate: u32) -> Vec<u8> {
+    let data_len = pcm.len() as u32;
+    let mut out = Vec::with_capacity(44 + pcm.len());
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    out.extend_from_slice(pcm);
+    out
+}
+
+fn silk_magic(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"#!SILK")
+        || (bytes.len() > 8 && bytes[0] == 0x02 && bytes[1..].starts_with(b"#!SILK"))
 }
 
 fn dump_sample(
@@ -258,23 +294,42 @@ fn dump_sample(
             }
         }
     }
-    if let Some(time_col) = &table.time_col {
-        for stamp in [timestamp, timestamp * 1000] {
-            let sql = format!(
-                "SELECT COUNT(*) FROM {} WHERE {} BETWEEN ?1 AND ?2",
-                quote(&table.name),
-                quote(time_col)
-            );
-            if let Ok(count) = db.conn().query_row(&sql, [stamp - 2000, stamp + 2000], |row| {
-                row.get::<_, i64>(0)
-            }) {
-                eprintln!(
-                    "[voice]   {} 在 [{}, {}] 命中 {} 行",
-                    time_col,
-                    stamp - 2000,
-                    stamp + 2000,
-                    count
-                );
+    // Show the rows closest to the message time so the stored unit and ids are
+    // visible directly.
+    if let (Some(time_col), Some(chat_col), Some(rowid)) =
+        (&table.time_col, &table.chat_col, chat_rowid)
+    {
+        let sql = format!(
+            "SELECT {} FROM {} WHERE {} = ?1 ORDER BY abs(COALESCE({},0) - ?2) LIMIT 3",
+            select.join(","),
+            quote(&table.name),
+            quote(chat_col),
+            quote(time_col)
+        );
+        for center in [timestamp, timestamp * 1000] {
+            if center <= 0 {
+                continue;
+            }
+            if let Ok(mut stmt) = db.conn().prepare(&sql) {
+                if let Ok(mut rows) = stmt.query(rusqlite::params![rowid, center]) {
+                    while let Ok(Some(row)) = rows.next() {
+                        let len = row.get::<_, Vec<u8>>(0).map(|b| b.len()).unwrap_or(0);
+                        let mut parts = Vec::new();
+                        for (index, field) in fields.iter().enumerate() {
+                            let value: String = row
+                                .get::<_, rusqlite::types::Value>(index + 1)
+                                .map(|v| format!("{v:?}"))
+                                .unwrap_or_else(|_| "?".into());
+                            parts.push(format!("{field}={value}"));
+                        }
+                        eprintln!(
+                            "[voice]   最近(center={center}) {}: blob={}B {}",
+                            table.name,
+                            len,
+                            parts.join(" ")
+                        );
+                    }
+                }
             }
         }
     }
@@ -288,96 +343,144 @@ fn query_table(
     chat_id: &str,
     chat_rowid: Option<i64>,
     timestamp: i64,
-) -> Option<Vec<u8>> {
-    let select = format!(
-        "SELECT {} FROM {}",
-        crate::db::quote_ident(&table.blob_col),
-        crate::db::quote_ident(&table.name)
-    );
+) -> Option<(Vec<u8>, String)> {
+    let quote = |name: &str| crate::db::quote_ident(name);
+    let blob = quote(&table.blob_col);
+    let select = format!("SELECT {blob} FROM {}", quote(&table.name));
+    let not_empty = format!("{blob} IS NOT NULL AND length({blob}) > 0");
 
-    // Prefer the strongest identifier available; a 2-row answer means the key is
-    // ambiguous (Alpha reports `server_id_ambiguous` and moves on).
-    let attempts: Vec<(String, Vec<Box<dyn rusqlite::ToSql>>)> = {
-        let mut attempts: Vec<(String, Vec<Box<dyn rusqlite::ToSql>>)> = Vec::new();
-        if let Some(col) = &table.server_col {
-            if server_id > 0 {
-                let sql = format!("{select} WHERE {} = ?1 LIMIT 2", crate::db::quote_ident(col));
-                attempts.push((
-                    sql.clone(),
-                    vec![Box::new(server_id) as Box<dyn rusqlite::ToSql>],
-                ));
-                // Columns with TEXT affinity need the textual form.
-                attempts.push((
-                    sql,
-                    vec![Box::new(server_id.to_string()) as Box<dyn rusqlite::ToSql>],
-                ));
-            }
-        }
-        if let Some(col) = &table.local_col {
-            let sql = format!("{select} WHERE {} = ?1 LIMIT 2", crate::db::quote_ident(col));
+    // (sql, args, label, ambiguous_guard)
+    let mut attempts: Vec<(String, Vec<Box<dyn rusqlite::ToSql>>, String, bool)> = Vec::new();
+
+    if let Some(col) = &table.server_col {
+        if server_id > 0 {
+            let sql = format!(
+                "{select} WHERE {not_empty} AND {} = ?1 LIMIT 2",
+                quote(col)
+            );
             attempts.push((
                 sql.clone(),
-                vec![Box::new(local_id) as Box<dyn rusqlite::ToSql>],
+                vec![Box::new(server_id) as Box<dyn rusqlite::ToSql>],
+                "svr_id".into(),
+                true,
             ));
             attempts.push((
                 sql,
-                vec![Box::new(local_id.to_string()) as Box<dyn rusqlite::ToSql>],
+                vec![Box::new(server_id.to_string()) as Box<dyn rusqlite::ToSql>],
+                "svr_id(text)".into(),
+                true,
             ));
         }
-        if let Some(col) = &table.msg_col {
-            if server_id > 0 {
-                let sql = format!("{select} WHERE {} = ?1 LIMIT 2", crate::db::quote_ident(col));
-                attempts.push((
-                    sql.clone(),
-                    vec![Box::new(server_id.to_string()) as Box<dyn rusqlite::ToSql>],
-                ));
+    }
+
+    if let Some(local_col) = &table.local_col {
+        if let Some(chat_col) = &table.chat_col {
+            if let Some(rowid) = chat_rowid {
+                let sql = format!(
+                    "{select} WHERE {not_empty} AND {} = ?1 AND {} = ?2 LIMIT 2",
+                    quote(local_col),
+                    quote(chat_col)
+                );
                 attempts.push((
                     sql,
-                    vec![Box::new(server_id) as Box<dyn rusqlite::ToSql>],
+                    vec![
+                        Box::new(local_id) as Box<dyn rusqlite::ToSql>,
+                        Box::new(rowid) as Box<dyn rusqlite::ToSql>,
+                    ],
+                    "local_id+chat".into(),
+                    true,
                 ));
             }
         }
-        if let (Some(time_col), true) = (&table.time_col, timestamp > 0) {
-            // Some builds store milliseconds; try both units.
-            let mut stamps = vec![timestamp];
-            if timestamp < 100_000_000_000 {
-                stamps.push(timestamp * 1000);
-            }
-            for stamp in stamps {
-                let base = format!(
-                    "{select} WHERE {} BETWEEN ?1 AND ?2",
-                    crate::db::quote_ident(time_col)
-                );
-                let window = || -> Vec<Box<dyn rusqlite::ToSql>> {
+        let sql = format!("{select} WHERE {not_empty} AND {} = ?1 LIMIT 2", quote(local_col));
+        attempts.push((
+            sql,
+            vec![Box::new(local_id) as Box<dyn rusqlite::ToSql>],
+            "local_id".into(),
+            true,
+        ));
+    }
+
+    if let Some(col) = &table.msg_col {
+        if server_id > 0 {
+            let sql = format!("{select} WHERE {not_empty} AND {} = ?1 LIMIT 2", quote(col));
+            attempts.push((
+                sql.clone(),
+                vec![Box::new(server_id) as Box<dyn rusqlite::ToSql>],
+                "msg_id".into(),
+                true,
+            ));
+            attempts.push((
+                sql,
+                vec![Box::new(server_id.to_string()) as Box<dyn rusqlite::ToSql>],
+                "msg_id(text)".into(),
+                true,
+            ));
+        }
+    }
+
+    if let (Some(time_col), true) = (&table.time_col, timestamp > 0) {
+        // WeChat 4.x stores milliseconds; older builds store seconds. Widen the
+        // window and pick the closest row, matching Alpha's chat + time lookup.
+        let (stamp_ms, stamp_s) = if timestamp >= 100_000_000_000 {
+            (timestamp, timestamp / 1000)
+        } else {
+            (timestamp.saturating_mul(1000), timestamp)
+        };
+        let units: [(i64, i64, &str); 2] = [(stamp_ms, 60_000, "ms"), (stamp_s, 60, "s")];
+        for (stamp, window, unit) in units {
+            let base = format!(
+                "{select} WHERE {not_empty} AND {} BETWEEN ?1 AND ?2",
+                quote(time_col)
+            );
+            let order = format!("ORDER BY abs(COALESCE({},0) - ?4) ASC LIMIT 1", quote(time_col));
+            if let Some(chat_col) = &table.chat_col {
+                if let Some(rowid) = chat_rowid {
+                    let sql = format!("{base} AND {} = ?3 {order}", quote(chat_col));
+                    attempts.push((
+                        sql,
+                        vec![
+                            Box::new(stamp - window) as Box<dyn rusqlite::ToSql>,
+                            Box::new(stamp + window) as Box<dyn rusqlite::ToSql>,
+                            Box::new(rowid) as Box<dyn rusqlite::ToSql>,
+                            Box::new(stamp) as Box<dyn rusqlite::ToSql>,
+                        ],
+                        format!("chat+time({unit})"),
+                        false,
+                    ));
+                }
+                let sql = format!("{base} AND {} = ?3 {order}", quote(chat_col));
+                attempts.push((
+                    sql,
                     vec![
-                        Box::new(stamp - 2000) as Box<dyn rusqlite::ToSql>,
-                        Box::new(stamp + 2000) as Box<dyn rusqlite::ToSql>,
-                    ]
-                };
-                if let Some(chat_col) = &table.chat_col {
-                    if let Some(rowid) = chat_rowid {
-                        let mut sql =
-                            format!("{base} AND {} = ?3", crate::db::quote_ident(chat_col));
-                        sql.push_str(" LIMIT 2");
-                        let mut args = window();
-                        args.push(Box::new(rowid) as Box<dyn rusqlite::ToSql>);
-                        attempts.push((sql, args));
-                    }
-                    let mut sql = format!("{base} AND {} = ?3", crate::db::quote_ident(chat_col));
-                    sql.push_str(" LIMIT 2");
-                    let mut args = window();
-                    args.push(Box::new(chat_id.to_string()) as Box<dyn rusqlite::ToSql>);
-                    attempts.push((sql, args));
-                }
-                if table.chat_col.is_none() {
-                    attempts.push((format!("{base} LIMIT 2"), window()));
-                }
+                        Box::new(stamp - window) as Box<dyn rusqlite::ToSql>,
+                        Box::new(stamp + window) as Box<dyn rusqlite::ToSql>,
+                        Box::new(chat_id.to_string()) as Box<dyn rusqlite::ToSql>,
+                        Box::new(stamp) as Box<dyn rusqlite::ToSql>,
+                    ],
+                    format!("chat(text)+time({unit})"),
+                    false,
+                ));
+            } else {
+                let sql = format!(
+                    "{base} ORDER BY abs(COALESCE({},0) - ?3) ASC LIMIT 1",
+                    quote(time_col)
+                );
+                attempts.push((
+                    sql,
+                    vec![
+                        Box::new(stamp - window) as Box<dyn rusqlite::ToSql>,
+                        Box::new(stamp + window) as Box<dyn rusqlite::ToSql>,
+                        Box::new(stamp) as Box<dyn rusqlite::ToSql>,
+                    ],
+                    format!("time({unit})"),
+                    false,
+                ));
             }
         }
-        attempts
-    };
+    }
 
-    for (sql, args) in attempts {
+    for (sql, args, label, unique) in attempts {
         let Ok(mut stmt) = db.conn().prepare(&sql) else {
             continue;
         };
@@ -388,20 +491,28 @@ fn query_table(
         let mut blobs: Vec<Vec<u8>> = Vec::new();
         while let Ok(Some(row)) = rows.next() {
             if let Ok(blob) = row.get::<_, Vec<u8>>(0) {
-                blobs.push(blob);
+                if !blob.is_empty() {
+                    blobs.push(blob);
+                }
             }
             if blobs.len() > 1 {
                 break;
             }
         }
-        if blobs.len() == 1 {
-            return blobs.pop();
+        if unique {
+            if blobs.len() == 1 {
+                return blobs.pop().map(|blob| (blob, label));
+            }
+            continue;
+        }
+        if let Some(blob) = blobs.into_iter().next() {
+            return Some((blob, label));
         }
     }
     None
 }
 
-fn classify(bytes: Vec<u8>) -> Option<VoicePayload> {
+fn decode_voice(bytes: Vec<u8>, debug: bool) -> Option<VoicePayload> {
     if bytes.starts_with(b"RIFF") {
         return Some(VoicePayload { bytes, ext: "wav" });
     }
@@ -409,13 +520,43 @@ fn classify(bytes: Vec<u8>) -> Option<VoicePayload> {
         return convert_with_ffmpeg(&bytes, "amr", "wav")
             .or_else(|| Some(VoicePayload { bytes, ext: "amr" }));
     }
-    if bytes.starts_with(b"#!SILK") {
-        // No SILK decoder is bundled; keep the raw container instead of dropping
-        // the message, and let ffmpeg try in case the build supports it.
-        return convert_with_ffmpeg(&bytes, "silk", "wav")
-            .or_else(|| Some(VoicePayload { bytes, ext: "silk" }));
+    if silk_magic(&bytes) {
+        match silk_codec::decode_silk(bytes.as_slice(), 24000) {
+            Ok(pcm) if !pcm.is_empty() => {
+                if debug {
+                    eprintln!(
+                        "[voice] SILK 解码成功: {} 字节 PCM -> WAV 24000Hz",
+                        pcm.len()
+                    );
+                }
+                return Some(VoicePayload {
+                    bytes: pcm_to_wav(&pcm, 24000),
+                    ext: "wav",
+                });
+            }
+            Ok(_) => {
+                if debug {
+                    eprintln!("[voice] SILK 解码结果为空");
+                }
+            }
+            Err(error) => {
+                if debug {
+                    eprintln!("[voice] SILK 解码失败: {error:?}");
+                }
+            }
+        }
+        return Some(VoicePayload {
+            bytes,
+            ext: "silk",
+        });
     }
-    None
+    if debug {
+        eprintln!("[voice] 未识别音频头: {}", preview_hex(&bytes));
+    }
+    Some(VoicePayload {
+        bytes,
+        ext: "bin",
+    })
 }
 
 fn convert_with_ffmpeg(bytes: &[u8], input_ext: &str, output_ext: &str) -> Option<VoicePayload> {
@@ -721,6 +862,90 @@ mod tests {
         assert!(payload.bytes.starts_with(b"RIFF"));
         // Wrong chat must not match.
         assert!(index.extract(0, 999, "wxid_other", 1_700_000_000_500).is_none());
+    }
+
+    #[test]
+    fn resolves_millisecond_rows_from_second_timestamps() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let index = wechat_fixture(dir.path());
+        // Message timestamps are seconds; VoiceInfo.create_time is milliseconds.
+        let payload = index
+            .extract(0, 999, "wxid_chat", 1_700_000_000)
+            .expect("voice payload with second-based message timestamp");
+        assert!(payload.bytes.starts_with(b"RIFF"));
+    }
+
+    #[test]
+    fn picks_the_closest_voice_in_the_chat() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let media = dir.path().join("message");
+        std::fs::create_dir_all(&media).unwrap();
+        let path = media.join("media_0.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE Name2Id (user_name TEXT);
+             CREATE TABLE VoiceInfo (
+                 chat_name_id INTEGER,
+                 create_time INTEGER,
+                 local_id INTEGER,
+                 svr_id INTEGER,
+                 voice_data BLOB,
+                 data_index INTEGER
+             );",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO Name2Id (user_name) VALUES ('wxid_chat')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO VoiceInfo VALUES (1, 1700000000000, 1, 0, ?1, 0)",
+            rusqlite::params![b"RIFFfirst".to_vec()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO VoiceInfo VALUES (1, 1700000030000, 2, 0, ?1, 0)",
+            rusqlite::params![b"RIFFsecond".to_vec()],
+        )
+        .unwrap();
+        drop(conn);
+        let index = VoiceIndex::build(dir.path(), None, true, false);
+        let payload = index
+            .extract(0, 999, "wxid_chat", 1_700_000_029)
+            .expect("closest voice");
+        assert_eq!(payload.bytes, b"RIFFsecond");
+        let earlier = index
+            .extract(0, 999, "wxid_chat", 1_700_000_001)
+            .expect("first voice");
+        assert_eq!(earlier.bytes, b"RIFFfirst");
+    }
+
+    #[test]
+    fn decodes_silk_payloads_to_24000hz_wav() {
+        let samples: Vec<u8> = (0..4800i32)
+            .flat_map(|i| ((i * 97 % 1000) as i16 * 20).to_le_bytes())
+            .collect();
+        for tencent in [false, true] {
+            let silk = silk_codec::encode_silk(samples.as_slice(), 24000, 24000, tencent)
+                .expect("encode silk");
+            assert!(silk_magic(&silk));
+            let payload = decode_voice(silk, false).expect("decode silk");
+            assert_eq!(payload.ext, "wav");
+            assert!(payload.bytes.starts_with(b"RIFF"));
+            assert_eq!(&payload.bytes[20..22], &1u16.to_le_bytes()); // PCM
+            assert_eq!(&payload.bytes[22..24], &1u16.to_le_bytes()); // mono
+            assert_eq!(
+                u32::from_le_bytes(payload.bytes[24..28].try_into().unwrap()),
+                24000
+            );
+            assert_eq!(&payload.bytes[34..36], &16u16.to_le_bytes());
+            assert!(payload.bytes.len() > 44 + samples.len() / 2);
+        }
+    }
+
+    #[test]
+    fn exports_unknown_voice_blobs_instead_of_dropping_them() {
+        let payload = decode_voice(b"\x00\x01weird".to_vec(), false).expect("raw fallback");
+        assert_eq!(payload.ext, "bin");
+        assert_eq!(payload.bytes, b"\x00\x01weird");
     }
 
     #[test]

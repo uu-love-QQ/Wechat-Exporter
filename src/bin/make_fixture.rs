@@ -190,6 +190,27 @@ fn build(out: &Path) -> Result<()> {
         let alice_table = format!("Msg_{}", md5_hex(alice));
         create_message_table(&conn, &group_table)?;
         create_message_table(&conn, &alice_table)?;
+        // Voice payloads live in a media table, keyed by chat rowid and time.
+        conn.execute_batch(
+            "CREATE TABLE VoiceInfo (
+                chat_name_id INTEGER,
+                create_time INTEGER,
+                local_id INTEGER,
+                svr_id INTEGER,
+                voice_data BLOB,
+                data_index INTEGER
+            );",
+        )?;
+        let pcm: Vec<u8> = (0..12000i32)
+            .map(|i| (((i % 200) - 100) * 120) as i16)
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let silk = silk_codec::encode_silk(pcm.as_slice(), 24000, 24000, true)
+            .map_err(|error| anyhow::anyhow!("silk encode: {error:?}"))?;
+        conn.execute(
+            "INSERT INTO VoiceInfo VALUES (4, ?1, 8, 9008, ?2, 0)",
+            rusqlite::params![1703001670000i64, silk],
+        )?;
 
         insert_message(
             &conn,
@@ -285,6 +306,20 @@ fn build(out: &Path) -> Result<()> {
             1703001660,
             ZSTD_HELLO,
             4,
+            None,
+        )?;
+        let voice_xml = "<msg><voicemsg endflag=\"1\" voiceformat=\"4\" voicelength=\"500\" length=\"400\"/></msg>";
+        insert_message(
+            &conn,
+            &group_table,
+            8,
+            9008,
+            34,
+            8,
+            1,
+            1703001670,
+            voice_xml.as_bytes(),
+            0,
             None,
         )?;
 

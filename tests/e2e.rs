@@ -92,7 +92,7 @@ fn exports_all_formats_and_media() {
     let json: Value =
         serde_json::from_slice(&fs::read(output.join("conversation.json")).unwrap()).unwrap();
     let messages = json["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 7);
+    assert_eq!(messages.len(), 8);
     assert!(messages.iter().any(|message| message["content"] == "hello group"));
     assert!(messages
         .iter()
@@ -109,10 +109,20 @@ fn exports_all_formats_and_media() {
         .as_str()
         .unwrap_or("")
         .starts_with("media/image/")));
+    let voice = messages
+        .iter()
+        .find(|message| message["type"] == "语音消息")
+        .expect("voice message");
+    let voice_path = voice["media"]["path"].as_str().expect("voice media path");
+    assert!(voice_path.starts_with("media/voice/"), "{voice_path}");
+    assert!(voice_path.ends_with(".wav"), "{voice_path}");
+    let wav = fs::read(output.join(voice_path)).expect("voice wav");
+    assert!(wav.starts_with(b"RIFF"));
+    assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 24000);
     assert!(messages.iter().all(|message| message.get("source").is_none()));
     let report: Value =
         serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
-    assert_eq!(report["conversations"][0]["message_count"], 7);
+    assert_eq!(report["conversations"][0]["message_count"], 8);
     assert!(report["conversations"][0]["media"]["saved"].as_u64().unwrap() >= 1);
 }
 
@@ -172,7 +182,7 @@ fn exported_chatlab_matches_spec_shape() {
     assert_eq!(value["meta"]["platform"], "wechat");
     assert_eq!(value["meta"]["type"], "group");
     assert!(!value["members"].as_array().unwrap().is_empty());
-    assert_eq!(value["messages"].as_array().unwrap().len(), 7);
+    assert_eq!(value["messages"].as_array().unwrap().len(), 8);
     let lines = fs::read_to_string(output.join("conversation.chatlab.jsonl")).unwrap();
     let lines: Vec<&str> = lines.lines().collect();
     assert!(lines[0].contains("\"_type\":\"header\""));
