@@ -26,6 +26,8 @@ struct VoiceDatabase {
 
 pub struct VoiceIndex {
     databases: Vec<VoiceDatabase>,
+    debug: bool,
+    misses: std::sync::atomic::AtomicUsize,
 }
 
 pub struct VoicePayload {
@@ -107,7 +109,11 @@ impl VoiceIndex {
                 );
             }
         }
-        Self { databases }
+        Self {
+            databases,
+            debug,
+            misses: std::sync::atomic::AtomicUsize::new(0),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -138,7 +144,139 @@ impl VoiceIndex {
                 }
             }
         }
+        if self.debug
+            && self
+                .misses
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                < 3
+        {
+            eprintln!(
+                "[voice] 未命中: svr_id={server_id} local_id={local_id} chat={chat_id} ts={timestamp}"
+            );
+            for database in &self.databases {
+                let chat_rowid = database.chat_rowids.get(chat_id).copied();
+                eprintln!(
+                    "[voice]   chat_rowid={chat_rowid:?} (Name2Id 共 {} 条)",
+                    database.chat_rowids.len()
+                );
+                for table in &database.tables {
+                    dump_sample(&database.db, table, server_id, local_id, chat_rowid, timestamp);
+                }
+            }
+        }
         None
+    }
+}
+
+fn dump_sample(
+    db: &crate::db::Db,
+    table: &VoiceTable,
+    server_id: i64,
+    local_id: i64,
+    chat_rowid: Option<i64>,
+    timestamp: i64,
+) {
+    let quote = |name: &str| crate::db::quote_ident(name);
+    let mut select = vec![quote(&table.blob_col)];
+    let mut fields: Vec<&str> = Vec::new();
+    for column in [
+        table.server_col.as_deref(),
+        table.local_col.as_deref(),
+        table.chat_col.as_deref(),
+        table.time_col.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        fields.push(column);
+        select.push(quote(column));
+    }
+    let sql = format!(
+        "SELECT {} FROM {} LIMIT 1",
+        select.join(","),
+        quote(&table.name)
+    );
+    if let Ok(mut stmt) = db.conn().prepare(&sql) {
+        if let Ok(mut rows) = stmt.query([]) {
+            if let Ok(Some(row)) = rows.next() {
+                let len = row.get::<_, Vec<u8>>(0).map(|b| b.len()).unwrap_or(0);
+                let mut parts = Vec::new();
+                for (index, field) in fields.iter().enumerate() {
+                    let value: String = row
+                        .get::<_, rusqlite::types::Value>(index + 1)
+                        .map(|v| format!("{v:?}"))
+                        .unwrap_or_else(|_| "?".into());
+                    parts.push(format!("{field}={value}"));
+                }
+                eprintln!(
+                    "[voice]   样本 {}: blob={}B {}",
+                    table.name,
+                    len,
+                    parts.join(" ")
+                );
+            }
+        }
+    }
+    if let Some(server_col) = &table.server_col {
+        let sql = format!(
+            "SELECT COUNT(*) FROM {} WHERE {} = ?1",
+            quote(&table.name),
+            quote(server_col)
+        );
+        if let Ok(count) = db
+            .conn()
+            .query_row(&sql, [server_id], |row| row.get::<_, i64>(0))
+        {
+            eprintln!("[voice]   {} = {} 命中 {} 行", server_col, server_id, count);
+        }
+    }
+    if let Some(local_col) = &table.local_col {
+        let sql = format!(
+            "SELECT COUNT(*) FROM {} WHERE {} = ?1",
+            quote(&table.name),
+            quote(local_col)
+        );
+        if let Ok(count) = db
+            .conn()
+            .query_row(&sql, [local_id], |row| row.get::<_, i64>(0))
+        {
+            eprintln!("[voice]   {} = {} 命中 {} 行", local_col, local_id, count);
+        }
+    }
+    if let Some(chat_col) = &table.chat_col {
+        if let Some(rowid) = chat_rowid {
+            let sql = format!(
+                "SELECT COUNT(*) FROM {} WHERE {} = ?1",
+                quote(&table.name),
+                quote(chat_col)
+            );
+            if let Ok(count) = db
+                .conn()
+                .query_row(&sql, [rowid], |row| row.get::<_, i64>(0))
+            {
+                eprintln!("[voice]   {} = {} 命中 {} 行", chat_col, rowid, count);
+            }
+        }
+    }
+    if let Some(time_col) = &table.time_col {
+        for stamp in [timestamp, timestamp * 1000] {
+            let sql = format!(
+                "SELECT COUNT(*) FROM {} WHERE {} BETWEEN ?1 AND ?2",
+                quote(&table.name),
+                quote(time_col)
+            );
+            if let Ok(count) = db.conn().query_row(&sql, [stamp - 2000, stamp + 2000], |row| {
+                row.get::<_, i64>(0)
+            }) {
+                eprintln!(
+                    "[voice]   {} 在 [{}, {}] 命中 {} 行",
+                    time_col,
+                    stamp - 2000,
+                    stamp + 2000,
+                    count
+                );
+            }
+        }
     }
 }
 
@@ -200,33 +338,40 @@ fn query_table(
             }
         }
         if let (Some(time_col), true) = (&table.time_col, timestamp > 0) {
-            let base = format!(
-                "{select} WHERE {} BETWEEN ?1 AND ?2",
-                crate::db::quote_ident(time_col)
-            );
-            let window = || -> Vec<Box<dyn rusqlite::ToSql>> {
-                vec![
-                    Box::new(timestamp - 2000) as Box<dyn rusqlite::ToSql>,
-                    Box::new(timestamp + 2000) as Box<dyn rusqlite::ToSql>,
-                ]
-            };
-            if let Some(chat_col) = &table.chat_col {
-                if let Some(rowid) = chat_rowid {
+            // Some builds store milliseconds; try both units.
+            let mut stamps = vec![timestamp];
+            if timestamp < 100_000_000_000 {
+                stamps.push(timestamp * 1000);
+            }
+            for stamp in stamps {
+                let base = format!(
+                    "{select} WHERE {} BETWEEN ?1 AND ?2",
+                    crate::db::quote_ident(time_col)
+                );
+                let window = || -> Vec<Box<dyn rusqlite::ToSql>> {
+                    vec![
+                        Box::new(stamp - 2000) as Box<dyn rusqlite::ToSql>,
+                        Box::new(stamp + 2000) as Box<dyn rusqlite::ToSql>,
+                    ]
+                };
+                if let Some(chat_col) = &table.chat_col {
+                    if let Some(rowid) = chat_rowid {
+                        let mut sql =
+                            format!("{base} AND {} = ?3", crate::db::quote_ident(chat_col));
+                        sql.push_str(" LIMIT 2");
+                        let mut args = window();
+                        args.push(Box::new(rowid) as Box<dyn rusqlite::ToSql>);
+                        attempts.push((sql, args));
+                    }
                     let mut sql = format!("{base} AND {} = ?3", crate::db::quote_ident(chat_col));
                     sql.push_str(" LIMIT 2");
                     let mut args = window();
-                    args.push(Box::new(rowid) as Box<dyn rusqlite::ToSql>);
+                    args.push(Box::new(chat_id.to_string()) as Box<dyn rusqlite::ToSql>);
                     attempts.push((sql, args));
                 }
-                let mut sql = format!("{base} AND {} = ?3", crate::db::quote_ident(chat_col));
-                sql.push_str(" LIMIT 2");
-                let mut args = window();
-                args.push(Box::new(chat_id.to_string()) as Box<dyn rusqlite::ToSql>);
-                attempts.push((sql, args));
-            }
-            // Without a chat column the ±2s window is the only key available.
-            if table.chat_col.is_none() {
-                attempts.push((format!("{base} LIMIT 2"), window()));
+                if table.chat_col.is_none() {
+                    attempts.push((format!("{base} LIMIT 2"), window()));
+                }
             }
         }
         attempts
