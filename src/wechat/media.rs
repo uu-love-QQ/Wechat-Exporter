@@ -1413,6 +1413,34 @@ fn decrypt_aes_cbc_key_iv(data: &[u8], key: &[u8; 16]) -> Option<Vec<u8>> {
 }
 
 static CDN_AUTH_OK: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The CDN accepts `authkey=<base64(DER)>` (hex gets `ASN decode failed`).
+fn wire_authkey(candidate_hex: &str) -> Option<String> {
+    use base64::Engine as _;
+    let bytes = hex::decode(candidate_hex).ok()?;
+    if bytes.len() < 8 || bytes[0] != 0x30 {
+        return None;
+    }
+    Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// `cdnattachurl` carries the file UUID; authkey tickets are file-scoped, so
+/// prefer candidates whose DER embeds that UUID.
+fn url_fileid(url: &str) -> Option<String> {
+    let param = url.split("encrypted_param=").nth(1)?.split('&').next()?;
+    let bytes = hex::decode(param).ok()?;
+    super::auth::find_uuid(&bytes)
+}
+
+fn candidate_has_fileid(candidate_hex: &str, fileid: &str) -> bool {
+    hex::decode(candidate_hex)
+        .map(|bytes| {
+            bytes
+                .windows(fileid.len())
+                .any(|window| window == fileid.as_bytes())
+        })
+        .unwrap_or(false)
+}
 static CDN_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static CDN_AUTH_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -1458,6 +1486,9 @@ fn download_from_cdn(
     if candidates.is_empty() {
         candidates.push(String::new());
     }
+    if let Some(fileid) = url_fileid(url) {
+        candidates.sort_by_key(|candidate| !candidate_has_fileid(candidate, &fileid));
+    }
     // A full sweep already proved every captured ticket is rejected; avoid
     // repeating it for every remaining message in this run.
     if CDN_AUTH_FAILED.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1467,7 +1498,15 @@ fn download_from_cdn(
     let mut last_error = String::from("无 authkey 或请求未发出");
     let mut saw_auth_rejection = false;
     for key in &candidates {
-        let signed_url = super::auth::with_auth_key(url, key);
+        let wire = if key.is_empty() {
+            String::new()
+        } else {
+            let Some(wire) = wire_authkey(key) else {
+                continue;
+            };
+            wire
+        };
+        let signed_url = super::auth::with_auth_key(url, &wire);
         let mut request = ureq::get(&signed_url)
             .set("User-Agent", "MicroMessenger Client")
             .timeout(std::time::Duration::from_secs(60));

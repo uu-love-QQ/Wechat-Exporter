@@ -126,13 +126,15 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 ```
 
 真实下载地址是 `https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_param=<cdnattachurl>`，
-但腾讯强制要求同请求携带 `authkey`（Hex 编码的 ASN.1 DER 票据）。实测服务端行为：
+但腾讯强制要求同请求携带 `authkey`。**线上编码是 `authkey=<base64(DER)>`**（URL 编码后），
+不是 Hex；Hex 会得到 `ASN decode failed`。实测服务端行为：
 
 | 请求 | 响应 |
 |---|---|
 | 不带 `authkey` | `403 authorization error!` |
-| `authkey` 为空 | `400 authkey param is empty` |
-| `authkey` 非 ASN.1 | `400 plain authkey ASN decode failed` |
+| `authkey` 传原始字节 | `400 authkey param is empty` |
+| `authkey` 传 Hex 文本 | `400 plain authkey ASN decode failed` |
+| `authkey` 传 base64(DER)，但票据与文件/会话不符 | `400 plain authkey decryption failed` |
 
 因此本工具提供多层凭据来源，按优先级使用：
 
@@ -142,10 +144,11 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 4. `.wechat-exporter.json` 中由 `init` 捕获的候选列表。
 
 登录凭据里的 `authkey`（常见形态是以 `@im.wxwork` 结尾的 protobuf，如
-`0A2B...10...`）**不是** CDN 票据：服务端会以 `plain authkey ASN decode failed` 拒绝。
-真正的票据是 `GetCDNDns` 路由信息中的 `authkey`（`authkey/frontip/zoneip` 三元组），
-以 Hex 编码的 ASN.1 DER 存在。扫描时用完整 DER 解析校验（顶层 `SEQUENCE`、长度闭合），
-并把所有候选按「DER 有效优先」排序；下载时逐个尝试，成功的票据在本次运行内缓存。
+`0A2B...10...`）**不是** CDN 票据。真正的票据是 `GetCDNDns` 路由信息中的
+`authkey`（`authkey/frontip/zoneip` 三元组），以 ASN.1 DER 存在；线上发送时用
+base64，不是 hex。扫描同时收集内存中以 **Hex** 或 **base64** 存储的完整 DER，
+过滤顶层版本号为 0 的 `cdnattachurl` 文件令牌，并按 DER 有效性与文件 UUID 匹配排序；
+下载时逐个尝试，成功的票据在本次运行内缓存。`--authkey` 接收 Hex DER，内部自动转 base64。
 
 `--dump-session` 会只扫描并打印当前微信进程的 Cookie 字段与全部 `authkey` 候选
 （含 `asn1=是/否` 标记），不会读取数据库。扫描按「小内存区优先」进行，默认 30 秒上限，
@@ -153,7 +156,9 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 `--authkey <HEX>` 手动注入验证。
 
 导出默认**不扫描**进程内存（直接使用配置中的候选），避免每次导出卡顿；
-需要刷新时加 `--scan-session`（20 秒上限）或先运行 `init` / `--dump-session`。
+需要刷新时加 `--scan-session` 或先运行 `init` / `--dump-session`。
+扫描上限由 `--scan-seconds`（默认 10 秒）控制，`--dump-session` 会标出每个候选的
+`asn1=` 与内嵌 `uuid=`，便于把文件专属票据与路由票据区分开。
 
 同时 `--cookie "wxuin=..; wxsid=..; skey=..; pass_ticket=.."` 可手动注入登录 Cookie；
 `init` 会从运行中的 `Weixin.exe` 私有堆扫描并保存 Cookie 与全部 authkey 候选。

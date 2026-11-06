@@ -5,6 +5,7 @@
 //! Alpha obtains this material from the running client; we read the same values
 //! straight out of the `Weixin.exe` private heap without injecting anything.
 
+use base64::Engine as _;
 use std::collections::BTreeMap;
 
 /// Login material recovered from the running WeChat client.
@@ -113,10 +114,35 @@ pub fn asn1_der_valid(value: &str) -> bool {
     let Ok(bytes) = hex::decode(value) else {
         return false;
     };
+    der_bytes_valid(&bytes)
+}
+
+/// Locate the first UUID text embedded in a DER/ticket buffer.
+pub fn find_uuid(bytes: &[u8]) -> Option<String> {
+    for window in bytes.windows(36) {
+        if window[8] == b'-'
+            && window[13] == b'-'
+            && window[18] == b'-'
+            && window[23] == b'-'
+            && window.iter().enumerate().all(|(index, byte)| {
+                if matches!(index, 8 | 13 | 18 | 23) {
+                    *byte == b'-'
+                } else {
+                    byte.is_ascii_hexdigit()
+                }
+            })
+        {
+            return Some(String::from_utf8_lossy(window).to_string());
+        }
+    }
+    None
+}
+
+fn der_bytes_valid(bytes: &[u8]) -> bool {
     if bytes.len() < 8 || bytes[0] != 0x30 {
         return false;
     }
-    matches!(der_end(&bytes, 0, 0), Some(end) if end == bytes.len())
+    matches!(der_end(bytes, 0, 0), Some(end) if end == bytes.len())
 }
 
 fn der_end(bytes: &[u8], mut offset: usize, depth: u8) -> Option<usize> {
@@ -157,6 +183,27 @@ fn der_end(bytes: &[u8], mut offset: usize, depth: u8) -> Option<usize> {
     Some(end)
 }
 
+fn der_first_integer(bytes: &[u8]) -> Option<i64> {
+    if bytes.len() < 3 || bytes[0] != 0x30 || bytes[1] & 0x80 != 0 {
+        return None;
+    }
+    let mut offset = 2usize;
+    if offset >= bytes.len() || bytes[offset] != 0x02 {
+        return None;
+    }
+    offset += 1;
+    let length = *bytes.get(offset)? as usize;
+    offset += 1;
+    if length == 0 || length > 8 || offset + length > bytes.len() {
+        return None;
+    }
+    let mut value: i64 = 0;
+    for byte in &bytes[offset..offset + length] {
+        value = value.checked_mul(256)?.checked_add(*byte as i64)?;
+    }
+    Some(value)
+}
+
 fn push_auth_candidate(session: &mut WechatSession, value: String) {
     let value = value.trim().to_string();
     if value.len() < 16 || value.len() > 65_536 || value.len() % 2 != 0 {
@@ -164,6 +211,13 @@ fn push_auth_candidate(session: &mut WechatSession, value: String) {
     }
     if !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return;
+    }
+    // Top-level version 0 envelopes are `cdnattachurl` file tokens, which the
+    // CDN rejects as authkeys ("authkey param is empty"); skip them.
+    if let Ok(bytes) = hex::decode(&value) {
+        if der_first_integer(&bytes) == Some(0) {
+            return;
+        }
     }
     if !session.auth_key_candidates.iter().any(|item| item == &value)
         && session.auth_key_candidates.len() < 32
@@ -226,6 +280,43 @@ fn value_after(buffer: &[u8], start: usize) -> Option<String> {
         None
     } else {
         String::from_utf8(out).ok()
+    }
+}
+
+fn is_base64_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
+}
+
+/// The CDN expects `authkey=<base64(DER)>`; WeChat also keeps that form in
+/// memory. Decode candidate runs and keep those that parse as complete DER.
+fn scan_base64_der_runs(buffer: &[u8], session: &mut WechatSession) {
+    let mut i = 0usize;
+    while i < buffer.len() {
+        if is_base64_byte(buffer[i]) {
+            let start = i;
+            while i < buffer.len() && is_base64_byte(buffer[i]) && i - start < 65_536 {
+                i += 1;
+            }
+            let run = &buffer[start..i];
+            if run.len() >= 48 && run.len() % 4 == 0 {
+                if let Ok(text) = std::str::from_utf8(run) {
+                    for decoded in [
+                        base64::engine::general_purpose::STANDARD.decode(text),
+                        base64::engine::general_purpose::STANDARD_NO_PAD.decode(text),
+                        base64::engine::general_purpose::URL_SAFE.decode(text),
+                        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text),
+                    ] {
+                        if let Ok(bytes) = decoded {
+                            if der_bytes_valid(&bytes) {
+                                push_auth_candidate(session, hex::encode(&bytes));
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
     }
 }
 
@@ -339,6 +430,7 @@ pub fn scan_buffer_for_cookies(buffer: &[u8], session: &mut WechatSession) {
     // expose relevant labels.
     if contains_any(buffer, &[b"authkey", b"AuthKey", b"cdninfo", b"frontip", b"zoneip"]) {
         scan_asn1_hex_runs(buffer, session);
+        scan_base64_der_runs(buffer, session);
     }
 
     // Cookies may also be stored as `"skey":"..."` inside JSON.
@@ -413,24 +505,40 @@ pub fn override_session(base: &mut WechatSession, extra: &WechatSession) {
 }
 
 /// Append `authkey` to a C2C download URL when the session carries one.
-pub fn with_auth_key(url: &str, auth_key: &str) -> String {
-    if auth_key.is_empty() || url.contains("authkey=") || !url.contains("novac2c") {
+pub fn with_auth_key(url: &str, wire_auth_key: &str) -> String {
+    if wire_auth_key.is_empty() || url.contains("authkey=") || !url.contains("novac2c") {
         return url.to_string();
     }
     let separator = if url.contains('?') { '&' } else { '?' };
-    format!("{url}{separator}authkey={auth_key}")
+    // The server base64-decodes this value; `+`, `/` and `=` must be escaped.
+    let encoded: String = wire_auth_key
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect();
+    format!("{url}{separator}authkey={encoded}")
 }
 
 #[cfg(target_os = "windows")]
 pub fn scan_from_process() -> Option<WechatSession> {
-    scan_from_process_inner(std::time::Duration::from_secs(20), true)
+    scan_from_process_inner(std::time::Duration::from_secs(10), true)
 }
 
 /// Collect every authkey candidate (used by `--dump-session`), even after a
 /// complete-looking session was found.
 #[cfg(target_os = "windows")]
 pub fn scan_from_process_collect() -> Option<WechatSession> {
-    scan_from_process_inner(std::time::Duration::from_secs(30), false)
+    scan_from_process_collect_for(10)
+}
+
+#[cfg(target_os = "windows")]
+pub fn scan_from_process_collect_for(seconds: u64) -> Option<WechatSession> {
+    scan_from_process_inner(std::time::Duration::from_secs(seconds.max(2)), false)
 }
 
 #[cfg(target_os = "windows")]
@@ -642,6 +750,11 @@ pub fn scan_from_process_collect() -> Option<WechatSession> {
     None
 }
 
+#[cfg(not(target_os = "windows"))]
+pub fn scan_from_process_collect_for(_seconds: u64) -> Option<WechatSession> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,7 +825,7 @@ mod tests {
 
     #[test]
     fn prefers_the_asn1_authkey_candidate() {
-        let der = "304902010002040500a0be02032e6a6f02041b5b076f02046aea90ba042466663062336363312d393131342d343338302d623063302d393937313136333463633430020405180005020100";
+        let der = "306b020102046430620201000204dd837c7702030f424402045f030d0102046ae54ba7042464353363343866332d656133382d346235372d393861392d6661386239393335643731340203102800020303c3f004100906042891c60977b784b0eaefff9d9f0201010201000400";
         let protobuf = "0A2B6F4E2D4D77415141414141423462304851773832436B314B456A705356544C327340696D2E7778776F726B10B18CE9EF07";
         let buffer = format!("authkey={protobuf}\0junk\0{der}\0");
         let mut session = WechatSession::default();
@@ -735,6 +848,10 @@ mod tests {
         assert_eq!(with_auth_key(&signed, "0011"), signed);
         let other = "http://vweixinf.tc.qq.com/x?m=1";
         assert_eq!(with_auth_key(other, "0011"), other);
+        assert_eq!(
+            with_auth_key(url, "a+b/c="),
+            "https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_param=AA&authkey=a%2Bb%2Fc%3D"
+        );
     }
 
     #[test]

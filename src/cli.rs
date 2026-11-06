@@ -154,7 +154,7 @@ pub struct Cli {
     #[arg(long = "cookie", value_name = "COOKIE")]
     pub cookie: Option<String>,
 
-    /// 手动指定腾讯 C2C CDN 下载票据 (`authkey`, Hex 编码的 ASN.1 DER)
+    /// 手动指定腾讯 C2C CDN 下载票据 (`authkey`, Hex 编码的 ASN.1 DER，内部转 base64 发送)
     #[arg(long = "authkey", value_name = "HEX")]
     pub authkey: Option<String>,
     /// 仅扫描并打印微信进程中的 Cookie 与 C2C authkey 候选，不访问数据库
@@ -163,6 +163,9 @@ pub struct Cli {
     /// 导出前扫描微信进程内存以刷新 Cookie/authkey（默认关闭，避免大内存扫描卡顿）
     #[arg(long = "scan-session")]
     pub scan_session: bool,
+    /// 内存扫描上限秒数（--dump-session / --scan-session），默认 10
+    #[arg(long = "scan-seconds", value_name = "SECS", default_value_t = 10)]
+    pub scan_seconds: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -276,6 +279,7 @@ pub struct ValidatedCli {
     pub cookie: Option<String>,
     pub authkey: Option<String>,
     pub scan_session: bool,
+    pub scan_seconds: u64,
 }
 
 impl Cli {
@@ -303,6 +307,7 @@ impl Cli {
                 cookie: self.cookie.clone(),
                 authkey: self.authkey.clone(),
                 scan_session: self.scan_session,
+                scan_seconds: self.scan_seconds,
             });
         }
         if self.detect_databases {
@@ -328,6 +333,7 @@ impl Cli {
                 cookie: self.cookie.clone(),
                 authkey: self.authkey.clone(),
                 scan_session: self.scan_session,
+                scan_seconds: self.scan_seconds,
             });
         }
 
@@ -526,6 +532,7 @@ impl Cli {
             cookie: self.cookie,
             authkey: self.authkey,
             scan_session: self.scan_session,
+            scan_seconds: self.scan_seconds,
         })
     }
 }

@@ -103,9 +103,10 @@ fn run_detect_databases() -> Result<()> {
     Ok(())
 }
 
-fn run_dump_session() -> Result<()> {
+fn run_dump_session(seconds: u64) -> Result<()> {
     println!("=== 微信会话凭据扫描 ===");
-    let Some(session) = wechat::auth::scan_from_process_collect() else {
+    println!("[i] 正在扫描微信进程内存（上限 {} 秒，每秒报告进度）...", seconds);
+    let Some(session) = wechat::auth::scan_from_process_collect_for(seconds) else {
         println!("[!] 未找到运行中的 Weixin.exe，或未读取到登录凭据。");
         return Ok(());
     };
@@ -120,11 +121,16 @@ fn run_dump_session() -> Result<()> {
     );
     println!("authkey 候选: {} 个", session.auth_key_candidates.len());
     for (index, candidate) in session.auth_key_candidates.iter().enumerate() {
+        let uuid = hex::decode(candidate)
+            .ok()
+            .and_then(|bytes| wechat::auth::find_uuid(&bytes))
+            .unwrap_or_default();
         println!(
-            "  [{}] len={} asn1={} {}",
+            "  [{}] len={} asn1={} uuid={} {}",
             index + 1,
             candidate.len(),
             if wechat::auth::asn1_der_valid(candidate) { "是" } else { "否" },
+            if uuid.is_empty() { "-" } else { &uuid },
             candidate
         );
     }
@@ -266,7 +272,7 @@ pub fn run() -> Result<()> {
         return run_detect_databases();
     }
     if matches!(options.mode, Mode::DumpSession) {
-        return run_dump_session();
+        return run_dump_session(options.scan_seconds);
     }
 
     let layout = discover(&options.source_database)?;
@@ -309,8 +315,11 @@ pub fn run() -> Result<()> {
     // Session material for the private-file CDN: live client memory first, then
     // CLI flags, then persisted config.
     let mut session = if options.scan_session {
-        println!("[i] 正在扫描微信进程内存以刷新 Cookie/authkey（--scan-session）...");
-        wechat::auth::scan_from_process().unwrap_or_default()
+        println!(
+            "[i] 正在扫描微信进程内存以刷新 Cookie/authkey（--scan-session，上限 {} 秒）...",
+            options.scan_seconds
+        );
+        wechat::auth::scan_from_process_collect_for(options.scan_seconds).unwrap_or_default()
     } else {
         wechat::auth::WechatSession::default()
     };
