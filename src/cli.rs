@@ -160,6 +160,9 @@ pub struct Cli {
     /// 仅扫描并打印微信进程中的 Cookie 与 C2C authkey 候选，不访问数据库
     #[arg(long = "dump-session")]
     pub dump_session: bool,
+    /// 导出前扫描微信进程内存以刷新 Cookie/authkey（默认关闭，避免大内存扫描卡顿）
+    #[arg(long = "scan-session")]
+    pub scan_session: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -272,6 +275,7 @@ pub struct ValidatedCli {
     pub debug: bool,
     pub cookie: Option<String>,
     pub authkey: Option<String>,
+    pub scan_session: bool,
 }
 
 impl Cli {
@@ -298,6 +302,7 @@ impl Cli {
                 debug: self.debug,
                 cookie: self.cookie.clone(),
                 authkey: self.authkey.clone(),
+                scan_session: self.scan_session,
             });
         }
         if self.detect_databases {
@@ -322,6 +327,7 @@ impl Cli {
                 debug: self.debug,
                 cookie: self.cookie.clone(),
                 authkey: self.authkey.clone(),
+                scan_session: self.scan_session,
             });
         }
 
@@ -519,6 +525,7 @@ impl Cli {
             debug: self.debug,
             cookie: self.cookie,
             authkey: self.authkey,
+            scan_session: self.scan_session,
         })
     }
 }

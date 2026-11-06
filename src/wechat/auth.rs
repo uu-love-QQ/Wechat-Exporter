@@ -229,6 +229,12 @@ fn value_after(buffer: &[u8], start: usize) -> Option<String> {
     }
 }
 
+fn contains_any(buffer: &[u8], needles: &[&[u8]]) -> bool {
+    needles
+        .iter()
+        .any(|needle| buffer.windows(needle.len()).any(|window| window == *needle))
+}
+
 fn scan_asn1_hex_runs(buffer: &[u8], session: &mut WechatSession) {
     let mut i = 0usize;
     while i < buffer.len() {
@@ -328,9 +334,12 @@ pub fn scan_buffer_for_cookies(buffer: &[u8], session: &mut WechatSession) {
         }
     }
 
-    // The CDN route ticket is a hex-encoded ASN.1 DER blob. When its `authkey`
-    // label lives in another allocation, fall back to validating any long hex run.
-    scan_asn1_hex_runs(buffer, session);
+    // The CDN route ticket is a hex-encoded ASN.1 DER blob. Scanning every byte
+    // of WeChat's multi-gigabyte heap is far too slow; only inspect chunks that
+    // expose relevant labels.
+    if contains_any(buffer, &[b"authkey", b"AuthKey", b"cdninfo", b"frontip", b"zoneip"]) {
+        scan_asn1_hex_runs(buffer, session);
+    }
 
     // Cookies may also be stored as `"skey":"..."` inside JSON.
     for (name, slot) in [
@@ -414,6 +423,21 @@ pub fn with_auth_key(url: &str, auth_key: &str) -> String {
 
 #[cfg(target_os = "windows")]
 pub fn scan_from_process() -> Option<WechatSession> {
+    scan_from_process_inner(std::time::Duration::from_secs(20), true)
+}
+
+/// Collect every authkey candidate (used by `--dump-session`), even after a
+/// complete-looking session was found.
+#[cfg(target_os = "windows")]
+pub fn scan_from_process_collect() -> Option<WechatSession> {
+    scan_from_process_inner(std::time::Duration::from_secs(30), false)
+}
+
+#[cfg(target_os = "windows")]
+fn scan_from_process_inner(
+    budget: std::time::Duration,
+    stop_when_complete: bool,
+) -> Option<WechatSession> {
     use std::ffi::c_void;
 
     type HANDLE = *mut c_void;
@@ -488,7 +512,10 @@ pub fn scan_from_process() -> Option<WechatSession> {
 
     let mut session = WechatSession::default();
     const CHUNK: usize = 4 * 1024 * 1024;
-    const OVERLAP: usize = 96;
+    const MAX_REGION: usize = 128 * 1024 * 1024;
+    let started = std::time::Instant::now();
+    let mut scanned: u64 = 0;
+    let mut last_report = std::time::Instant::now();
 
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -515,12 +542,15 @@ pub fn scan_from_process() -> Option<WechatSession> {
         }
         CloseHandle(snapshot);
 
-        let mut buffer = vec![0u8; CHUNK + OVERLAP];
+        let mut buffer = vec![0u8; CHUNK];
         'processes: for pid in pids {
             let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
             if handle.is_null() {
                 continue;
             }
+            // Collect readable private regions and scan the smallest ones first:
+            // session material lives in heaps, while Chromium reserves are huge.
+            let mut regions: Vec<(usize, usize)> = Vec::new();
             let mut address = 0usize;
             let mut mbi = std::mem::zeroed::<MEMORY_BASIC_INFORMATION>();
             let mbi_size = std::mem::size_of::<MEMORY_BASIC_INFORMATION>();
@@ -533,38 +563,64 @@ pub fn scan_from_process() -> Option<WechatSession> {
                     break;
                 }
                 let readable = mbi.State == MEM_COMMIT
-                    && (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE)
+                    && mbi.Type == MEM_PRIVATE
+                    && region <= MAX_REGION
                     && (mbi.Protect & 0x01) == 0
                     && (mbi.Protect & 0x100) == 0;
                 if readable {
-                    let mut offset = 0usize;
-                    while offset < region {
-                        let want = CHUNK.min(region - offset);
-                        let mut read = 0usize;
-                        if ReadProcessMemory(
-                            handle,
-                            (mbi.BaseAddress as usize + offset) as *const c_void,
-                            buffer.as_mut_ptr() as *mut c_void,
-                            want,
-                            &mut read,
-                        ) != 0
-                            && read >= 8
-                        {
-                            let end = (read + OVERLAP).min(buffer.len());
-                            scan_buffer_for_cookies(&buffer[..end], &mut session);
-                            if session_complete(&session) {
-                                break 'processes;
-                            }
-                        }
-                        offset += want;
-                        if want < CHUNK {
-                            break;
-                        }
-                    }
+                    regions.push((mbi.BaseAddress as usize, region));
                 }
                 address = (mbi.BaseAddress as usize).saturating_add(region);
             }
+            regions.sort_by_key(|(_, size)| *size);
+
+            let mut stop_all = false;
+            for (base, region) in regions {
+                let mut offset = 0usize;
+                while offset < region {
+                    if started.elapsed() >= budget {
+                        eprintln!(
+                            "[!] 内存扫描达到 {} 秒上限，使用已捕获的凭据",
+                            budget.as_secs()
+                        );
+                        stop_all = true;
+                        break;
+                    }
+                    let want = CHUNK.min(region - offset);
+                    let mut read = 0usize;
+                    if ReadProcessMemory(
+                        handle,
+                        (base + offset) as *const c_void,
+                        buffer.as_mut_ptr() as *mut c_void,
+                        want,
+                        &mut read,
+                    ) != 0
+                        && read >= 8
+                    {
+                        scan_buffer_for_cookies(&buffer[..read], &mut session);
+                        scanned += read as u64;
+                        if last_report.elapsed() >= std::time::Duration::from_secs(2) {
+                            eprintln!("[i] 已扫描微信内存 {} MB", scanned / (1024 * 1024));
+                            last_report = std::time::Instant::now();
+                        }
+                        if stop_when_complete && session_complete(&session) {
+                            stop_all = true;
+                            break;
+                        }
+                    }
+                    offset += want;
+                    if want < CHUNK {
+                        break;
+                    }
+                }
+                if stop_all {
+                    break;
+                }
+            }
             CloseHandle(handle);
+            if stop_all {
+                break;
+            }
         }
     }
 
@@ -578,6 +634,11 @@ pub fn scan_from_process() -> Option<WechatSession> {
 
 #[cfg(not(target_os = "windows"))]
 pub fn scan_from_process() -> Option<WechatSession> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn scan_from_process_collect() -> Option<WechatSession> {
     None
 }
 

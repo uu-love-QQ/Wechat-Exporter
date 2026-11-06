@@ -105,7 +105,7 @@ fn run_detect_databases() -> Result<()> {
 
 fn run_dump_session() -> Result<()> {
     println!("=== 微信会话凭据扫描 ===");
-    let Some(session) = wechat::auth::scan_from_process() else {
+    let Some(session) = wechat::auth::scan_from_process_collect() else {
         println!("[!] 未找到运行中的 Weixin.exe，或未读取到登录凭据。");
         return Ok(());
     };
@@ -308,7 +308,12 @@ pub fn run() -> Result<()> {
 
     // Session material for the private-file CDN: live client memory first, then
     // CLI flags, then persisted config.
-    let mut session = wechat::auth::scan_from_process().unwrap_or_default();
+    let mut session = if options.scan_session {
+        println!("[i] 正在扫描微信进程内存以刷新 Cookie/authkey（--scan-session）...");
+        wechat::auth::scan_from_process().unwrap_or_default()
+    } else {
+        wechat::auth::WechatSession::default()
+    };
     if let Some(cfg) = config::ExporterConfig::load(&search_roots) {
         let mut stored = wechat::auth::WechatSession::from_cookie_header(&cfg.cookies);
         stored.auth_key = cfg.auth_key.clone();
