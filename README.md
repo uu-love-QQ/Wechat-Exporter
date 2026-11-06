@@ -157,8 +157,9 @@ base64，不是 hex。扫描同时收集内存中以 **Hex** 或 **base64** 存�
 
 导出默认**不扫描**进程内存（直接使用配置中的候选），避免每次导出卡顿；
 需要刷新时加 `--scan-session` 或先运行 `init` / `--dump-session`。
-扫描上限由 `--scan-seconds`（默认 10 秒）控制，`--dump-session` 会标出每个候选的
-`asn1=` 与内嵌 `uuid=`，便于把文件专属票据与路由票据区分开。
+扫描上限由 `--scan-seconds`（默认 10 秒）控制，候选上限 256 个（旧版本只保留 32 个，
+容易在真正的会话票据出现前被旧令牌占满），并按票据内嵌时间戳从新到旧排序；
+`--dump-session` 会标出每个候选的 `asn1=` 与内嵌 `uuid=`，便于把文件专属票据与路由票据区分开。
 
 同时 `--cookie "wxuin=..; wxsid=..; skey=..; pass_ticket=.."` 可手动注入登录 Cookie；
 `init` 会从运行中的 `Weixin.exe` 私有堆扫描并保存 Cookie 与全部 authkey 候选。

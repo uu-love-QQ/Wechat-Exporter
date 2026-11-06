@@ -183,6 +183,35 @@ fn der_end(bytes: &[u8], mut offset: usize, depth: u8) -> Option<usize> {
     Some(end)
 }
 
+/// Largest plausible Unix timestamp embedded in the ticket (newest wins).
+fn candidate_timestamp(hex_value: &str) -> i64 {
+    let Ok(bytes) = hex::decode(hex_value) else {
+        return 0;
+    };
+    let mut newest = 0i64;
+    let mut offset = 0usize;
+    while offset + 2 <= bytes.len() {
+        if bytes[offset] != 0x02 {
+            offset += 1;
+            continue;
+        }
+        let length = bytes[offset + 1] as usize;
+        offset += 2;
+        if length == 0 || length > 8 || offset + length > bytes.len() {
+            break;
+        }
+        let mut value: i64 = 0;
+        for byte in &bytes[offset..offset + length] {
+            value = value.saturating_mul(256).saturating_add(*byte as i64);
+        }
+        if (1_500_000_000..=2_100_000_000).contains(&value) && value > newest {
+            newest = value;
+        }
+        offset += length;
+    }
+    newest
+}
+
 fn der_first_integer(bytes: &[u8]) -> Option<i64> {
     if bytes.len() < 3 || bytes[0] != 0x30 || bytes[1] & 0x80 != 0 {
         return None;
@@ -220,7 +249,7 @@ fn push_auth_candidate(session: &mut WechatSession, value: String) {
         }
     }
     if !session.auth_key_candidates.iter().any(|item| item == &value)
-        && session.auth_key_candidates.len() < 32
+        && session.auth_key_candidates.len() < 256
     {
         session.auth_key_candidates.push(value);
     }
@@ -237,6 +266,7 @@ pub fn finalize_auth_candidates(session: &mut WechatSession) {
         let b_valid = asn1_der_valid(b);
         b_valid
             .cmp(&a_valid)
+            .then_with(|| candidate_timestamp(b).cmp(&candidate_timestamp(a)))
             .then_with(|| b.len().cmp(&a.len()))
     });
     session.auth_key_candidates.dedup();
