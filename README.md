@@ -134,17 +134,29 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 | `authkey` 为空 | `400 authkey param is empty` |
 | `authkey` 非 ASN.1 | `400 plain authkey ASN decode failed` |
 
-因此本工具提供三层凭据来源，按优先级使用：
+因此本工具提供多层凭据来源，按优先级使用：
 
-1. 消息 XML 自带的 `authkey` / `<tpauthkey>`（部分消息会携带）；
-2. 命令行 `--authkey <HEX>`；
-3. `.wechat-exporter.json` 中由 `init` 捕获的会话凭据。
+1. 从运行中的 `Weixin.exe` 内存扫描到的 `authkey` 候选（ASN.1 DER 有效者优先）；
+2. 消息 XML 自带的 `authkey` / `<tpauthkey>`（部分消息会携带）；
+3. 命令行 `--authkey <HEX>`；
+4. `.wechat-exporter.json` 中由 `init` 捕获的候选列表。
+
+登录凭据里的 `authkey`（常见形态是以 `@im.wxwork` 结尾的 protobuf，如
+`0A2B...10...`）**不是** CDN 票据：服务端会以 `plain authkey ASN decode failed` 拒绝。
+真正的票据是 `GetCDNDns` 路由信息中的 `authkey`（`authkey/frontip/zoneip` 三元组），
+以 Hex 编码的 ASN.1 DER 存在。扫描时用完整 DER 解析校验（顶层 `SEQUENCE`、长度闭合），
+并把所有候选按「DER 有效优先」排序；下载时逐个尝试，成功的票据在本次运行内缓存。
+
+`--dump-session` 会只扫描并打印当前微信进程的 Cookie 字段与全部 `authkey` 候选
+（含 `asn1=是/否` 标记），不会读取数据库。拿到 `asn1=是` 的票据后可用
+`--authkey <HEX>` 手动注入验证。
 
 同时 `--cookie "wxuin=..; wxsid=..; skey=..; pass_ticket=.."` 可手动注入登录 Cookie；
-`init` 会从运行中的 `Weixin.exe` 私有堆扫描并保存 Cookie 与 authkey，之后运行完全离线可用。
+`init` 会从运行中的 `Weixin.exe` 私有堆扫描并保存 Cookie 与全部 authkey 候选。
 
-> 说明：`authkey` 由微信客户端在与腾讯服务器完成 MMTLS 交互后签发。对于从未在客户端
-> 触发过下载的文件，内存中可能不存在对应票据；此时导出会记录失败原因而不是写入损坏文件。
+> 说明：`authkey` 由微信客户端在与腾讯服务器完成 MMTLS/CDN DNS 交互后签发。对于从未在
+> 客户端触发过下载的文件，内存中可能不存在对应票据；此时导出会记录服务端错误码
+> （`x-error-code` / `x-error-message`）而不是写入损坏文件。
 
 
 ### 媒体源优先级（对齐 Alpha 实测）

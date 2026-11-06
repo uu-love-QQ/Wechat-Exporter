@@ -19,9 +19,12 @@ pub struct ExporterConfig {
     /// WeChat login cookies captured by `init` (or supplied with `--cookie`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cookies: String,
-    /// C2C CDN download ticket captured from the client (`authkey`).
+    /// Best C2C CDN download ticket captured from the client (`authkey`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub auth_key: String,
+    /// All captured `authkey` candidates, best (ASN.1 DER) first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auth_key_candidates: Vec<String>,
     pub updated_at: i64,
 }
 
@@ -109,6 +112,7 @@ mod tests {
             image_xor_key: Some(0x14),
             cookies: String::new(),
             auth_key: String::new(),
+            auth_key_candidates: Vec::new(),
             updated_at: 1730000000,
         };
         let saved = cfg.save(Some(temp.path())).unwrap();

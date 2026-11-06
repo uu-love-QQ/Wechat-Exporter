@@ -991,11 +991,12 @@ pub fn export_media(
                     eprintln!("  [3] CDN 远程补齐: 发起网络请求拉取: {}", url);
                 }
                 if let Some((mut data, mut ext)) = download_from_cdn(
-                                    url,
-                                    media.aes_key.as_ref(),
-                                    &session_cookie,
-                                    media.auth_key.as_deref().unwrap_or(&session.auth_key),
-                                ) {
+                    url,
+                    media.aes_key.as_ref(),
+                    &session_cookie,
+                    &auth_candidate_list(media.auth_key.as_deref(), session),
+                    debug,
+                ) {
                     if ext == "hevc" || data.starts_with(b"wxgf") {
                         if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
                             data = img_bytes;
@@ -1160,7 +1161,8 @@ pub fn export_media(
                                     url,
                                     media.aes_key.as_ref(),
                                     &session_cookie,
-                                    media.auth_key.as_deref().unwrap_or(&session.auth_key),
+                                    &auth_candidate_list(media.auth_key.as_deref(), session),
+                                    debug,
                                 )
                         {
                             if ext == "hevc" || data.starts_with(b"wxgf") {
@@ -1294,7 +1296,8 @@ pub fn export_media(
                     url,
                     media.aes_key.as_ref(),
                     &session_cookie,
-                    media.auth_key.as_deref().unwrap_or(&session.auth_key),
+                    &auth_candidate_list(media.auth_key.as_deref(), session),
+                    debug,
                 ) {
                     if remote_ext == "hevc" || remote.starts_with(b"wxgf") {
                         match transcode_wxgf_to_image(&remote) {
@@ -1409,52 +1412,137 @@ fn decrypt_aes_cbc_key_iv(data: &[u8], key: &[u8; 16]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+static CDN_AUTH_OK: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static CDN_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static CDN_AUTH_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn auth_candidate_list(per_message: Option<&str>, session: &super::auth::WechatSession) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |value: &str| {
+        let value = value.trim();
+        if value.len() >= 16 && value.len() % 2 == 0 && value.bytes().all(|b| b.is_ascii_hexdigit())
+            && !out.iter().any(|item| item == value)
+        {
+            out.push(value.to_string());
+        }
+    };
+    // Memory candidates are already ranked: ASN.1 DER tickets first.
+    for candidate in &session.auth_key_candidates {
+        push(candidate);
+    }
+    if let Some(key) = per_message {
+        push(key);
+    }
+    push(&session.auth_key);
+    out
+}
+
 fn download_from_cdn(
     url: &str,
     aes_key: Option<&[u8; 16]>,
     cookie: &str,
-    auth_key: &str,
+    auth_keys: &[String],
+    debug: bool,
 ) -> Option<(Vec<u8>, &'static str)> {
-    let signed_url = super::auth::with_auth_key(url, auth_key);
-    let mut request = ureq::get(&signed_url)
-        .set("User-Agent", "MicroMessenger Client")
-        .timeout(std::time::Duration::from_secs(10));
-    if !cookie.is_empty() {
-        request = request.set("Cookie", cookie);
+    let mut candidates: Vec<String> = Vec::new();
+    if let Ok(lock) = CDN_AUTH_OK.lock() {
+        if let Some(value) = lock.as_ref() {
+            candidates.push(value.clone());
+        }
     }
-    let resp = match request.call() {
-        Ok(r) => r,
-        Err(ureq::Error::Status(403, _)) => {
-            static WARNED_403: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-            if !WARNED_403.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                eprintln!("[!] 腾讯 CDN 返回 403 权限拦截：私有文件拉取需依赖微信在线会话凭据(authkey)");
+    for key in auth_keys {
+        if !candidates.iter().any(|item| item == key) {
+            candidates.push(key.clone());
+        }
+    }
+    if candidates.is_empty() {
+        candidates.push(String::new());
+    }
+    // A full sweep already proved every captured ticket is rejected; avoid
+    // repeating it for every remaining message in this run.
+    if CDN_AUTH_FAILED.load(std::sync::atomic::Ordering::Relaxed) {
+        candidates.truncate(1);
+    }
+
+    let mut last_error = String::from("无 authkey 或请求未发出");
+    let mut saw_auth_rejection = false;
+    for key in &candidates {
+        let signed_url = super::auth::with_auth_key(url, key);
+        let mut request = ureq::get(&signed_url)
+            .set("User-Agent", "MicroMessenger Client")
+            .timeout(std::time::Duration::from_secs(60));
+        if !cookie.is_empty() {
+            request = request.set("Cookie", cookie);
+        }
+        let resp = match request.call() {
+            Ok(response) => response,
+            Err(ureq::Error::Status(code, response)) => {
+                let error_code = response.header("x-error-code").unwrap_or("");
+                let error_message = response.header("x-error-message").unwrap_or("");
+                last_error = format!("HTTP {code} {error_code} {error_message}");
+                if code == 400 || code == 403 {
+                    saw_auth_rejection = true;
+                    if debug {
+                        let prefix = if key.is_empty() {
+                            "无 authkey"
+                        } else if super::auth::asn1_der_valid(key) {
+                            "ASN.1 authkey 被拒"
+                        } else {
+                            "非 ASN.1 authkey 被拒"
+                        };
+                        eprintln!("      • CDN 鉴权失败 ({prefix}): {last_error}");
+                    } else if !CDN_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        eprintln!("[!] 腾讯 CDN 拒绝鉴权: {last_error}");
+                    }
+                } else if debug {
+                    eprintln!("      • CDN 请求失败: {last_error}");
+                }
+                continue;
             }
-            return None;
+            Err(error) => {
+                last_error = error.to_string();
+                if debug {
+                    eprintln!("      • CDN 请求失败: {last_error}");
+                }
+                continue;
+            }
+        };
+        let mut reader = resp.into_reader();
+        let mut data = Vec::new();
+        use std::io::Read;
+        reader.read_to_end(&mut data).ok()?;
+        if data.is_empty() {
+            last_error = "CDN 返回空响应".to_string();
+            continue;
         }
-        Err(_) => return None,
-    };
-    let mut reader = resp.into_reader();
-    let mut data = Vec::new();
-    use std::io::Read;
-    reader.read_to_end(&mut data).ok()?;
-    if data.is_empty() {
-        return None;
-    }
-    if !is_image_header(&data) {
-        if let Some(key) = aes_key {
-            if let Some(decrypted) = decrypt_aes_cbc_key_iv(&data, key) {
-                data = decrypted;
+        if !key.is_empty() {
+            if let Ok(mut lock) = CDN_AUTH_OK.lock() {
+                *lock = Some(key.clone());
             }
         }
-    }
-    let mut ext = detect_image_ext(&data);
-    if ext == "hevc" || data.starts_with(b"wxgf") {
-        if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
-            data = img_bytes;
-            ext = img_ext;
+        if !is_image_header(&data) {
+            if let Some(key) = aes_key {
+                if let Some(decrypted) = decrypt_aes_cbc_key_iv(&data, key) {
+                    data = decrypted;
+                }
+            }
         }
+        let mut ext = detect_image_ext(&data);
+        if ext == "hevc" || data.starts_with(b"wxgf") {
+            if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
+                data = img_bytes;
+                ext = img_ext;
+            }
+        }
+        return Some((data, ext));
     }
-    Some((data, ext))
+    if saw_auth_rejection && auth_keys.len() > 1 {
+        CDN_AUTH_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    if debug {
+        eprintln!("      • CDN 拉取失败: {last_error}");
+    }
+    None
 }
 
 /// Pixel dimensions of a decoded image, used to tell an original from a thumbnail.

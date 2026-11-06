@@ -157,6 +157,9 @@ pub struct Cli {
     /// 手动指定腾讯 C2C CDN 下载票据 (`authkey`, Hex 编码的 ASN.1 DER)
     #[arg(long = "authkey", value_name = "HEX")]
     pub authkey: Option<String>,
+    /// 仅扫描并打印微信进程中的 Cookie 与 C2C authkey 候选，不访问数据库
+    #[arg(long = "dump-session")]
+    pub dump_session: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -244,6 +247,7 @@ pub enum Mode {
     List,
     Search(String),
     DetectDatabases,
+    DumpSession,
     Init,
 }
 
@@ -272,6 +276,30 @@ pub struct ValidatedCli {
 
 impl Cli {
     pub fn validate(self) -> Result<ValidatedCli> {
+        if self.dump_session {
+            let dummy_source = self.source_database.unwrap_or_else(|| PathBuf::from("."));
+            return Ok(ValidatedCli {
+                source_database: dummy_source,
+                mode: Mode::DumpSession,
+                formats: Vec::new(),
+                conversation_ids: Vec::new(),
+                start_time_ms: None,
+                end_time_ms: None,
+                page_size: 50,
+                cursor: None,
+                ascending: false,
+                include_media: false,
+                keep_output: false,
+                output_dir: None,
+                self_username: None,
+                image_key: None,
+                key: None,
+                plaintext: true,
+                debug: self.debug,
+                cookie: self.cookie.clone(),
+                authkey: self.authkey.clone(),
+            });
+        }
         if self.detect_databases {
             let dummy_source = self.source_database.unwrap_or_else(|| PathBuf::from("."));
             return Ok(ValidatedCli {

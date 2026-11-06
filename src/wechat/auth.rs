@@ -15,8 +15,10 @@ pub struct WechatSession {
     pub skey: String,
     pub pass_ticket: String,
     pub data_ticket: String,
-    /// Hex-encoded C2C download ticket accepted by novac2c.
+    /// Best hex-encoded C2C download ticket accepted by novac2c.
     pub auth_key: String,
+    /// Every `authkey`-shaped value recovered from memory, best first.
+    pub auth_key_candidates: Vec<String>,
 }
 
 impl WechatSession {
@@ -59,6 +61,7 @@ impl WechatSession {
             pass_ticket: take("pass_ticket"),
             data_ticket: take("data_ticket"),
             auth_key: String::new(),
+            auth_key_candidates: Vec::new(),
         }
     }
 }
@@ -105,6 +108,89 @@ fn utf16le_value_after(buffer: &[u8], mut i: usize) -> Option<String> {
     }
 }
 
+/// True when the hex string decodes to one complete ASN.1 DER element.
+pub fn asn1_der_valid(value: &str) -> bool {
+    let Ok(bytes) = hex::decode(value) else {
+        return false;
+    };
+    if bytes.len() < 8 || bytes[0] != 0x30 {
+        return false;
+    }
+    matches!(der_end(&bytes, 0, 0), Some(end) if end == bytes.len())
+}
+
+fn der_end(bytes: &[u8], mut offset: usize, depth: u8) -> Option<usize> {
+    if depth > 8 || offset + 2 > bytes.len() {
+        return None;
+    }
+    let tag = bytes[offset];
+    offset += 1;
+    let first = bytes[offset];
+    offset += 1;
+    let length = if first & 0x80 == 0 {
+        first as usize
+    } else {
+        let count = (first & 0x7f) as usize;
+        if count == 0 || count > 4 || offset + count > bytes.len() {
+            return None;
+        }
+        let mut value = 0usize;
+        for byte in &bytes[offset..offset + count] {
+            value = value.checked_mul(256)?.checked_add(*byte as usize)?;
+        }
+        offset += count;
+        value
+    };
+    let end = offset.checked_add(length)?;
+    if end > bytes.len() {
+        return None;
+    }
+    if tag & 0x20 != 0 {
+        let mut cursor = offset;
+        while cursor < end {
+            cursor = der_end(bytes, cursor, depth + 1)?;
+        }
+        if cursor != end {
+            return None;
+        }
+    }
+    Some(end)
+}
+
+fn push_auth_candidate(session: &mut WechatSession, value: String) {
+    let value = value.trim().to_string();
+    if value.len() < 16 || value.len() > 65_536 || value.len() % 2 != 0 {
+        return;
+    }
+    if !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return;
+    }
+    if !session.auth_key_candidates.iter().any(|item| item == &value)
+        && session.auth_key_candidates.len() < 32
+    {
+        session.auth_key_candidates.push(value);
+    }
+}
+
+/// Pick the ASN.1-shaped ticket first (that is what novac2c verifies), then the
+/// longest remaining candidate.
+pub fn finalize_auth_candidates(session: &mut WechatSession) {
+    session
+        .auth_key_candidates
+        .retain(|value| value.len() >= 16 && value.len() % 2 == 0);
+    session.auth_key_candidates.sort_by(|a, b| {
+        let a_valid = asn1_der_valid(a);
+        let b_valid = asn1_der_valid(b);
+        b_valid
+            .cmp(&a_valid)
+            .then_with(|| b.len().cmp(&a.len()))
+    });
+    session.auth_key_candidates.dedup();
+    if !session.auth_key_candidates.is_empty() {
+        session.auth_key = session.auth_key_candidates[0].clone();
+    }
+}
+
 /// Extract a hex token whose key is followed by `=`, `:`, quotes or spaces.
 fn hex_after_key(buffer: &[u8], start: usize) -> Option<String> {
     let mut i = start;
@@ -140,6 +226,28 @@ fn value_after(buffer: &[u8], start: usize) -> Option<String> {
         None
     } else {
         String::from_utf8(out).ok()
+    }
+}
+
+fn scan_asn1_hex_runs(buffer: &[u8], session: &mut WechatSession) {
+    let mut i = 0usize;
+    while i < buffer.len() {
+        if buffer[i].is_ascii_hexdigit() {
+            let start = i;
+            while i < buffer.len() && buffer[i].is_ascii_hexdigit() && i - start < 65_536 {
+                i += 1;
+            }
+            let run = &buffer[start..i];
+            if run.len() >= 64 && run.len() % 2 == 0 {
+                if let Ok(text) = std::str::from_utf8(run) {
+                    if asn1_der_valid(text) {
+                        push_auth_candidate(session, text.to_string());
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
     }
 }
 
@@ -188,8 +296,8 @@ pub fn scan_buffer_for_cookies(buffer: &[u8], session: &mut WechatSession) {
             let hex_like = value.len() >= 16
                 && value.len() % 2 == 0
                 && value.bytes().all(|b| b.is_ascii_hexdigit());
-            if hex_like && value.len() > session.auth_key.len() {
-                session.auth_key = value;
+            if hex_like {
+                push_auth_candidate(session, value);
             }
         }
     }
@@ -214,11 +322,15 @@ pub fn scan_buffer_for_cookies(buffer: &[u8], session: &mut WechatSession) {
             let hex_like = value.len() >= 16
                 && value.len() % 2 == 0
                 && value.bytes().all(|b| b.is_ascii_hexdigit());
-            if hex_like && value.len() > session.auth_key.len() {
-                session.auth_key = value;
+            if hex_like {
+                push_auth_candidate(session, value);
             }
         }
     }
+
+    // The CDN route ticket is a hex-encoded ASN.1 DER blob. When its `authkey`
+    // label lives in another allocation, fall back to validating any long hex run.
+    scan_asn1_hex_runs(buffer, session);
 
     // Cookies may also be stored as `"skey":"..."` inside JSON.
     for (name, slot) in [
@@ -243,6 +355,8 @@ pub fn scan_buffer_for_cookies(buffer: &[u8], session: &mut WechatSession) {
             }
         }
     }
+
+    finalize_auth_candidates(session);
 }
 
 /// Merge material captured elsewhere into this session.
@@ -258,6 +372,34 @@ pub fn merge_session(base: &mut WechatSession, extra: &WechatSession) {
         if slot.is_empty() && !value.is_empty() {
             *slot = value.clone();
         }
+    }
+    for candidate in &extra.auth_key_candidates {
+        push_auth_candidate(base, candidate.clone());
+    }
+    finalize_auth_candidates(base);
+}
+
+/// Overwrite non-empty fields with explicitly supplied material (CLI wins).
+pub fn override_session(base: &mut WechatSession, extra: &WechatSession) {
+    for (slot, value) in [
+        (&mut base.wxuin, &extra.wxuin),
+        (&mut base.wxsid, &extra.wxsid),
+        (&mut base.skey, &extra.skey),
+        (&mut base.pass_ticket, &extra.pass_ticket),
+        (&mut base.data_ticket, &extra.data_ticket),
+    ] {
+        if !value.is_empty() {
+            *slot = value.clone();
+        }
+    }
+    for candidate in &extra.auth_key_candidates {
+        push_auth_candidate(base, candidate.clone());
+    }
+    if !extra.auth_key.is_empty() {
+        base.auth_key = extra.auth_key.clone();
+        push_auth_candidate(base, extra.auth_key.clone());
+        finalize_auth_candidates(base);
+        base.auth_key = extra.auth_key.clone();
     }
 }
 
@@ -426,6 +568,7 @@ pub fn scan_from_process() -> Option<WechatSession> {
         }
     }
 
+    finalize_auth_candidates(&mut session);
     if session.is_empty() {
         None
     } else {
@@ -492,6 +635,30 @@ mod tests {
         let mut session = WechatSession::default();
         scan_buffer_for_cookies(b"authkey=not-a-hex-value", &mut session);
         assert!(session.auth_key.is_empty());
+    }
+
+    #[test]
+    fn validates_asn1_der_auth_tickets() {
+        // Inner token of a real c2c `cdnattachurl` (valid DER SEQUENCE).
+        let der = "304902010002040500a0be02032e6a6f02041b5b076f02046aea90ba042466663062336363312d393131342d343338302d623063302d393937313136333463633430020405180005020100";
+        assert!(asn1_der_valid(der));
+        // Login AutoAuthKey protobuf captured from WeChat memory: not DER.
+        let protobuf = "0A2B6F4E2D4D77415141414141423462304851773832436B314B456A705356544C327340696D2E7778776F726B10B18CE9EF07";
+        assert!(!asn1_der_valid(protobuf));
+        assert!(!asn1_der_valid("not-hex"));
+        assert!(!asn1_der_valid("30030201ff"));
+    }
+
+    #[test]
+    fn prefers_the_asn1_authkey_candidate() {
+        let der = "304902010002040500a0be02032e6a6f02041b5b076f02046aea90ba042466663062336363312d393131342d343338302d623063302d393937313136333463633430020405180005020100";
+        let protobuf = "0A2B6F4E2D4D77415141414141423462304851773832436B314B456A705356544C327340696D2E7778776F726B10B18CE9EF07";
+        let buffer = format!("authkey={protobuf}\0junk\0{der}\0");
+        let mut session = WechatSession::default();
+        scan_buffer_for_cookies(buffer.as_bytes(), &mut session);
+        assert_eq!(session.auth_key, der);
+        assert!(session.auth_key_candidates.iter().any(|item| item == protobuf));
+        assert!(session.auth_key_candidates.iter().any(|item| item == der));
     }
 
     #[test]
