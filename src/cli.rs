@@ -150,9 +150,6 @@ pub struct Cli {
     #[arg(long = "debug", action = ArgAction::SetTrue)]
     pub debug: bool,
 
-    /// 手动指定微信登录 Cookie (`wxuin=..; wxsid=..; skey=..; pass_ticket=..`)
-    #[arg(long = "cookie", value_name = "COOKIE")]
-    pub cookie: Option<String>,
 
 }
 
@@ -263,7 +260,6 @@ pub struct ValidatedCli {
     pub key: Option<[u8; 32]>,
     pub plaintext: bool,
     pub debug: bool,
-    pub cookie: Option<String>,
 }
 
 impl Cli {
@@ -288,7 +284,6 @@ impl Cli {
                 key: None,
                 plaintext: true,
                 debug: self.debug,
-                cookie: self.cookie.clone(),
             });
         }
 
@@ -484,7 +479,6 @@ impl Cli {
             key,
             plaintext: self.plaintext,
             debug: self.debug,
-            cookie: self.cookie,
         })
     }
 }

@@ -146,22 +146,6 @@ fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result
         wechat::media::resolve_image_keys(&media_index, &account_id, options.image_key);
     let image_aes_key = image_key_bytes.map(|k| String::from_utf8_lossy(&k).to_string());
 
-    // 4. Capture WeChat login cookies.
-    println!("[i] 正在从 Weixin.exe 内存中读取登录 Cookie...");
-    let mut session = wechat::auth::scan_from_process().unwrap_or_default();
-    if let Some(cookie) = options.cookie.as_deref() {
-        let manual = wechat::auth::WechatSession::from_cookie_header(cookie);
-        wechat::auth::merge_session(&mut session, &manual);
-    }
-    if session.is_empty() {
-        println!("[!] 未读取到登录 Cookie：请保持微信登录，或用 --cookie 手动提供");
-    } else {
-        println!(
-            "[+] 登录 Cookie 已获取: {} 项",
-            session.cookie_header().split("; ").filter(|p| !p.is_empty()).count()
-        );
-    }
-
     // 5. Save to config
     let config = config::ExporterConfig {
         account_id: account_id.clone(),
@@ -170,7 +154,6 @@ fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result
         image_seed,
         image_aes_key: image_aes_key.clone(),
         image_xor_key,
-        cookies: session.cookie_header(),
         updated_at: now_ms(),
     };
 
@@ -191,9 +174,6 @@ fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result
     }
     if let Some(xor) = image_xor_key {
         println!("    • 图片 XOR 密钥: 0x{:02x} ({})", xor, xor);
-    }
-    if !config.cookies.is_empty() {
-        println!("    • 微信登录 Cookie: {}", config.cookies);
     }
     println!("================================================================================");
     println!("后续执行导出 (--conversation-id) 或查询 (--list-conversations) 时，");
@@ -251,23 +231,6 @@ pub fn run() -> Result<()> {
         }
     }
 
-    // Login cookies: persisted config first, CLI flag wins.
-    let mut session = wechat::auth::WechatSession::default();
-    if let Some(cfg) = config::ExporterConfig::load(&search_roots) {
-        let stored = wechat::auth::WechatSession::from_cookie_header(&cfg.cookies);
-        wechat::auth::merge_session(&mut session, &stored);
-    }
-    if let Some(cookie) = options.cookie.as_deref() {
-        let manual = wechat::auth::WechatSession::from_cookie_header(cookie);
-        wechat::auth::override_session(&mut session, &manual);
-    }
-    if !session.is_empty() {
-        println!(
-            "[+] 已加载微信登录 Cookie: {} 项",
-            session.cookie_header().split("; ").filter(|p| !p.is_empty()).count()
-        );
-    }
-
     let store = Store::open(&layout.message_dbs, options.key.as_ref(), options.plaintext)?;
     let contacts = wechat::contact::load_contacts(
         layout.contact_db.as_deref(),
@@ -320,7 +283,6 @@ pub fn run() -> Result<()> {
             &conversations,
             self_username.as_deref(),
             account_id.as_deref(),
-            &session,
         ),
     }
 }
@@ -426,7 +388,6 @@ fn run_export(
     conversations: &[Conversation],
     self_username: Option<&str>,
     account_id: Option<&str>,
-    session: &wechat::auth::WechatSession,
 ) -> Result<()> {
     let requested = select_conversations(conversations, &options.conversation_ids)?;
     let selected: Vec<Conversation> = requested
@@ -497,7 +458,6 @@ fn run_export(
                 options.image_key,
                 account_id.as_deref().unwrap_or(""),
                 options.debug,
-                session,
                 &conversation.id,
                 voice_index.as_ref(),
             ))

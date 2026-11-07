@@ -898,12 +898,10 @@ pub fn export_media(
     image_key: Option<[u8; 16]>,
     account_id: &str,
     debug: bool,
-    session: &super::auth::WechatSession,
     conversation_id: &str,
     voice: Option<&super::voice::VoiceIndex>,
 ) -> MediaOutcome {
     let (image_key, image_xor_key, image_seed) = resolve_image_keys(index, account_id, image_key);
-    let session_cookie = session.cookie_header();
     let emoticon_key = image_seed.and_then(|seed| emoticon_key_from_seed(seed, account_id));
     let media_dir = output_dir.join("media");
     let mut outcome = MediaOutcome {
@@ -993,7 +991,6 @@ pub fn export_media(
                 if let Some((mut data, mut ext)) = download_from_cdn(
                     url,
                     media.aes_key.as_ref(),
-                    &session_cookie,
                     debug,
                 ) {
                     if ext == "hevc" || data.starts_with(b"wxgf") {
@@ -1159,7 +1156,6 @@ pub fn export_media(
                             download_from_cdn(
                                     url,
                                     media.aes_key.as_ref(),
-                                    &session_cookie,
                                     debug,
                                 )
                         {
@@ -1293,7 +1289,6 @@ pub fn export_media(
                 if let Some((mut remote, mut remote_ext)) = download_from_cdn(
                     url,
                     media.aes_key.as_ref(),
-                    &session_cookie,
                     debug,
                 ) {
                     if remote_ext == "hevc" || remote.starts_with(b"wxgf") {
@@ -1414,15 +1409,11 @@ static CDN_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 fn download_from_cdn(
     url: &str,
     aes_key: Option<&[u8; 16]>,
-    cookie: &str,
     debug: bool,
 ) -> Option<(Vec<u8>, &'static str)> {
-    let mut request = ureq::get(url)
+    let request = ureq::get(url)
         .set("User-Agent", "MicroMessenger Client")
         .timeout(std::time::Duration::from_secs(60));
-    if !cookie.is_empty() {
-        request = request.set("Cookie", cookie);
-    }
     let resp = match request.call() {
         Ok(response) => response,
         Err(ureq::Error::Status(code, response)) => {

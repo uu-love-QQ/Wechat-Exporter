@@ -16,9 +16,6 @@ pub struct ExporterConfig {
     pub image_aes_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_xor_key: Option<u8>,
-    /// WeChat login cookies captured by `init` (or supplied with `--cookie`).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub cookies: String,
     pub updated_at: i64,
 }
 
@@ -104,7 +101,6 @@ mod tests {
             image_seed: Some(3642459924),
             image_aes_key: Some("b866e5aa60cda50c".into()),
             image_xor_key: Some(0x14),
-            cookies: String::new(),
             updated_at: 1730000000,
         };
         let saved = cfg.save(Some(temp.path())).unwrap();
