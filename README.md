@@ -114,60 +114,15 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
   --output-dir "C:\Users\14744\Downloads\uuMovies\test"
 ```
 
-## 私有文件 CDN 鉴权（novac2c）
+## 私有文件（novac2c）
 
-微信 4.x 的私有文件（PDF/ZIP/APK 等）只给出：
+微信 4.x 的私有文件（PDF/ZIP/APK 等）只给出 `cdnattachurl` + `aeskey`。该 CDN 端点需要
+微信客户端专有鉴权；本工具不实现，也不会向该端点发起请求。
 
-```xml
-<appattach>
-  <cdnattachurl>3057...</cdnattachurl>
-  <aeskey>...</aeskey>
-</appattach>
-```
+导出时只使用本地媒体索引（`msg/attach`、`msg/file`、缓存等）。本地未索引到的私有文件
+在消息中保留为空缺（不写 `media.path`），导出报告将其计入缺失，不生成占位文件。
 
-真实下载地址是 `https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_param=<cdnattachurl>`，
-但腾讯强制要求同请求携带 `authkey`。**线上编码是 `authkey=<base64(DER)>`**（URL 编码后），
-不是 Hex；Hex 会得到 `ASN decode failed`。实测服务端行为：
-
-| 请求 | 响应 |
-|---|---|
-| 不带 `authkey` | `403 authorization error!` |
-| `authkey` 传原始字节 | `400 authkey param is empty` |
-| `authkey` 传 Hex 文本 | `400 plain authkey ASN decode failed` |
-| `authkey` 传 base64(DER)，但票据与文件/会话不符 | `400 plain authkey decryption failed` |
-
-因此本工具提供多层凭据来源，按优先级使用：
-
-1. 从运行中的 `Weixin.exe` 内存扫描到的 `authkey` 候选（ASN.1 DER 有效者优先）；
-2. 消息 XML 自带的 `authkey` / `<tpauthkey>`（部分消息会携带）；
-3. 命令行 `--authkey <HEX>`；
-4. `.wechat-exporter.json` 中由 `init` 捕获的候选列表。
-
-登录凭据里的 `authkey`（常见形态是以 `@im.wxwork` 结尾的 protobuf，如
-`0A2B...10...`）**不是** CDN 票据。真正的票据是 `GetCDNDns` 路由信息中的
-`authkey`（`authkey/frontip/zoneip` 三元组），以 ASN.1 DER 存在；线上发送时用
-base64，不是 hex。扫描同时收集内存中以 **Hex** 或 **base64** 存储的完整 DER，
-过滤顶层版本号为 0 的 `cdnattachurl` 文件令牌，并按 DER 有效性与文件 UUID 匹配排序；
-下载时逐个尝试，成功的票据在本次运行内缓存。`--authkey` 接收 Hex DER，内部自动转 base64。
-
-`--dump-session` 会只扫描并打印当前微信进程的 Cookie 字段与全部 `authkey` 候选
-（含 `asn1=是/否` 标记），不会读取数据库。扫描按「小内存区优先」进行，默认 30 秒上限，
-每 2 秒打印已扫描 MB 数，避免微信多 GB 堆导致卡死。拿到 `asn1=是` 的票据后可用
-`--authkey <HEX>` 手动注入验证。
-
-导出默认**不扫描**进程内存（直接使用配置中的候选），避免每次导出卡顿；
-需要刷新时加 `--scan-session` 或先运行 `init` / `--dump-session`。
-扫描上限由 `--scan-seconds`（默认 10 秒）控制，候选上限 256 个（旧版本只保留 32 个，
-容易在真正的会话票据出现前被旧令牌占满），并按票据内嵌时间戳从新到旧排序；
-`--dump-session` 会标出每个候选的 `asn1=` 与内嵌 `uuid=`，便于把文件专属票据与路由票据区分开。
-
-同时 `--cookie "wxuin=..; wxsid=..; skey=..; pass_ticket=.."` 可手动注入登录 Cookie；
-`init` 会从运行中的 `Weixin.exe` 私有堆扫描并保存 Cookie 与全部 authkey 候选。
-
-> 说明：`authkey` 由微信客户端在与腾讯服务器完成 MMTLS/CDN DNS 交互后签发。对于从未在
-> 客户端触发过下载的文件，内存中可能不存在对应票据；此时导出会记录服务端错误码
-> （`x-error-code` / `x-error-message`）而不是写入损坏文件。
-
+`--cookie` 仍可用于公开 CDN（图片/表情）下载；`init` 只保存登录 Cookie。
 
 ### 媒体源优先级（对齐 Alpha 实测）
 
@@ -179,7 +134,7 @@ base64，不是 hex。扫描同时收集内存中以 **Hex** 或 **base64** 存�
 | 图片 `<img>` | `cdnbigimgurl` | 原图 |
 |  | `cdnmidimgurl` | 中图 |
 |  | `cdnthumburl` | 缩略图 |
-| 私有文件 `<appattach>` | `cdnattachurl` | 需 `authkey` 签名的 ASN.1 定位符 |
+| 私有文件 `<appattach>` | `cdnattachurl` | 仅本地索引；缺失时留空 |
 
 实测（消息 17/21/52/884）：从 `cdnurl` 拉取的字节与 Alpha 导出的文件**逐字节相同**，
 大小分别等于 XML 声明的 29560 / 99666 / 20563 / 90546。导出时若本地明文比声明长度小 1% 以上

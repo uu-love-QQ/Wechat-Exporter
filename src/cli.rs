@@ -154,18 +154,6 @@ pub struct Cli {
     #[arg(long = "cookie", value_name = "COOKIE")]
     pub cookie: Option<String>,
 
-    /// 手动指定腾讯 C2C CDN 下载票据 (`authkey`, Hex 编码的 ASN.1 DER，内部转 base64 发送)
-    #[arg(long = "authkey", value_name = "HEX")]
-    pub authkey: Option<String>,
-    /// 仅扫描并打印微信进程中的 Cookie 与 C2C authkey 候选，不访问数据库
-    #[arg(long = "dump-session")]
-    pub dump_session: bool,
-    /// 导出前扫描微信进程内存以刷新 Cookie/authkey（默认关闭，避免大内存扫描卡顿）
-    #[arg(long = "scan-session")]
-    pub scan_session: bool,
-    /// 内存扫描上限秒数（--dump-session / --scan-session），默认 10
-    #[arg(long = "scan-seconds", value_name = "SECS", default_value_t = 10)]
-    pub scan_seconds: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -253,7 +241,6 @@ pub enum Mode {
     List,
     Search(String),
     DetectDatabases,
-    DumpSession,
     Init,
 }
 
@@ -277,39 +264,10 @@ pub struct ValidatedCli {
     pub plaintext: bool,
     pub debug: bool,
     pub cookie: Option<String>,
-    pub authkey: Option<String>,
-    pub scan_session: bool,
-    pub scan_seconds: u64,
 }
 
 impl Cli {
     pub fn validate(self) -> Result<ValidatedCli> {
-        if self.dump_session {
-            let dummy_source = self.source_database.unwrap_or_else(|| PathBuf::from("."));
-            return Ok(ValidatedCli {
-                source_database: dummy_source,
-                mode: Mode::DumpSession,
-                formats: Vec::new(),
-                conversation_ids: Vec::new(),
-                start_time_ms: None,
-                end_time_ms: None,
-                page_size: 50,
-                cursor: None,
-                ascending: false,
-                include_media: false,
-                keep_output: false,
-                output_dir: None,
-                self_username: None,
-                image_key: None,
-                key: None,
-                plaintext: true,
-                debug: self.debug,
-                cookie: self.cookie.clone(),
-                authkey: self.authkey.clone(),
-                scan_session: self.scan_session,
-                scan_seconds: self.scan_seconds,
-            });
-        }
         if self.detect_databases {
             let dummy_source = self.source_database.unwrap_or_else(|| PathBuf::from("."));
             return Ok(ValidatedCli {
@@ -331,9 +289,6 @@ impl Cli {
                 plaintext: true,
                 debug: self.debug,
                 cookie: self.cookie.clone(),
-                authkey: self.authkey.clone(),
-                scan_session: self.scan_session,
-                scan_seconds: self.scan_seconds,
             });
         }
 
@@ -530,9 +485,6 @@ impl Cli {
             plaintext: self.plaintext,
             debug: self.debug,
             cookie: self.cookie,
-            authkey: self.authkey,
-            scan_session: self.scan_session,
-            scan_seconds: self.scan_seconds,
         })
     }
 }

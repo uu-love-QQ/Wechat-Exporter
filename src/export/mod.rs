@@ -123,6 +123,8 @@ pub fn message_json(message: &ExportMessage, include_media: bool) -> Value {
             }
             if let Some(path) = &message.media_path {
                 item.insert("path".into(), json!(path));
+            } else {
+                item.insert("status".into(), json!("missing"));
             }
             object.insert("media".into(), Value::Object(item));
         }
@@ -435,6 +437,12 @@ fn write_markdown(context: &ExportContext<'_>, path: &Path) -> Result<()> {
         ));
         if let Some(path) = &message.media_path {
             out.push_str(&format!("![媒体]({path})\n\n"));
+        } else if let Some(media) = &message.media {
+            if !media.file_name.is_empty() {
+                out.push_str(&format!("*[{}: {} (未索引，空缺)]*\n\n", media.kind.label(), media.file_name));
+            } else {
+                out.push_str(&format!("*[{}: 未索引，空缺]*\n\n", media.kind.label()));
+            }
         }
         let content = message.content.trim();
         if !content.is_empty() {
@@ -604,6 +612,16 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
                     ));
                 }
             }
+        } else if let Some(media) = &message.media {
+            let label = if !media.file_name.is_empty() {
+                format!("{}: {} (未索引，空缺)", media.kind.label(), media.file_name)
+            } else {
+                format!("{}: 未索引，空缺", media.kind.label())
+            };
+            out.push_str(&format!(
+                "<div class=\"media-missing\" style=\"color: #888; font-style: italic; font-size: 0.9em; margin-top: 4px;\">[{}]</div>\n",
+                crate::util::escape_html(&label)
+            ));
         }
         out.push_str("</div>\n");
     }

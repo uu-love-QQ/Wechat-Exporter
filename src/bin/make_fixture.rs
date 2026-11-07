@@ -308,6 +308,20 @@ fn build(out: &Path) -> Result<()> {
             4,
             None,
         )?;
+        let file_xml = "<msg><appmsg><type>6</type><title>report.html</title><appattach><totallen>30428</totallen><cdnattachurl>3057aa</cdnattachurl><aeskey>9f079e18611d58504594d8084036dd55</aeskey><fileext>html</fileext></appattach></appmsg></msg>";
+        insert_message(
+            &conn,
+            &group_table,
+            9,
+            9009,
+            49,
+            9,
+            3,
+            1703001680,
+            file_xml.as_bytes(),
+            0,
+            None,
+        )?;
         let voice_xml = "<msg><voicemsg endflag=\"1\" voiceformat=\"4\" voicelength=\"500\" length=\"400\"/></msg>";
         insert_message(
             &conn,

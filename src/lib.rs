@@ -103,44 +103,6 @@ fn run_detect_databases() -> Result<()> {
     Ok(())
 }
 
-fn run_dump_session(seconds: u64) -> Result<()> {
-    println!("=== 微信会话凭据扫描 ===");
-    println!("[i] 正在扫描微信进程内存（上限 {} 秒，每秒报告进度）...", seconds);
-    let Some(session) = wechat::auth::scan_from_process_collect_for(seconds) else {
-        println!("[!] 未找到运行中的 Weixin.exe，或未读取到登录凭据。");
-        return Ok(());
-    };
-    println!("Cookie: {}", session.cookie_header());
-    println!(
-        "wxuin={} wxsid={} skey={} pass_ticket={} data_ticket={}",
-        session.wxuin,
-        session.wxsid,
-        session.skey,
-        session.pass_ticket,
-        session.data_ticket
-    );
-    println!("authkey 候选: {} 个", session.auth_key_candidates.len());
-    for (index, candidate) in session.auth_key_candidates.iter().enumerate() {
-        let uuid = hex::decode(candidate)
-            .ok()
-            .and_then(|bytes| wechat::auth::find_uuid(&bytes))
-            .unwrap_or_default();
-        println!(
-            "  [{}] len={} asn1={} uuid={} {}",
-            index + 1,
-            candidate.len(),
-            if wechat::auth::asn1_der_valid(candidate) { "是" } else { "否" },
-            if uuid.is_empty() { "-" } else { &uuid },
-            candidate
-        );
-    }
-    if session.auth_key_candidates.is_empty() {
-        println!("  (无)");
-    }
-    println!("提示：c2c/download 需要 ASN.1 DER 的 authkey；asn1=是 的候选优先。");
-    Ok(())
-}
-
 fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result<()> {
     println!("================================================================================");
     println!("[i] 正在执行微信配置与密钥初始化...");
@@ -184,34 +146,19 @@ fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result
         wechat::media::resolve_image_keys(&media_index, &account_id, options.image_key);
     let image_aes_key = image_key_bytes.map(|k| String::from_utf8_lossy(&k).to_string());
 
-    // 4. Capture WeChat session material for the private-file CDN (novac2c).
-    println!("[i] 正在从 Weixin.exe 内存中读取登录 Cookie 与 C2C authkey...");
+    // 4. Capture WeChat login cookies.
+    println!("[i] 正在从 Weixin.exe 内存中读取登录 Cookie...");
     let mut session = wechat::auth::scan_from_process().unwrap_or_default();
     if let Some(cookie) = options.cookie.as_deref() {
         let manual = wechat::auth::WechatSession::from_cookie_header(cookie);
         wechat::auth::merge_session(&mut session, &manual);
     }
-    if let Some(authkey) = options.authkey.as_deref() {
-        session.auth_key = authkey.trim().to_string();
-        if !session.auth_key_candidates.iter().any(|item| item == &session.auth_key) {
-            session.auth_key_candidates.insert(0, session.auth_key.clone());
-        }
-        wechat::auth::finalize_auth_candidates(&mut session);
-        session.auth_key = authkey.trim().to_string();
-    }
     if session.is_empty() {
-        println!("[!] 未读取到会话凭据：请保持微信登录，或用 --cookie/--authkey 手动提供");
+        println!("[!] 未读取到登录 Cookie：请保持微信登录，或用 --cookie 手动提供");
     } else {
-        let valid = session
-            .auth_key_candidates
-            .iter()
-            .filter(|item| wechat::auth::asn1_der_valid(item))
-            .count();
         println!(
-            "[+] 会话凭据已获取: Cookie {} 项, authkey 候选 {} 个 (ASN.1 有效 {})",
-            session.cookie_header().split("; ").filter(|p| !p.is_empty()).count(),
-            session.auth_key_candidates.len(),
-            valid
+            "[+] 登录 Cookie 已获取: {} 项",
+            session.cookie_header().split("; ").filter(|p| !p.is_empty()).count()
         );
     }
 
@@ -224,8 +171,6 @@ fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result
         image_aes_key: image_aes_key.clone(),
         image_xor_key,
         cookies: session.cookie_header(),
-        auth_key: session.auth_key.clone(),
-        auth_key_candidates: session.auth_key_candidates.clone(),
         updated_at: now_ms(),
     };
 
@@ -250,9 +195,6 @@ fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result
     if !config.cookies.is_empty() {
         println!("    • 微信登录 Cookie: {}", config.cookies);
     }
-    if !config.auth_key.is_empty() {
-        println!("    • C2C CDN authkey: {}", config.auth_key);
-    }
     println!("================================================================================");
     println!("后续执行导出 (--conversation-id) 或查询 (--list-conversations) 时，");
     println!("程序将自动读取 .wechat-exporter.json 配置文件，无需进行内存扫描，即使微信退出也能完整离线导出！");
@@ -270,9 +212,6 @@ pub fn run() -> Result<()> {
 
     if matches!(options.mode, Mode::DetectDatabases) {
         return run_detect_databases();
-    }
-    if matches!(options.mode, Mode::DumpSession) {
-        return run_dump_session(options.scan_seconds);
     }
 
     let layout = discover(&options.source_database)?;
@@ -312,45 +251,20 @@ pub fn run() -> Result<()> {
         }
     }
 
-    // Session material for the private-file CDN: live client memory first, then
-    // CLI flags, then persisted config.
-    let mut session = if options.scan_session {
-        println!(
-            "[i] 正在扫描微信进程内存以刷新 Cookie/authkey（--scan-session，上限 {} 秒）...",
-            options.scan_seconds
-        );
-        wechat::auth::scan_from_process_collect_for(options.scan_seconds).unwrap_or_default()
-    } else {
-        wechat::auth::WechatSession::default()
-    };
+    // Login cookies: persisted config first, CLI flag wins.
+    let mut session = wechat::auth::WechatSession::default();
     if let Some(cfg) = config::ExporterConfig::load(&search_roots) {
-        let mut stored = wechat::auth::WechatSession::from_cookie_header(&cfg.cookies);
-        stored.auth_key = cfg.auth_key.clone();
-        stored.auth_key_candidates = cfg.auth_key_candidates.clone();
+        let stored = wechat::auth::WechatSession::from_cookie_header(&cfg.cookies);
         wechat::auth::merge_session(&mut session, &stored);
     }
     if let Some(cookie) = options.cookie.as_deref() {
         let manual = wechat::auth::WechatSession::from_cookie_header(cookie);
         wechat::auth::override_session(&mut session, &manual);
     }
-    if let Some(authkey) = options.authkey.as_deref() {
-        session.auth_key = authkey.trim().to_string();
-        if !session.auth_key_candidates.iter().any(|item| item == &session.auth_key) {
-            session.auth_key_candidates.insert(0, session.auth_key.clone());
-        }
-    }
-    wechat::auth::finalize_auth_candidates(&mut session);
     if !session.is_empty() {
-        let valid = session
-            .auth_key_candidates
-            .iter()
-            .filter(|item| wechat::auth::asn1_der_valid(item))
-            .count();
         println!(
-            "[+] 已加载微信会话凭据: Cookie {} 项, authkey 候选 {} 个 (ASN.1 有效 {})",
-            session.cookie_header().split("; ").filter(|p| !p.is_empty()).count(),
-            session.auth_key_candidates.len(),
-            valid
+            "[+] 已加载微信登录 Cookie: {} 项",
+            session.cookie_header().split("; ").filter(|p| !p.is_empty()).count()
         );
     }
 
@@ -387,7 +301,7 @@ pub fn run() -> Result<()> {
         });
 
     match &options.mode {
-        Mode::DetectDatabases | Mode::DumpSession | Mode::Init => unreachable!(),
+        Mode::DetectDatabases | Mode::Init => unreachable!(),
         Mode::List => run_list(&options, &conversations, account_id.as_deref()),
         Mode::Search(query) => run_search(
             &options,

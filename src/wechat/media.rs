@@ -994,7 +994,6 @@ pub fn export_media(
                     url,
                     media.aes_key.as_ref(),
                     &session_cookie,
-                    &auth_candidate_list(media.auth_key.as_deref(), session),
                     debug,
                 ) {
                     if ext == "hevc" || data.starts_with(b"wxgf") {
@@ -1161,7 +1160,6 @@ pub fn export_media(
                                     url,
                                     media.aes_key.as_ref(),
                                     &session_cookie,
-                                    &auth_candidate_list(media.auth_key.as_deref(), session),
                                     debug,
                                 )
                         {
@@ -1296,7 +1294,6 @@ pub fn export_media(
                     url,
                     media.aes_key.as_ref(),
                     &session_cookie,
-                    &auth_candidate_list(media.auth_key.as_deref(), session),
                     debug,
                 ) {
                     if remote_ext == "hevc" || remote.starts_with(b"wxgf") {
@@ -1412,176 +1409,61 @@ fn decrypt_aes_cbc_key_iv(data: &[u8], key: &[u8; 16]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-static CDN_AUTH_OK: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-
-/// The CDN accepts `authkey=<base64(DER)>` (hex gets `ASN decode failed`).
-fn wire_authkey(candidate_hex: &str) -> Option<String> {
-    use base64::Engine as _;
-    let bytes = hex::decode(candidate_hex).ok()?;
-    if bytes.len() < 8 || bytes[0] != 0x30 {
-        return None;
-    }
-    Some(base64::engine::general_purpose::STANDARD.encode(bytes))
-}
-
-/// `cdnattachurl` carries the file UUID; authkey tickets are file-scoped, so
-/// prefer candidates whose DER embeds that UUID.
-fn url_fileid(url: &str) -> Option<String> {
-    let param = url.split("encrypted_param=").nth(1)?.split('&').next()?;
-    let bytes = hex::decode(param).ok()?;
-    super::auth::find_uuid(&bytes)
-}
-
-fn candidate_has_fileid(candidate_hex: &str, fileid: &str) -> bool {
-    hex::decode(candidate_hex)
-        .map(|bytes| {
-            bytes
-                .windows(fileid.len())
-                .any(|window| window == fileid.as_bytes())
-        })
-        .unwrap_or(false)
-}
 static CDN_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static CDN_AUTH_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-fn auth_candidate_list(per_message: Option<&str>, session: &super::auth::WechatSession) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut push = |value: &str| {
-        let value = value.trim();
-        if value.len() >= 16 && value.len() % 2 == 0 && value.bytes().all(|b| b.is_ascii_hexdigit())
-            && !out.iter().any(|item| item == value)
-        {
-            out.push(value.to_string());
-        }
-    };
-    // Memory candidates are already ranked: ASN.1 DER tickets first.
-    for candidate in &session.auth_key_candidates {
-        push(candidate);
-    }
-    if let Some(key) = per_message {
-        push(key);
-    }
-    push(&session.auth_key);
-    out
-}
 
 fn download_from_cdn(
     url: &str,
     aes_key: Option<&[u8; 16]>,
     cookie: &str,
-    auth_keys: &[String],
     debug: bool,
 ) -> Option<(Vec<u8>, &'static str)> {
-    let mut candidates: Vec<String> = Vec::new();
-    if let Ok(lock) = CDN_AUTH_OK.lock() {
-        if let Some(value) = lock.as_ref() {
-            candidates.push(value.clone());
-        }
+    let mut request = ureq::get(url)
+        .set("User-Agent", "MicroMessenger Client")
+        .timeout(std::time::Duration::from_secs(60));
+    if !cookie.is_empty() {
+        request = request.set("Cookie", cookie);
     }
-    for key in auth_keys {
-        if !candidates.iter().any(|item| item == key) {
-            candidates.push(key.clone());
-        }
-    }
-    if candidates.is_empty() {
-        candidates.push(String::new());
-    }
-    if let Some(fileid) = url_fileid(url) {
-        candidates.sort_by_key(|candidate| !candidate_has_fileid(candidate, &fileid));
-    }
-    // A full sweep already proved every captured ticket is rejected; avoid
-    // repeating it for every remaining message in this run.
-    if CDN_AUTH_FAILED.load(std::sync::atomic::Ordering::Relaxed) {
-        candidates.truncate(1);
-    }
-
-    let mut last_error = String::from("无 authkey 或请求未发出");
-    let mut saw_auth_rejection = false;
-    for key in &candidates {
-        let wire = if key.is_empty() {
-            String::new()
-        } else {
-            let Some(wire) = wire_authkey(key) else {
-                continue;
-            };
-            wire
-        };
-        let signed_url = super::auth::with_auth_key(url, &wire);
-        let mut request = ureq::get(&signed_url)
-            .set("User-Agent", "MicroMessenger Client")
-            .timeout(std::time::Duration::from_secs(60));
-        if !cookie.is_empty() {
-            request = request.set("Cookie", cookie);
-        }
-        let resp = match request.call() {
-            Ok(response) => response,
-            Err(ureq::Error::Status(code, response)) => {
-                let error_code = response.header("x-error-code").unwrap_or("");
-                let error_message = response.header("x-error-message").unwrap_or("");
-                last_error = format!("HTTP {code} {error_code} {error_message}");
-                if code == 400 || code == 403 {
-                    saw_auth_rejection = true;
-                    if debug {
-                        let prefix = if key.is_empty() {
-                            "无 authkey"
-                        } else if super::auth::asn1_der_valid(key) {
-                            "ASN.1 authkey 被拒"
-                        } else {
-                            "非 ASN.1 authkey 被拒"
-                        };
-                        eprintln!("      • CDN 鉴权失败 ({prefix}): {last_error}");
-                    } else if !CDN_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        eprintln!("[!] 腾讯 CDN 拒绝鉴权: {last_error}");
-                    }
-                } else if debug {
-                    eprintln!("      • CDN 请求失败: {last_error}");
-                }
-                continue;
+    let resp = match request.call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(code, response)) => {
+            let error_code = response.header("x-error-code").unwrap_or("");
+            let error_message = response.header("x-error-message").unwrap_or("");
+            if debug {
+                eprintln!("      • CDN 请求失败: HTTP {code} {error_code} {error_message}");
+            } else if !CDN_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("[!] 腾讯 CDN 拒绝请求: HTTP {code} {error_code}");
             }
-            Err(error) => {
-                last_error = error.to_string();
-                if debug {
-                    eprintln!("      • CDN 请求失败: {last_error}");
-                }
-                continue;
-            }
-        };
-        let mut reader = resp.into_reader();
-        let mut data = Vec::new();
-        use std::io::Read;
-        reader.read_to_end(&mut data).ok()?;
-        if data.is_empty() {
-            last_error = "CDN 返回空响应".to_string();
-            continue;
+            return None;
         }
-        if !key.is_empty() {
-            if let Ok(mut lock) = CDN_AUTH_OK.lock() {
-                *lock = Some(key.clone());
+        Err(error) => {
+            if debug {
+                eprintln!("      • CDN 请求失败: {error}");
+            }
+            return None;
+        }
+    };
+    let mut reader = resp.into_reader();
+    let mut data = Vec::new();
+    use std::io::Read;
+    reader.read_to_end(&mut data).ok()?;
+    if data.is_empty() {
+        return None;
+    }
+    if !is_image_header(&data) {
+        if let Some(key) = aes_key {
+            if let Some(decrypted) = decrypt_aes_cbc_key_iv(&data, key) {
+                data = decrypted;
             }
         }
-        if !is_image_header(&data) {
-            if let Some(key) = aes_key {
-                if let Some(decrypted) = decrypt_aes_cbc_key_iv(&data, key) {
-                    data = decrypted;
-                }
-            }
+    }
+    let mut ext = detect_image_ext(&data);
+    if ext == "hevc" || data.starts_with(b"wxgf") {
+        if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
+            data = img_bytes;
+            ext = img_ext;
         }
-        let mut ext = detect_image_ext(&data);
-        if ext == "hevc" || data.starts_with(b"wxgf") {
-            if let Some((img_bytes, img_ext)) = transcode_wxgf_to_image(&data) {
-                data = img_bytes;
-                ext = img_ext;
-            }
-        }
-        return Some((data, ext));
     }
-    if saw_auth_rejection && auth_keys.len() > 1 {
-        CDN_AUTH_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-    if debug {
-        eprintln!("      • CDN 拉取失败: {last_error}");
-    }
-    None
+    Some((data, ext))
 }
 
 /// Pixel dimensions of a decoded image, used to tell an original from a thumbnail.
@@ -2399,7 +2281,6 @@ mod tests {
             width: Some(416),
             height: Some(440),
             declared_size: Some(29560),
-        auth_key: None,
         };
         // 21509 < 29560 but pixels match: this is the original, not a thumbnail.
         assert!(looks_like_thumbnail(&jpg_like, &media).is_none());
@@ -2417,7 +2298,6 @@ mod tests {
             width: Some(240),
             height: Some(240),
             declared_size: Some(20563),
-        auth_key: None,
         };
         let mut big_pixels = vec![0u8; 24];
         big_pixels[0..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
@@ -2453,7 +2333,6 @@ mod tests {
             width: None,
             height: None,
             declared_size: None,
-        auth_key: None,
         };
         let (bytes, ext) =
             decrypt_candidate_bytes(&payload, &path, &media, false, None, None, None)
@@ -2502,7 +2381,6 @@ mod tests {
             width: Some(240),
             height: Some(240),
             declared_size: Some(90546),
-        auth_key: None,
         };
         assert!(looks_like_thumbnail(&png, &media).is_some());
 
@@ -2537,7 +2415,6 @@ mod tests {
             width: Some(240),
             height: Some(240),
             declared_size: Some(90546),
-        auth_key: None,
         };
         let ranked = index.candidates(&media);
         let top = &index.files[ranked[0]].path;
@@ -2600,7 +2477,6 @@ mod tests {
             width: None,
             height: None,
             declared_size: None,
-        auth_key: None,
         };
         let ranked = index.candidates(&media);
         let top = &index.files[ranked[0]].path;

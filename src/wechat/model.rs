@@ -56,8 +56,6 @@ pub struct MediaRef {
     pub height: Option<u32>,
     /// Plaintext byte length declared by the message XML (`len` / `androidlen`).
     pub declared_size: Option<u64>,
-    /// Per-message C2C download ticket carried by the XML, when present.
-    pub auth_key: Option<String>,
 }
 
 /// Readable notes recovered from WeChat's compressed `<msgsource>` column.
@@ -84,6 +82,16 @@ impl MediaKind {
             MediaKind::Voice => "voice",
             MediaKind::Emoji => "emoji",
             MediaKind::File => "file",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MediaKind::Image => "图片",
+            MediaKind::Video => "视频",
+            MediaKind::Voice => "语音",
+            MediaKind::Emoji => "表情",
+            MediaKind::File => "文件",
         }
     }
 }

@@ -189,51 +189,8 @@ pub fn extract_cdn_url(xml: &str) -> Option<String> {
             return Some(value);
         }
     }
-
-    // Private attachments only expose an ASN.1 locator; the download is signed
-    // with a per-message authkey (see `extract_message_authkey`).
-    for tag in ["appattach", "appmsg", "msg"] {
-        if let Some(value) = xml_value(xml, "cdnattachurl")
-            .or_else(|| xml_attr(xml, tag, "cdnattachurl"))
-        {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Some(format!(
-                    "https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_param={trimmed}"
-                ));
-            }
-        }
-    }
     None
 }
-
-/// A C2C download ticket can travel with the message itself. It is hex-encoded
-/// ASN.1 DER, so only accept values that look like one.
-pub fn extract_message_authkey(xml: &str) -> Option<String> {
-    let mut candidates: Vec<String> = Vec::new();
-    for tag in ["appattach", "appmsg", "msg", "img", "emoji"] {
-        if let Some(value) = xml_attr(xml, tag, "authkey") {
-            candidates.push(value);
-        }
-    }
-    for tag in ["authkey", "tpauthkey"] {
-        if let Some(value) = xml_value(xml, tag) {
-            candidates.push(value);
-        }
-    }
-    candidates.into_iter().find_map(|raw| {
-        let value = raw.trim().to_ascii_lowercase();
-        let valid = value.len() >= 16
-            && value.len() % 2 == 0
-            && value.bytes().all(|b| b.is_ascii_hexdigit());
-        if valid {
-            Some(value)
-        } else {
-            None
-        }
-    })
-}
-
 fn first_attr_number(xml: &str, attrs: &[&str]) -> Option<u32> {
     for attr in attrs {
         for tag in ["emoji", "img", "videomsg", "appmsg", "appattach"] {
@@ -332,7 +289,6 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
     }
     let cdn_url = extract_cdn_url(xml);
     let aes_key = extract_aes_key(xml);
-    let auth_key = extract_message_authkey(xml);
     let width = first_attr_number(xml, &["width", "cdnthumbwidth"]);
     let height = first_attr_number(xml, &["height", "cdnthumbheight"]);
     let declared_size = first_attr_u64(
@@ -373,7 +329,6 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
         width,
         height,
         declared_size,
-        auth_key,
     })
 }
 
@@ -759,27 +714,7 @@ mod tests {
         assert_eq!(extract_cdn_url(image).as_deref(), Some("http://c/b.jpg"));
 
         let attachment = r#"<msg><appmsg><appattach><cdnattachurl>3057aa</cdnattachurl></appattach></appmsg></msg>"#;
-        assert_eq!(
-            extract_cdn_url(attachment).as_deref(),
-            Some("https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_param=3057aa")
-        );
-    }
-
-    #[test]
-    fn extracts_per_message_authkey() {
-        let xml = r#"<msg><appmsg><appattach authkey="00112233445566778899aabbccddeeff"/></appmsg></msg>"#;
-        assert_eq!(
-            extract_message_authkey(xml).as_deref(),
-            Some("00112233445566778899aabbccddeeff")
-        );
-        // tpauthkey child element works too, but junk is rejected.
-        let xml = "<msg><appmsg><tpauthkey>deadbeefdeadbeef</tpauthkey></appmsg></msg>";
-        assert_eq!(
-            extract_message_authkey(xml).as_deref(),
-            Some("deadbeefdeadbeef")
-        );
-        assert_eq!(extract_message_authkey("<msg><appmsg/></msg>"), None);
-        assert_eq!(extract_message_authkey("<msg><authkey>zz</authkey></msg>"), None);
+        assert_eq!(extract_cdn_url(attachment), None);
     }
 
     #[test]

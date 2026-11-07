@@ -92,7 +92,7 @@ fn exports_all_formats_and_media() {
     let json: Value =
         serde_json::from_slice(&fs::read(output.join("conversation.json")).unwrap()).unwrap();
     let messages = json["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 8);
+    assert_eq!(messages.len(), 9);
     assert!(messages.iter().any(|message| message["content"] == "hello group"));
     assert!(messages
         .iter()
@@ -119,10 +119,20 @@ fn exports_all_formats_and_media() {
     let wav = fs::read(output.join(voice_path)).expect("voice wav");
     assert!(wav.starts_with(b"RIFF"));
     assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 24000);
+    let missing = messages
+        .iter()
+        .find(|message| message["media"]["name"] == "report.html")
+        .expect("file message");
+    assert!(missing["media"].get("path").is_none());
+    assert_eq!(missing["media"]["status"], "missing");
+    let markdown = fs::read_to_string(output.join("conversation.md")).unwrap();
+    assert!(markdown.contains("文件: report.html (未索引，空缺)"), "{markdown}");
+    let html = fs::read_to_string(output.join("conversation.html")).unwrap();
+    assert!(html.contains("media-missing"), "{html}");
     assert!(messages.iter().all(|message| message.get("source").is_none()));
     let report: Value =
         serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
-    assert_eq!(report["conversations"][0]["message_count"], 8);
+    assert_eq!(report["conversations"][0]["message_count"], 9);
     assert!(report["conversations"][0]["media"]["saved"].as_u64().unwrap() >= 1);
 }
 
@@ -182,7 +192,7 @@ fn exported_chatlab_matches_spec_shape() {
     assert_eq!(value["meta"]["platform"], "wechat");
     assert_eq!(value["meta"]["type"], "group");
     assert!(!value["members"].as_array().unwrap().is_empty());
-    assert_eq!(value["messages"].as_array().unwrap().len(), 8);
+    assert_eq!(value["messages"].as_array().unwrap().len(), 9);
     let lines = fs::read_to_string(output.join("conversation.chatlab.jsonl")).unwrap();
     let lines: Vec<&str> = lines.lines().collect();
     assert!(lines[0].contains("\"_type\":\"header\""));
