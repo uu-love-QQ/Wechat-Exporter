@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDown,
   FileText,
+  Mic,
   Moon,
   Search,
   SearchX,
   Sun,
   TriangleAlert,
 } from 'lucide-react'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -85,6 +86,27 @@ function loadData(): ChatData {
 
 const DATA = loadData()
 
+const AVATAR_HUES = [215, 160, 275, 15, 340, 190] as const
+
+function senderAvatarStyle(name: string): React.CSSProperties {
+  let hash = 0
+  for (const character of name) {
+    hash = (hash * 31 + character.codePointAt(0)!) >>> 0
+  }
+  const hue = AVATAR_HUES[hash % AVATAR_HUES.length]
+  return { backgroundColor: `hsl(${hue} 62% 42%)`, color: '#ffffff' }
+}
+
+function formatDuration(milliseconds: number): string {
+  const total = Math.max(0, milliseconds) / 1000
+  if (total >= 60) {
+    const seconds = Math.round(total)
+    return `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, '0')} 秒`
+  }
+  const seconds = Math.round(total * 10) / 10
+  return `${Number.isInteger(seconds) ? seconds.toFixed(0) : seconds} 秒`
+}
+
 function initialTheme(): boolean {
   if (typeof document === 'undefined') return false
   return document.documentElement.classList.contains('dark')
@@ -123,7 +145,18 @@ function MediaBlock({ media, mine }: { media: ChatMedia; mine: boolean }) {
     return <video src={href} controls preload="metadata" className="mt-3 w-full max-w-md rounded-xl" />
   }
   if (media.kind === 'voice') {
-    return <audio src={href} controls preload="metadata" className="mt-3 w-full max-w-sm" />
+    return (
+      <div className="mt-3">
+        <div className={cn('flex items-center gap-1.5 text-xs', mine ? 'mine-muted' : 'text-muted-foreground')}>
+          <Mic className="size-4" aria-hidden="true" />
+          <span>
+            语音消息
+            {media.durationMs ? ` · ${formatDuration(media.durationMs)}` : ''}
+          </span>
+        </div>
+        <audio src={href} controls preload="metadata" className="mt-2 w-full max-w-sm" />
+      </div>
+    )
   }
   return (
     <a
@@ -133,7 +166,7 @@ function MediaBlock({ media, mine }: { media: ChatMedia; mine: boolean }) {
       className={cn(
         'mt-3 inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm',
         mine
-          ? 'border-primary-foreground/30 bg-background/15 text-primary-foreground'
+          ? 'mine-border mine-surface text-[var(--me-fg)]'
           : 'border-border bg-muted/50 text-foreground hover:border-primary',
       )}
     >
@@ -150,6 +183,7 @@ function MissingMediaAlert({ missing }: { missing: MissingMedia }) {
       <AlertTitle>媒体未索引</AlertTitle>
       <AlertDescription>
         {KIND_LABEL[missing.kind]}
+        {missing.durationMs ? ` · ${formatDuration(missing.durationMs)}` : ''}
         {missing.name ? `：${missing.name}` : ''} 未在本地索引到，已留空
       </AlertDescription>
     </Alert>
@@ -179,8 +213,10 @@ function MessageRow({
     >
       {!mine &&
         (showAvatar ? (
-          <Avatar size="sm" className="mb-1" aria-hidden="true">
-            <AvatarFallback>{(message.sender || '?').slice(0, 1)}</AvatarFallback>
+          <Avatar size="sm" className="mb-1" aria-hidden="true" style={senderAvatarStyle(message.sender)}>
+            <AvatarFallback className="bg-transparent font-medium text-current">
+              {(message.sender || '?').slice(0, 1)}
+            </AvatarFallback>
           </Avatar>
         ) : (
           <div className="size-6 shrink-0" aria-hidden="true" />
@@ -189,7 +225,7 @@ function MessageRow({
         className={cn(
           'max-w-[78%] rounded-2xl border px-4 py-3 shadow-sm transition-shadow',
           mine
-            ? 'border-primary/40 bg-primary text-primary-foreground'
+            ? 'border-[var(--me-border)] bg-[var(--me-bg)] text-[var(--me-fg)]'
             : 'border-border bg-card text-card-foreground',
           flash && 'ring-2 ring-ring ring-offset-2 ring-offset-background',
         )}
@@ -197,10 +233,10 @@ function MessageRow({
         <div
           className={cn(
             'mb-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs',
-            mine ? 'justify-end text-primary-foreground/70' : 'text-muted-foreground',
+            mine ? 'mine-muted justify-end' : 'text-muted-foreground',
           )}
         >
-          <span className={cn('font-medium', mine ? 'text-primary-foreground' : 'text-foreground')}>
+          <span className={cn('font-medium', mine ? 'text-[var(--me-fg)]' : 'text-foreground')}>
             {message.sender}
           </span>
           <time>{message.time}</time>
@@ -211,26 +247,26 @@ function MessageRow({
             className={cn(
               'mb-2 rounded-lg border-l-2 p-2 text-sm',
               mine
-                ? 'border-primary-foreground/40 bg-background/15'
+                ? 'mine-border mine-surface'
                 : message.quote.target === null
                   ? 'border-destructive/50 bg-muted/60'
                   : 'border-primary bg-muted/60',
             )}
           >
             <div className="flex items-center gap-2 text-xs">
-              <span className={cn('font-medium', mine ? 'text-primary-foreground' : 'text-foreground')}>
+              <span className={cn('font-medium', mine ? 'text-[var(--me-fg)]' : 'text-foreground')}>
                 {message.quote.sender || '未知'}
               </span>
               {message.quote.target !== null ? (
                 <button
                   type="button"
                   onClick={() => onJump(message.quote!.target!)}
-                  className={cn('ml-auto underline-offset-2 hover:underline', mine ? 'text-primary-foreground' : 'text-primary')}
+                  className={cn('ml-auto underline-offset-2 hover:underline', mine ? 'text-[var(--me-fg)]' : 'text-primary')}
                 >
                   查看原消息
                 </button>
               ) : (
-                <span className={cn('ml-auto text-xs', mine ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
+                <span className={cn('ml-auto text-xs', mine ? 'mine-muted' : 'text-muted-foreground')}>
                   原消息不在导出范围
                 </span>
               )}
@@ -241,7 +277,7 @@ function MessageRow({
                 onClick={() => onJump(message.quote!.target!)}
                 className={cn(
                   'mt-1 block w-full whitespace-pre-wrap text-left',
-                  mine ? 'text-primary-foreground/80' : 'text-muted-foreground',
+                  mine ? 'mine-muted' : 'text-muted-foreground',
                 )}
               >
                 {message.quote.text}
@@ -250,7 +286,7 @@ function MessageRow({
               <div
                 className={cn(
                   'mt-1 whitespace-pre-wrap',
-                  mine ? 'text-primary-foreground/90' : 'text-foreground/90',
+                  mine ? 'text-[var(--me-fg)]' : 'text-foreground/90',
                 )}
               >
                 {message.quote.text}
@@ -259,7 +295,7 @@ function MessageRow({
           </div>
         )}
 
-        {message.content && (
+        {message.content && !(message.media?.kind === 'voice') && (
           <div className="whitespace-pre-wrap break-words text-base leading-relaxed">{message.content}</div>
         )}
 
@@ -362,8 +398,16 @@ function App() {
         </a>
         <header className="sticky top-0 z-20 border-b bg-background/85 backdrop-blur">
           <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3 px-4 py-3">
-            <Avatar size="lg" aria-hidden="true">
-              <AvatarFallback>{initial}</AvatarFallback>
+            <Avatar
+              size="lg"
+              aria-hidden="true"
+              className="size-11"
+              style={{ width: 44, height: 44, backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)' }}
+            >
+              {DATA.avatar && <AvatarImage src={DATA.avatar} alt="" />}
+              <AvatarFallback className="bg-transparent text-base font-semibold text-current">
+                {initial}
+              </AvatarFallback>
             </Avatar>
             <div className="min-w-0 flex-1">
               <h1 className="truncate text-base font-semibold">{DATA.title}</h1>

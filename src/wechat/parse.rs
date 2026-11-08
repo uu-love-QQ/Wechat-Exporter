@@ -206,9 +206,15 @@ fn first_attr_number(xml: &str, attrs: &[&str]) -> Option<u32> {
     None
 }
 
+pub fn extract_voice_duration(xml: &str) -> Option<u64> {
+    xml_attr(xml, "voicemsg", "voicelength")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+}
+
 fn first_attr_u64(xml: &str, attrs: &[&str]) -> Option<u64> {
     for attr in attrs {
-        for tag in ["emoji", "img", "videomsg", "appmsg", "appattach"] {
+        for tag in ["emoji", "img", "videomsg", "voicemsg", "appmsg", "appattach"] {
             if let Some(val) = xml_attr(xml, tag, attr) {
                 if let Ok(parsed) = val.trim().parse::<u64>() {
                     if parsed > 0 {
@@ -329,6 +335,7 @@ fn media_ref(base_type: i64, subtype: Option<i64>, xml: &str) -> Option<MediaRef
         width,
         height,
         declared_size,
+        duration_ms: extract_voice_duration(xml),
     })
 }
 

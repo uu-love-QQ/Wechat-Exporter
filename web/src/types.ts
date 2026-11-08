@@ -12,11 +12,13 @@ export interface ChatMedia {
   name: string
   width?: number | null
   height?: number | null
+  durationMs?: number | null
 }
 
 export interface MissingMedia {
   kind: MediaKind
   name: string
+  durationMs?: number | null
 }
 
 export interface ChatMessage {
@@ -36,5 +38,6 @@ export interface ChatData {
   kind: string
   id: string
   exportedAt: string
+  avatar?: string | null
   messages: ChatMessage[]
 }

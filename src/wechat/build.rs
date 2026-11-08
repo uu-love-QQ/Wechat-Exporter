@@ -45,6 +45,9 @@ pub fn export_message(
                     width: None,
                     height: None,
                     declared_size: None,
+                    duration_ms: crate::wechat::parse::extract_voice_duration(
+                        &raw.raw_content,
+                    ),
                 });
             }
         }

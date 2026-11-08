@@ -68,14 +68,28 @@ pub fn load_contacts(
         } else {
             "''"
         };
+        let avatar_expr = [
+            "small_head_img_url",
+            "smallheadimgurl",
+            "head_img_url",
+            "headimgurl",
+            "big_head_img_url",
+            "bigheadimgurl",
+            "avatar_url",
+        ]
+        .iter()
+        .find(|name| has(name))
+        .map(|name| text_expr(name))
+        .unwrap_or_else(|| "''".to_string());
         let sql = format!(
-            "SELECT {}, {}, {}, {}, {}, {} FROM {}",
+            "SELECT {}, {}, {}, {}, {}, {}, {} FROM {}",
             quote_ident(&username),
             text_expr(nickname),
             text_expr("remark"),
             text_expr("alias"),
             num_expr("local_type"),
             num_expr("delete_flag"),
+            avatar_expr,
             quote_ident(&table)
         );
         let Ok(mut stmt) = db.conn().prepare(&sql) else {
@@ -89,12 +103,13 @@ pub fn load_contacts(
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         }) else {
             continue;
         };
         for row in rows.flatten() {
-            let (Some(username), nickname, remark, alias, local_type, delete_flag) = row else {
+            let (Some(username), nickname, remark, alias, local_type, delete_flag, avatar_url) = row else {
                 continue;
             };
             if username.is_empty() {
@@ -111,9 +126,31 @@ pub fn load_contacts(
                 is_group: is_group_id(&username)
                     || table_name == "chat_room"
                     || local_type == Some(2),
+                avatar_url: avatar_url.unwrap_or_default(),
             };
             out.entry(username).or_insert(contact);
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_avatar_url_when_present() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("contact.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE contact (username TEXT, nick_name TEXT, remark TEXT, alias TEXT, local_type INTEGER, delete_flag INTEGER, small_head_img_url TEXT);
+             INSERT INTO contact VALUES ('wxid_a', 'Alice', '', '', 1, 0, 'http://example.test/a.jpg');",
+        )
+        .unwrap();
+        drop(conn);
+        let contacts = load_contacts(Some(&path), None, true);
+        let contact = contacts.get("wxid_a").expect("contact");
+        assert_eq!(contact.avatar_url, "http://example.test/a.jpg");
+    }
 }

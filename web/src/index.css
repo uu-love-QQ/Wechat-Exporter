@@ -149,3 +149,64 @@
     contain-intrinsic-size: auto 96px;
   }
 }
+
+/* Chat palette: messenger blue + soft surfaces (light/dark paired). */
+:root {
+  --background: #f5f8fe;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #e8eefb;
+  --secondary-foreground: #1e3a8a;
+  --muted: #eef3fc;
+  --muted-foreground: #475569;
+  --accent: #dcfce7;
+  --accent-foreground: #065f46;
+  --destructive: #dc2626;
+  --border: #dee7f7;
+  --input: #d5e2f7;
+  --ring: #2563eb;
+  --me-bg: #2563eb;
+  --me-fg: #ffffff;
+  --me-border: #1d4ed8;
+}
+
+.dark {
+  --background: #0a1220;
+  --foreground: #e8effb;
+  --card: #111c2e;
+  --card-foreground: #e8effb;
+  --popover: #111c2e;
+  --popover-foreground: #e8effb;
+  --primary: #60a5fa;
+  --primary-foreground: #08111f;
+  --secondary: #1b2a44;
+  --secondary-foreground: #e8effb;
+  --muted: #17243a;
+  --muted-foreground: #a9b8ce;
+  --accent: #14532d;
+  --accent-foreground: #dcfce7;
+  --destructive: #f87171;
+  --border: #24334c;
+  --input: #2c3e5c;
+  --ring: #60a5fa;
+  --me-bg: #1d4ed8;
+  --me-fg: #eff6ff;
+  --me-border: #3b82f6;
+}
+
+@layer utilities {
+  .mine-muted {
+    color: color-mix(in oklab, var(--me-fg) 82%, transparent);
+  }
+  .mine-border {
+    border-color: color-mix(in oklab, var(--me-fg) 35%, transparent);
+  }
+  .mine-surface {
+    background-color: color-mix(in oklab, var(--me-fg) 14%, transparent);
+  }
+}

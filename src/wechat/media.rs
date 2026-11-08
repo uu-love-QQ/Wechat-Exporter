@@ -2275,6 +2275,7 @@ mod tests {
             width: Some(416),
             height: Some(440),
             declared_size: Some(29560),
+            duration_ms: None,
         };
         // 21509 < 29560 but pixels match: this is the original, not a thumbnail.
         assert!(looks_like_thumbnail(&jpg_like, &media).is_none());
@@ -2292,6 +2293,7 @@ mod tests {
             width: Some(240),
             height: Some(240),
             declared_size: Some(20563),
+            duration_ms: None,
         };
         let mut big_pixels = vec![0u8; 24];
         big_pixels[0..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
@@ -2327,6 +2329,7 @@ mod tests {
             width: None,
             height: None,
             declared_size: None,
+            duration_ms: None,
         };
         let (bytes, ext) =
             decrypt_candidate_bytes(&payload, &path, &media, false, None, None, None)
@@ -2375,6 +2378,7 @@ mod tests {
             width: Some(240),
             height: Some(240),
             declared_size: Some(90546),
+            duration_ms: None,
         };
         assert!(looks_like_thumbnail(&png, &media).is_some());
 
@@ -2409,6 +2413,7 @@ mod tests {
             width: Some(240),
             height: Some(240),
             declared_size: Some(90546),
+            duration_ms: None,
         };
         let ranked = index.candidates(&media);
         let top = &index.files[ranked[0]].path;
@@ -2471,6 +2476,7 @@ mod tests {
             width: None,
             height: None,
             declared_size: None,
+            duration_ms: None,
         };
         let ranked = index.candidates(&media);
         let top = &index.files[ranked[0]].path;

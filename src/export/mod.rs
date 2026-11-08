@@ -15,6 +15,7 @@ pub struct ExportContext<'a> {
     pub self_name: String,
     pub exported_at_ms: i64,
     pub include_media: bool,
+    pub avatar_path: Option<String>,
 }
 
 impl<'a> ExportContext<'a> {
@@ -606,6 +607,7 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
                     "name": media.file_name,
                     "width": media.width,
                     "height": media.height,
+                    "durationMs": media.duration_ms,
                 })
             })
         });
@@ -614,6 +616,7 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
                 serde_json::json!({
                     "kind": media.kind.as_str(),
                     "name": media.file_name,
+                    "durationMs": media.duration_ms,
                 })
             })
         } else {
@@ -637,6 +640,7 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
         "kind": if context.group() { "群聊" } else { "私聊" },
         "id": context.conversation.id,
         "exportedAt": format_timestamp(context.exported_at_sec()),
+        "avatar": context.avatar_path,
         "messages": messages,
     });
     let data = serde_json::to_string(&payload).context("serialize chat data")?;

@@ -7,6 +7,7 @@ pub struct Contact {
     pub remark: String,
     pub alias: String,
     pub is_group: bool,
+    pub avatar_url: String,
 }
 
 impl Contact {
@@ -56,6 +57,8 @@ pub struct MediaRef {
     pub height: Option<u32>,
     /// Plaintext byte length declared by the message XML (`len` / `androidlen`).
     pub declared_size: Option<u64>,
+    /// Voice duration in milliseconds (`<voicemsg voicelength="...">`).
+    pub duration_ms: Option<u64>,
 }
 
 /// Readable notes recovered from WeChat's compressed `<msgsource>` column.

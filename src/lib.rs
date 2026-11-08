@@ -380,6 +380,38 @@ fn default_output_dir() -> PathBuf {
     std::env::temp_dir().join(format!("wechat-exports-{millis}"))
 }
 
+fn download_avatar(url: &str, conversation_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    use sha2::{Digest, Sha256};
+    let response = ureq::get(url)
+        .set("User-Agent", "MicroMessenger Client")
+        .timeout(std::time::Duration::from_secs(15))
+        .call()
+        .ok()?;
+    let mut data = Vec::new();
+    use std::io::Read;
+    response.into_reader().read_to_end(&mut data).ok()?;
+    if data.is_empty() {
+        return None;
+    }
+    let ext = if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "png"
+    } else if data.starts_with(b"GIF8") {
+        "gif"
+    } else if data.starts_with(b"RIFF") {
+        "webp"
+    } else {
+        "jpg"
+    };
+    let digest = hex::encode(Sha256::digest(&data));
+    let dir = conversation_dir.join("media").join("avatar");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("{digest}.{ext}"));
+    if !path.exists() {
+        std::fs::write(&path, &data).ok()?;
+    }
+    Some(path)
+}
+
 fn run_export(
     options: &ValidatedCli,
     layout: &wechat::discover::Layout,
@@ -464,6 +496,26 @@ fn run_export(
         } else {
             None
         };
+        let wants_html = options.formats.iter().any(|format| *format == cli::Format::Html);
+        let avatar_path = if options.include_media && wants_html {
+            contacts
+                .get(&conversation.id)
+                .and_then(|contact| {
+                    let url = contact.avatar_url.trim();
+                    if url.is_empty() {
+                        None
+                    } else {
+                        download_avatar(url, &conversation_dir).map(|path| {
+                            path.strip_prefix(&output_dir)
+                                .unwrap_or(path.as_path())
+                                .to_string_lossy()
+                                .replace('\\', "/")
+                        })
+                    }
+                })
+        } else {
+            None
+        };
         let context = ExportContext {
             conversation,
             messages: &messages,
@@ -471,6 +523,7 @@ fn run_export(
             self_name: self_name.clone(),
             exported_at_ms,
             include_media: options.include_media,
+            avatar_path,
         };
         let written = export::write_conversation(&context, &conversation_dir, &options.formats)?;
         total_messages += messages.len();
@@ -528,4 +581,35 @@ fn run_export(
     println!("WeChat chat records exported to {}", output_dir.display());
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod avatar_tests {
+    use super::download_avatar;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn downloads_and_content_addresses_avatar() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 512];
+            let _ = stream.read(&mut buffer);
+            let body: &[u8] = b"\xff\xd8\xff\xe0avatar";
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(body);
+        });
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = download_avatar(&format!("http://{address}/a"), dir.path()).expect("avatar");
+        server.join().unwrap();
+        assert!(path.starts_with(dir.path().join("media").join("avatar")));
+        assert!(path.to_string_lossy().ends_with(".jpg"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"\xff\xd8\xff\xe0avatar");
+    }
 }
