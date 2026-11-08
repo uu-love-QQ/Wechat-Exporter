@@ -127,6 +127,7 @@ function VoicePlayer({
 
   const total = loaded > 0 ? loaded : (durationMs ?? 0) / 1000
   const progress = total > 0 ? Math.min(1, current / total) : 0
+  const width = Math.round(Math.min(280, Math.max(190, 150 + total * 10)))
   const bars = Array.from({ length: 22 }, (_, index) => 28 + ((index * 37 + seed * 17) % 62))
 
   const toggle = () => {
@@ -150,6 +151,7 @@ function VoicePlayer({
 
   return (
     <div
+      style={{ width: `${width}px`, maxWidth: '100%' }}
       className={cn(
         'mt-3 flex items-center gap-2.5 rounded-full border px-2 py-1.5',
         mine ? 'mine-border mine-surface' : 'border-border bg-muted/60',
