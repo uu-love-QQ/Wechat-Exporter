@@ -4,6 +4,8 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::Duration;
 #[cfg(windows)]
+use std::os::windows::process::CommandExt;
+#[cfg(windows)]
 use std::process::Command;
 
 const REPO: &str = "uu-love-QQ/Wechat-Exporter";
@@ -43,6 +45,40 @@ fn download_url(version: &str, prefix: Option<&str>) -> String {
     }
 }
 
+fn resolve_latest(prefix: Option<&str>) -> Option<String> {
+    let api = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let mut urls = vec![api.clone()];
+    if let Some(prefix) = prefix {
+        let prefix = prefix.trim_end_matches('/');
+        if !prefix.is_empty() {
+            urls.push(format!("{prefix}/{api}"));
+        }
+    }
+    for url in urls {
+        let Ok(response) = ureq::get(&url)
+            .set("User-Agent", "wechat-exporter-updater")
+            .set("Accept", "application/vnd.github+json")
+            .timeout(Duration::from_secs(20))
+            .call()
+        else {
+            continue;
+        };
+        let mut body = String::new();
+        if response.into_reader().read_to_string(&mut body).is_err() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
+            continue;
+        };
+        if let Some(tag) = value.get("tag_name").and_then(|tag| tag.as_str()) {
+            if !tag.trim().is_empty() {
+                return Some(tag.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
 fn download(url: &str) -> Result<Vec<u8>> {
     let response = ureq::get(url)
         .set("User-Agent", "wechat-exporter-updater")
@@ -62,8 +98,16 @@ fn download(url: &str) -> Result<Vec<u8>> {
 
 pub fn run(version: &str, prefix: Option<&str>) -> Result<()> {
     let current = std::env::current_exe().context("cannot locate current executable")?;
-    let url = download_url(version, prefix);
+    let requested = if version == "latest" {
+        resolve_latest(prefix).unwrap_or_else(|| "latest".to_string())
+    } else {
+        version.to_string()
+    };
+    let url = download_url(&requested, prefix);
     eprintln!("[i] 当前版本: {}", env!("CARGO_PKG_VERSION"));
+    if requested != "latest" {
+        eprintln!("[i] 目标版本: {requested}");
+    }
     eprintln!("[i] 正在下载: {url}");
     let data = download(&url)?;
     let new_path = PathBuf::from(format!("{}.new", current.display()));
@@ -85,17 +129,23 @@ pub fn run(version: &str, prefix: Option<&str>) -> Result<()> {
     {
         // A running .exe cannot be overwritten on Windows. Let a detached
         // cmd.exe wait for this process to exit, swap the binary, then start it.
+        let script_path = current.with_extension("upgrade.cmd");
+        let log_path = current.with_extension("upgrade.log");
         let script = format!(
-            "@echo off\r\ntimeout /t 2 /nobreak >nul\r\nmove /Y \"{}\" \"{}\" >nul\r\nstart \"\" \"{}\"\r\n",
+            "@echo off\r\nsetlocal\r\nset \"NEW={}\"\r\nset \"PUB={}\"\r\nset \"LOG={}\"\r\necho upgrade %date% %time%>>\"%LOG%\"\r\nfor /l %%i in (1,1,30) do (\r\n  ping 127.0.0.1 -n 2 >nul\r\n  move /Y \"%NEW%\" \"%PUB%\" >nul 2>&1\r\n  if not exist \"%NEW%\" goto done\r\n)\r\necho replace_failed>>\"%LOG%\"\r\ngoto end\r\n:done\r\necho replaced>>\"%LOG%\"\r\nstart \"\" \"%PUB%\"\r\n:end\r\ndel \"%~f0\" >nul 2>&1\r\n",
             new_path.display(),
             current.display(),
-            current.display()
+            log_path.display()
         );
+        fs::write(&script_path, script)
+            .with_context(|| format!("failed to write upgrade helper {}", script_path.display()))?;
         Command::new("cmd")
-            .args(["/C", &script])
+            .args(["/C", &script_path.to_string_lossy()])
+            .creation_flags(0x08000000)
             .spawn()
             .context("failed to launch Windows upgrade helper")?;
-        eprintln!("[+] 升级包已下载，程序退出后会自动替换并重启。");
+        eprintln!("[+] 升级包已下载到 {}", new_path.display());
+        eprintln!("[+] Windows 将等待退出后替换并重启；如未自动重启，请查看 {}", log_path.display());
     }
 
     Ok(())
