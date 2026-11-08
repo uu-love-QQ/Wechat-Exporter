@@ -80,7 +80,10 @@ impl VoiceIndex {
                         continue;
                     };
                     let lower = name.to_ascii_lowercase();
-                    if !lower.ends_with(".db") || !lower.starts_with("message_") {
+                    if !lower.ends_with(".db")
+                        || (!lower.starts_with("message_")
+                            && !lower.starts_with("biz_message_"))
+                    {
                         continue;
                     }
                     if let Some(database) =
@@ -646,7 +649,9 @@ fn open_voice_database(
             continue;
         };
         let Some(blob_col) = find_voice_blob_column(&columns) else {
-            probe.push(format!("  {name}: 无语音 BLOB 列 [{}]", columns.join(",")));
+            if name.to_ascii_lowercase().contains("voice") {
+                probe.push(format!("  {name}: 无语音 BLOB 列 [{}]", columns.join(",")));
+            }
             continue;
         };
         probe.push(format!(
@@ -713,8 +718,9 @@ fn looks_like_plain_sqlite(path: &Path) -> bool {
 }
 
 fn voice_database_candidates(db_storage: &Path) -> Vec<PathBuf> {
+    // Dedicated media databases only. Message shards are a fallback and are
+    // scanned solely when none of these exposes a voice payload column.
     let mut named = Vec::new();
-    let mut shards = Vec::new();
     for dir in [
         db_storage.join("media"),
         db_storage.to_path_buf(),
@@ -740,17 +746,11 @@ fn voice_database_candidates(db_storage: &Path) -> Vec<PathBuf> {
             }
             if lower.contains("media") || lower.contains("voice") || lower == "hardlink.db" {
                 named.push(path);
-            } else if lower.starts_with("message_") || lower.starts_with("biz_message_") {
-                // Some builds keep `voice_data` inside the message shard itself.
-                shards.push(path);
             }
         }
     }
     named.sort();
     named.dedup();
-    shards.sort();
-    shards.dedup();
-    named.extend(shards);
     named
 }
 
@@ -802,6 +802,31 @@ mod tests {
         )
         .unwrap();
         VoiceIndex::build(dir, None, true, false)
+    }
+
+    #[test]
+    fn skips_message_shards_when_media_database_has_voice() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let media = dir.path().join("message");
+        std::fs::create_dir_all(&media).unwrap();
+        let media_db = media.join("media_0.db");
+        let conn = rusqlite::Connection::open(&media_db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE Name2Id (user_name TEXT);
+             CREATE TABLE VoiceInfo (chat_name_id INTEGER, create_time INTEGER, local_id INTEGER, svr_id INTEGER, voice_data BLOB, data_index INTEGER);",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO Name2Id (user_name) VALUES ('wxid_chat')", []).unwrap();
+        conn.execute("INSERT INTO VoiceInfo VALUES (1, 1700000000000, 1, 1, ?1, 0)", rusqlite::params![b"RIFF".to_vec()]).unwrap();
+        drop(conn);
+        let shard = media.join("message_0.db");
+        let conn = rusqlite::Connection::open(&shard).unwrap();
+        conn.execute_batch("CREATE TABLE Msg_deadbeef (local_id INTEGER, server_id INTEGER, local_type INTEGER, sort_seq INTEGER, real_sender_id INTEGER, create_time INTEGER, message_content BLOB);").unwrap();
+        drop(conn);
+        let index = VoiceIndex::build(dir.path(), None, true, false);
+        assert_eq!(index.databases.len(), 1);
+        assert_eq!(index.databases[0].tables.len(), 1);
+        assert_eq!(index.databases[0].tables[0].name, "VoiceInfo");
     }
 
     #[test]

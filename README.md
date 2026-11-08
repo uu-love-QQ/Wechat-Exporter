@@ -122,6 +122,16 @@ HTML 导出会为每条消息写入稳定锚点 `id="msg-N"`。引用消息（ty
 「原消息未找到（可能已删除或不在导出范围内）」，不会留下悬空链接。
 引用块同时显示原发送者与原消息摘要，回复正文独立渲染。
 
+### 索引缓存与探测开销
+
+- 媒体索引（`--include-media`）会写入系统临时目录的
+  `wechat-exporter-media-<root-hash>.json`，10 分钟内重复导出直接复用，不再遍历两万多个文件；
+  需要强制重新索引时删除该缓存文件（或等待过期）。
+- 语音库只探测 `media_*.db` / `biz_media_*.db` / `voice*.db` 等专用媒体库；
+  仅当这些库都没有 `voice_data` 列时才回退扫描 `message_*.db` / `biz_message_*.db` 分片，
+  避免每次展开数百张 `Msg_*` 表。
+- `--debug` 的探测输出同时过滤掉非语音表（`Name2Id`、`TimeStamp` 等）。
+
 ## 私有文件（novac2c）
 
 微信 4.x 的私有文件（PDF/ZIP/APK 等）只给出 `cdnattachurl` + `aeskey`。该 CDN 端点需要
