@@ -37,58 +37,6 @@ fn is_hash_token(value: &str) -> bool {
     (value.len() == 32 || value.len() == 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct MediaCacheFile {
-    root: String,
-    built_at: i64,
-    files: Vec<String>,
-}
-
-const MEDIA_CACHE_TTL_SECS: i64 = 600;
-
-fn media_cache_path(root: &Path) -> PathBuf {
-    use sha2::{Digest, Sha256};
-    let digest = hex::encode(Sha256::digest(root.to_string_lossy().as_bytes()));
-    std::env::temp_dir().join(format!("wechat-exporter-media-{}.json", &digest[..16]))
-}
-
-fn load_media_cache(root: &Path) -> Option<Vec<PathBuf>> {
-    let data = fs::read(media_cache_path(root)).ok()?;
-    let cache: MediaCacheFile = serde_json::from_slice(&data).ok()?;
-    if cache.root != root.to_string_lossy() {
-        return None;
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
-    if cache.built_at <= 0 || now.saturating_sub(cache.built_at) > MEDIA_CACHE_TTL_SECS {
-        return None;
-    }
-    if !root.is_dir() {
-        return None;
-    }
-    Some(cache.files.into_iter().map(PathBuf::from).collect())
-}
-
-fn save_media_cache(root: &Path, files: &[IndexedFile]) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0);
-    let cache = MediaCacheFile {
-        root: root.to_string_lossy().to_string(),
-        built_at: now,
-        files: files
-            .iter()
-            .map(|file| file.path.to_string_lossy().to_string())
-            .collect(),
-    };
-    if let Ok(data) = serde_json::to_vec(&cache) {
-        let _ = fs::write(media_cache_path(root), data);
-    }
-}
-
 impl MediaIndex {
     fn add_file(&mut self, path: PathBuf, lower_name: String) {
         let stem = Path::new(&lower_name)
@@ -133,18 +81,6 @@ impl MediaIndex {
                     index.persist_roots.push(persist);
                 }
             }
-            if let Some(paths) = load_media_cache(root) {
-                for path in paths {
-                    let lower_name = path
-                        .file_name()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or("")
-                        .to_ascii_lowercase();
-                    index.add_file(path, lower_name);
-                }
-                eprintln!("[i] 媒体索引: {} 个文件 (缓存)", index.files.len());
-                return index;
-            }
             let mut stack = vec![(root.to_path_buf(), 0usize)];
             if let Some(parent) = root.parent() {
                 for sibling in ["FileStorage", "All Users"] {
@@ -184,9 +120,6 @@ impl MediaIndex {
                         index.add_file(path, name.to_ascii_lowercase());
                     }
                 }
-            }
-            if !index.files.is_empty() {
-                save_media_cache(root, &index.files);
             }
         }
         if !index.files.is_empty() {
@@ -2593,16 +2526,5 @@ mod tests {
         let (bytes, ext) = decrypt_emoticon_bytes(&plain, &key).unwrap();
         assert_eq!(ext, "png");
         assert_eq!(bytes, png);
-    }
-    #[test]
-    fn media_index_cache_roundtrip() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("abcdef0123456789abcdef0123456789.jpg"), b"x").unwrap();
-        let first = MediaIndex::build(Some(dir.path()));
-        assert_eq!(first.files.len(), 1);
-        let cached = load_media_cache(dir.path()).expect("cache written");
-        assert_eq!(cached.len(), 1);
-        let second = MediaIndex::build(Some(dir.path()));
-        assert_eq!(second.files.len(), 1);
     }
 }
