@@ -9,9 +9,9 @@
 项目中已配置好交叉编译工具链并生成了独立 Release 二进制：
 
 - **Windows 64 位原生二进制**：
-  `wechat-exporter-rs/target/x86_64-pc-windows-gnu/release/wechat-exporter.exe`
+  `target/x86_64-pc-windows-gnu/release/wechat-exporter.exe`
 - **Linux 64 位原生二进制**：
-  `wechat-exporter-rs/target/release/wechat-exporter`
+  `target/release/wechat-exporter`
 
 ### 本地编译命令
 
@@ -114,7 +114,52 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
   --output-dir "C:\Users\14744\Downloads\uuMovies\test"
 ```
 
-### HTML 界面与引用跳转
+## 五、命令行参数速查
+
+`wechat-exporter --help` 按功能分组输出完整说明，`-h` 为精简版。密钥可来自
+`--key`、`--key-file` 或 stdin；从 stdin 读取可避免密钥进入 shell 历史。
+
+### 数据库与密钥
+
+| 参数 | 说明 |
+|---|---|
+| `-s, --source-database <PATH>` | `db_storage` 目录或单个会话数据库；缺省时自动检索 |
+| `-D, --detect-databases` | 只检索并列出本机所有微信 4.x 数据库账号 |
+| `-i, --init` | 提取主密钥、图片 AES/XOR 密钥并保存到本地配置 |
+| `-K, --key <HEX>` | 64 位 Hex 数据库密钥 |
+| `--key-file <PATH>` | 从文件读取 64 位 Hex 数据库密钥 |
+| `--image-key <HEX>` | V2 `.dat` 图片的 16 字节 AES 密钥（缺省自动从内存提取） |
+| `--self-username <WXID>` | 手动指定当前登录账号 wxid |
+| `--plaintext` | 将数据库按未加密 SQLite 打开 |
+
+### 查询
+
+| 参数 | 说明 |
+|---|---|
+| `-l, --list-conversations` | 列出会话 ID、昵称、备注、最后活跃时间、消息数 |
+| `-q, --search <TEXT>` | 跨会话全文检索（含 zstd 压缩文本） |
+| `--ascending` | 搜索结果按时间正序；缺省倒序 |
+| `-p, --page-size <N>` | 单页数量 1..1000，缺省 50 |
+| `--cursor <BASE64>` | 上一页返回的 `next_cursor` |
+
+### 导出
+
+| 参数 | 说明 |
+|---|---|
+| `-c, --conversation-id <ID>` | 会话 ID，可重复指定 |
+| `-f, --format <NAME>` | 格式或 `all`，可重复指定 |
+| `-m, --include-media` | 解密并提取图片、语音、视频、表情、文件到 `media/` |
+| `--start-time-ms <MS>` / `--end-time-ms <MS>` | 导出时间范围（Unix 毫秒） |
+| `-o, --output-dir <DIR>` | 输出目录，必须尚不存在 |
+| `-k, --keep-output` | 保留临时输出目录 |
+
+### 其他
+
+| 参数 | 说明 |
+|---|---|
+| `--debug` | 打印媒体寻址、解密和语音探测细节 |
+
+## 六、HTML 界面与引用跳转
 
 HTML 导出由 `web/` 前端模板生成（Vite + React 19 + Tailwind v4 + shadcn/ui），
 构建为单文件 HTML 后由 Rust 注入会话 JSON。修改 UI 后重新生成模板：

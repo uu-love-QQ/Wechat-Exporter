@@ -68,6 +68,9 @@ through Alpha XKey with --xkey-process-id.
 --keep-output --output-dir <absolute-dir>
 ```
 
+> 以上是原 Alpha 二进制的参数契约。本仓库的 `wechat-exporter` 只保留数据库、
+> 查询、导出和调试参数；兼容类与进程注入类旧参数已移除。
+
 Recovered output file names:
 
 ```text

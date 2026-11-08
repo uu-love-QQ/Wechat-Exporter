@@ -58,99 +58,144 @@ pub struct Cli {
     pub command: Option<String>,
 
     /// 初始化配置：提取主密钥、图片 AES 和 XOR 密钥并保存到本地配置文件，后续直接免扫运行
-    #[arg(long = "init", short = 'i', action = ArgAction::SetTrue)]
+    #[arg(long = "init", short = 'i', action = ArgAction::SetTrue, help_heading = "数据库与密钥")]
     pub init: bool,
-    #[arg(long = "source-database", short = 's', value_name = "PATH")]
+
+    /// 微信 4.x 的 db_storage 目录或单个会话数据库；缺省时自动检索
+    #[arg(
+        long = "source-database",
+        short = 's',
+        value_name = "PATH",
+        help_heading = "数据库与密钥"
+    )]
     pub source_database: Option<PathBuf>,
 
     /// 自动检索并列出本机上所有的微信 4.x 数据库位置与账号
-    #[arg(long = "detect-databases", short = 'D', action = ArgAction::SetTrue)]
+    #[arg(
+        long = "detect-databases",
+        short = 'D',
+        action = ArgAction::SetTrue,
+        help_heading = "数据库与密钥"
+    )]
     pub detect_databases: bool,
 
-    /// 兼容选项：保留用于兼容第三方调用参数，纯 Rust 实现已内置解密能力，无需额外动态库
-    #[arg(long = "native-library", value_name = "PATH")]
-    pub native_library: Option<PathBuf>,
+    /// 64 位 Hex 数据库解密密钥 (与 stdin 流输入等价)
+    #[arg(
+        long = "key",
+        short = 'K',
+        value_name = "HEX",
+        help_heading = "数据库与密钥"
+    )]
+    pub key: Option<String>,
 
-    /// 兼容选项：保留用于兼容第三方调用参数，纯 Rust 实现已内置解密能力，无需额外动态库
-    #[arg(long = "wcdb-library", value_name = "PATH")]
-    pub wcdb_library: Option<PathBuf>,
-    /// 从正在运行的微信进程中抓取密钥 (本构建不含驱动级注入，请用外部工具提取密钥后传入)
-    #[arg(long = "xkey-process-id", value_name = "PID")]
-    pub xkey_process_id: Option<u32>,
+    /// 包含 64 位 Hex 数据库密钥的文件路径
+    #[arg(long = "key-file", value_name = "PATH", help_heading = "数据库与密钥")]
+    pub key_file: Option<PathBuf>,
+
+    /// 解密微信 V2 .dat 加密图片所需的 16 字节 (32 位 Hex) AES 密钥
+    #[arg(long = "image-key", value_name = "HEX", help_heading = "数据库与密钥")]
+    pub image_key: Option<String>,
+
+    /// 手动指定当前微信登录用户账号 wxid
+    #[arg(long = "self-username", value_name = "WXID", help_heading = "数据库与密钥")]
+    pub self_username: Option<String>,
+
+    /// 将数据库作为普通未加密的 SQLite 数据库打开
+    #[arg(
+        long = "plaintext",
+        action = ArgAction::SetTrue,
+        help_heading = "数据库与密钥"
+    )]
+    pub plaintext: bool,
 
     /// 列出所有聊天会话 (ID、昵称、备注、最后活跃时间、消息数)
-    #[arg(long = "list-conversations", short = 'l', action = ArgAction::SetTrue)]
+    #[arg(
+        long = "list-conversations",
+        short = 'l',
+        action = ArgAction::SetTrue,
+        help_heading = "查询"
+    )]
     pub list_conversations: bool,
 
     /// 跨会话全文关键词检索 (支持检索 zstd 压缩内容)
-    #[arg(long = "search", short = 'q', value_name = "TEXT")]
+    #[arg(long = "search", short = 'q', value_name = "TEXT", help_heading = "查询")]
     pub search: Option<String>,
 
     /// 搜索结果按时间正序排列 (缺省为倒序)
-    #[arg(long = "ascending", action = ArgAction::SetTrue)]
+    #[arg(long = "ascending", action = ArgAction::SetTrue, help_heading = "查询")]
     pub ascending: bool,
 
     /// 列表或搜索时的单页数量 (范围 1..1000，缺省 50)
-    #[arg(long = "page-size", short = 'p', value_name = "N")]
+    #[arg(
+        long = "page-size",
+        short = 'p',
+        value_name = "N",
+        help_heading = "查询"
+    )]
     pub page_size: Option<u32>,
 
     /// 分页游标 (Base64 编码，上一页返回的 next_cursor)
-    #[arg(long = "cursor", value_name = "BASE64")]
+    #[arg(long = "cursor", value_name = "BASE64", help_heading = "查询")]
     pub cursor: Option<String>,
 
-    /// 解析并提取媒体文件到输出目录下的 media/ 文件夹
-    #[arg(long = "include-media", short = 'm', action = ArgAction::SetTrue)]
-    pub include_media: bool,
-
-    /// 导出格式 (可重复传入，或传入 'all'，支持: json, markdown, chatlab-json, chatlab-jsonl, html, txt, xlsx, arkme-json, sql, weclone)
-    #[arg(long = "format", short = 'f', value_name = "NAME", action = ArgAction::Append)]
-    pub formats: Vec<String>,
-
     /// 指定导出的会话 ID (如 wxid_xxx 或 xxx@chatroom，可重复指定)
-    #[arg(long = "conversation-id", short = 'c', value_name = "ID", action = ArgAction::Append)]
+    #[arg(
+        long = "conversation-id",
+        short = 'c',
+        value_name = "ID",
+        action = ArgAction::Append,
+        help_heading = "导出"
+    )]
     pub conversation_ids: Vec<String>,
 
+    /// 导出格式 (可重复传入，或传入 'all'，支持: json, markdown, chatlab-json, chatlab-jsonl, html, txt, xlsx, arkme-json, sql, weclone)
+    #[arg(
+        long = "format",
+        short = 'f',
+        value_name = "NAME",
+        action = ArgAction::Append,
+        help_heading = "导出"
+    )]
+    pub formats: Vec<String>,
+
+    /// 解析并提取媒体文件到输出目录下的 media/ 文件夹
+    #[arg(
+        long = "include-media",
+        short = 'm',
+        action = ArgAction::SetTrue,
+        help_heading = "导出"
+    )]
+    pub include_media: bool,
+
     /// 起始时间范围 (Unix 毫秒时间戳)
-    #[arg(long = "start-time-ms", value_name = "MS")]
+    #[arg(long = "start-time-ms", value_name = "MS", help_heading = "导出")]
     pub start_time_ms: Option<i64>,
 
     /// 结束时间范围 (Unix 毫秒时间戳)
-    #[arg(long = "end-time-ms", value_name = "MS")]
+    #[arg(long = "end-time-ms", value_name = "MS", help_heading = "导出")]
     pub end_time_ms: Option<i64>,
 
-    /// 保持临时导出的输出目录不被清除
-    #[arg(long = "keep-output", short = 'k', action = ArgAction::SetTrue)]
-    pub keep_output: bool,
-
     /// 导出的绝对路径目标文件夹 (必须尚不存在)
-    #[arg(long = "output-dir", short = 'o', value_name = "DIR")]
+    #[arg(
+        long = "output-dir",
+        short = 'o',
+        value_name = "DIR",
+        help_heading = "导出"
+    )]
     pub output_dir: Option<PathBuf>,
 
-    /// 手动指定当前微信登录用户账号 wxid
-    #[arg(long = "self-username", value_name = "WXID")]
-    pub self_username: Option<String>,
-
-    /// 解密微信 V2 .dat 加密图片所需的 16 字节 (32 位 Hex) AES 密钥
-    #[arg(long = "image-key", value_name = "HEX")]
-    pub image_key: Option<String>,
-
-    /// 包含 64 位 Hex 数据库密钥的文件路径
-    #[arg(long = "key-file", value_name = "PATH")]
-    pub key_file: Option<PathBuf>,
-
-    /// 64 位 Hex 数据库解密密钥 (与 stdin 流输入等价)
-    #[arg(long = "key", short = 'K', value_name = "HEX")]
-    pub key: Option<String>,
-
-    /// 将数据库作为普通未加密的 SQLite 数据库打开
-    #[arg(long = "plaintext", action = ArgAction::SetTrue)]
-    pub plaintext: bool,
+    /// 保持临时导出的输出目录不被清除
+    #[arg(
+        long = "keep-output",
+        short = 'k',
+        action = ArgAction::SetTrue,
+        help_heading = "导出"
+    )]
+    pub keep_output: bool,
 
     /// 开启详细调试输出 (打印图片/表情的原图与缩略图信息、寻址过程及解密导出细节)
-    #[arg(long = "debug", action = ArgAction::SetTrue)]
+    #[arg(long = "debug", action = ArgAction::SetTrue, help_heading = "其他")]
     pub debug: bool,
-
-
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -318,12 +363,6 @@ impl Cli {
             }
         };
 
-        if self.xkey_process_id == Some(0) {
-            bail!("--xkey-process-id must be greater than zero");
-        }
-        if self.xkey_process_id.is_some() {
-            bail!("XKey process acquisition is not available; pipe the 64-hex database key on stdin");
-        }
         if self.list_conversations && self.search.is_some() {
             bail!("--search conflicts with --list-conversations");
         }
