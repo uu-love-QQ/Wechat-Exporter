@@ -111,6 +111,21 @@ pub struct QuoteRef {
     pub reply: String,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ChatRecordItem {
+    pub data_type: Option<i64>,
+    pub text: String,
+    pub sender: String,
+    pub time: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ChatRecord {
+    pub title: String,
+    pub desc: String,
+    pub items: Vec<ChatRecordItem>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ParsedContent {
     pub text: String,
@@ -118,6 +133,7 @@ pub struct ParsedContent {
     pub app_subtype: Option<i64>,
     pub media: Option<MediaRef>,
     pub quote: Option<QuoteRef>,
+    pub record: Option<ChatRecord>,
 }
 
 #[derive(Clone, Debug)]
@@ -156,6 +172,7 @@ pub struct ExportMessage {
     pub media: Option<MediaRef>,
     pub media_path: Option<String>,
     pub quote: Option<QuoteRef>,
+    pub record: Option<ChatRecord>,
 }
 
 impl ExportMessage {

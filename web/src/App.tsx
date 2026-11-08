@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDown,
   FileText,
+  MessagesSquare,
   Moon,
   Pause,
   Play,
@@ -13,6 +14,14 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog'
 import {
   Empty,
   EmptyContent,
@@ -31,7 +40,14 @@ import {
 } from '@/components/ui/tooltip'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { cn } from '@/lib/utils'
-import type { ChatData, ChatMessage, ChatMedia, MediaKind, MissingMedia } from './types'
+import type {
+  ChatData,
+  ChatMessage,
+  ChatMedia,
+  ChatRecord,
+  MediaKind,
+  MissingMedia,
+} from './types'
 
 const KIND_LABEL: Record<MediaKind, string> = {
   image: '图片',
@@ -56,6 +72,7 @@ const DEV_DATA: ChatData = {
       mine: false,
       content: 'hello',
       quote: null,
+      record: null,
       media: null,
       missing: null,
     },
@@ -67,6 +84,7 @@ const DEV_DATA: ChatData = {
       mine: true,
       content: 'reply',
       quote: { sender: 'Alice', text: 'hello', target: 1 },
+      record: null,
       media: null,
       missing: null,
     },
@@ -243,11 +261,26 @@ function usePrefersReducedMotion(): boolean {
   return reduced
 }
 
-function MediaBlock({ media, mine, seed }: { media: ChatMedia; mine: boolean; seed: number }) {
+function MediaBlock({
+  media,
+  mine,
+  seed,
+  onPreview,
+}: {
+  media: ChatMedia
+  mine: boolean
+  seed: number
+  onPreview: (media: ChatMedia) => void
+}) {
   const href = media.path
   if (media.kind === 'image' || media.kind === 'emoji') {
     return (
-      <a href={href} target="_blank" rel="noreferrer" className="mt-3 block w-fit">
+      <button
+        type="button"
+        onClick={() => onPreview(media)}
+        className="mt-3 block w-fit cursor-zoom-in rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        aria-label={`查看${KIND_LABEL[media.kind]}大图`}
+      >
         <img
           src={href}
           alt={media.name || KIND_LABEL[media.kind]}
@@ -256,7 +289,7 @@ function MediaBlock({ media, mine, seed }: { media: ChatMedia; mine: boolean; se
           height={media.height ?? undefined}
           className="h-auto max-h-[420px] w-auto max-w-full rounded-xl border object-contain"
         />
-      </a>
+      </button>
     )
   }
   if (media.kind === 'video') {
@@ -297,16 +330,92 @@ function MissingMediaAlert({ missing }: { missing: MissingMedia }) {
   )
 }
 
+function recordText(item: { type: number | null; text: string }): string {
+  if (item.text) return item.text
+  switch (item.type) {
+    case 3:
+      return '[图片]'
+    case 34:
+      return '[语音]'
+    case 43:
+      return '[视频]'
+    case 47:
+      return '[表情]'
+    case 49:
+      return '[文件]'
+    default:
+      return '[消息]'
+  }
+}
+
+function ChatRecordCard({ record, mine }: { record: ChatRecord; mine: boolean }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'mt-2 w-full rounded-xl border p-3 text-left transition-colors',
+            mine
+              ? 'mine-border mine-surface text-[var(--me-fg)] hover:border-[var(--me-fg)]/60'
+              : 'border-border bg-muted/40 text-foreground hover:border-primary',
+          )}
+        >
+          <div className="flex items-center gap-2">
+            <MessagesSquare className="size-4 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+              {record.title || '聊天记录'}
+            </span>
+            <Badge variant={mine ? 'secondary' : 'outline'}>{record.items.length} 条</Badge>
+          </div>
+          {record.desc && (
+            <p className={cn('mt-1 line-clamp-2 text-xs', mine ? 'mine-muted' : 'text-muted-foreground')}>
+              {record.desc}
+            </p>
+          )}
+          <span className={cn('mt-2 inline-block text-xs', mine ? 'mine-muted' : 'text-primary')}>
+            查看详情
+          </span>
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[85vh] overflow-hidden sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{record.title || '聊天记录'}</DialogTitle>
+          <DialogDescription>
+            {record.items.length} 条消息{record.desc ? ` · ${record.desc}` : ''}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto pr-1">
+          {record.items.length === 0 && (
+            <p className="text-sm text-muted-foreground">没有可展示的聊天记录明细。</p>
+          )}
+          {record.items.map((item, index) => (
+            <div key={index} className="rounded-lg border bg-card p-3 text-sm text-card-foreground">
+              <div className="mb-1 flex flex-wrap items-baseline gap-2 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">{item.sender || '未知'}</span>
+                {item.time && <span>{item.time}</span>}
+              </div>
+              <div className="whitespace-pre-wrap break-words">{recordText(item)}</div>
+            </div>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function MessageRow({
   message,
   flash,
   showAvatar,
   onJump,
+  onPreview,
 }: {
   message: ChatMessage
   flash: boolean
   showAvatar: boolean
   onJump: (index: number) => void
+  onPreview: (media: ChatMedia) => void
 }) {
   const mine = message.mine
   return (
@@ -402,11 +511,18 @@ function MessageRow({
           </div>
         )}
 
-        {message.content && !(message.media?.kind === 'voice') && (
+        {message.content &&
+          !message.record &&
+          !(message.media?.kind === 'voice') &&
+          !(message.media?.kind === 'image') &&
+          !(message.media?.kind === 'emoji') && (
           <div className="whitespace-pre-wrap break-words text-base leading-relaxed">{message.content}</div>
         )}
 
-        {message.media && <MediaBlock media={message.media} mine={mine} seed={message.index} />}
+        {message.record && <ChatRecordCard record={message.record} mine={mine} />}
+        {message.media && (
+          <MediaBlock media={message.media} mine={mine} seed={message.index} onPreview={onPreview} />
+        )}
         {message.missing && <MissingMediaAlert missing={message.missing} />}
       </div>
     </div>
@@ -418,6 +534,7 @@ function App() {
   const [dark, setDark] = useState(initialTheme)
   const [flash, setFlash] = useState<number | null>(null)
   const [showBottom, setShowBottom] = useState(false)
+  const [preview, setPreview] = useState<ChatMedia | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const reducedMotion = usePrefersReducedMotion()
 
@@ -609,6 +726,7 @@ function App() {
                       flash={flash === message.index}
                       showAvatar={showAvatar}
                       onJump={jumpTo}
+                      onPreview={setPreview}
                     />
                   </div>
                 )
@@ -616,6 +734,22 @@ function App() {
             </div>
           )}
         </main>
+
+        <Dialog open={preview !== null} onOpenChange={(open) => !open && setPreview(null)}>
+          <DialogContent className="max-w-[min(92vw,1100px)] p-3 sm:max-w-[min(92vw,1100px)]">
+            <DialogHeader className="sr-only">
+              <DialogTitle>图片预览</DialogTitle>
+              <DialogDescription>按 Esc 或点击关闭按钮退出预览</DialogDescription>
+            </DialogHeader>
+            {preview && (
+              <img
+                src={preview.path}
+                alt={preview.name || KIND_LABEL[preview.kind]}
+                className="mx-auto max-h-[82vh] w-auto max-w-full rounded-lg object-contain"
+              />
+            )}
+          </DialogContent>
+        </Dialog>
 
         {showBottom && (
           <Button

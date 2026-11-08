@@ -143,5 +143,6 @@ pub fn export_message(
         media,
         media_path: None,
         quote: parsed.quote,
+        record: parsed.record,
     }
 }

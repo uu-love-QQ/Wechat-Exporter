@@ -308,6 +308,20 @@ fn build(out: &Path) -> Result<()> {
             4,
             None,
         )?;
+        let record_xml = "<msg><appmsg><title>草帽Wantu与Harry的聊天记录</title><des>Harry: 第一条</des><type>19</type><recorditem><![CDATA[<recordinfo><title>草帽Wantu与Harry的聊天记录</title><desc>Harry: 第一条</desc><datalist count=\"2\"><dataitem datatype=\"1\"><datadesc>第一条</datadesc><sourcename>Harry</sourcename><sourcetime>2026-11-03 07:51:59</sourcetime></dataitem><dataitem datatype=\"1\"><datadesc>第二条</datadesc><sourcename>草帽Wantu</sourcename><sourcetime>2026-11-03 07:52:10</sourcetime></dataitem></datalist></recordinfo>]]></recorditem></appmsg></msg>";
+        insert_message(
+            &conn,
+            &group_table,
+            11,
+            9011,
+            49,
+            11,
+            2,
+            1703001700,
+            record_xml.as_bytes(),
+            0,
+            None,
+        )?;
         let file_xml = "<msg><appmsg><type>6</type><title>report.html</title><appattach><totallen>30428</totallen><cdnattachurl>3057aa</cdnattachurl><aeskey>9f079e18611d58504594d8084036dd55</aeskey><fileext>html</fileext></appattach></appmsg></msg>";
         insert_message(
             &conn,

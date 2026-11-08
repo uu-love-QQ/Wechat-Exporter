@@ -611,6 +611,20 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
                 })
             })
         });
+        let record = message.record.as_ref().map(|record| {
+            serde_json::json!({
+                "title": record.title,
+                "desc": record.desc,
+                "items": record.items.iter().map(|item| {
+                    serde_json::json!({
+                        "type": item.data_type,
+                        "text": item.text,
+                        "sender": item.sender,
+                        "time": item.time,
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        });
         let missing = if message.media_path.is_none() {
             message.media.as_ref().map(|media| {
                 serde_json::json!({
@@ -630,6 +644,7 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
             "mine": message.is_send,
             "content": body,
             "quote": quote,
+            "record": record,
             "media": media,
             "missing": missing,
         }));

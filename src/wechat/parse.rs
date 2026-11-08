@@ -438,6 +438,46 @@ fn quote_ref(xml: &str) -> Option<crate::wechat::model::QuoteRef> {
     }
 }
 
+fn chat_record(xml: &str) -> Option<crate::wechat::model::ChatRecord> {
+    let inner = xml_value(xml, "recorditem")?;
+    if !inner.contains("<recordinfo") {
+        return None;
+    }
+    static ITEM_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?is)<dataitem\b[^>]*>.*?</dataitem>").unwrap()
+    });
+    let mut items = Vec::new();
+    for capture in ITEM_RE.captures_iter(&inner) {
+        let block = capture.get(0).map(|value| value.as_str()).unwrap_or("");
+        let data_type = xml_attr(block, "dataitem", "datatype")
+            .and_then(|value| value.trim().parse::<i64>().ok());
+        let text = strip_tags(&xml_value(block, "datadesc").unwrap_or_default())
+            .trim()
+            .to_string();
+        let sender = xml_value(block, "sourcename").unwrap_or_default();
+        let time = xml_value(block, "sourcetime").unwrap_or_default();
+        if text.is_empty() && data_type.is_none() {
+            continue;
+        }
+        items.push(crate::wechat::model::ChatRecordItem {
+            data_type,
+            text,
+            sender,
+            time,
+        });
+    }
+    let record = crate::wechat::model::ChatRecord {
+        title: xml_value(&inner, "title").unwrap_or_default(),
+        desc: xml_value(&inner, "desc").unwrap_or_default(),
+        items,
+    };
+    if record.title.is_empty() && record.desc.is_empty() && record.items.is_empty() {
+        None
+    } else {
+        Some(record)
+    }
+}
+
 fn quote_text(xml: &str) -> Option<String> {
     let quoted_sender = xml_value(xml, "displayname").unwrap_or_default();
     let quoted = xml_value(xml, "content").unwrap_or_default();
@@ -489,6 +529,7 @@ pub fn parse_content(
             app_subtype: Some(62),
             media: None,
             quote: None,
+            record: None,
         };
     }
 
@@ -703,6 +744,7 @@ pub fn parse_content(
         app_subtype,
         media,
         quote: quote_ref(&xml),
+        record: chat_record(&xml),
     }
 }
 
@@ -764,6 +806,19 @@ mod tests {
 
         let attachment = r#"<msg><appmsg><appattach><cdnattachurl>3057aa</cdnattachurl></appattach></appmsg></msg>"#;
         assert_eq!(extract_cdn_url(attachment), None);
+    }
+
+    #[test]
+    fn parses_merged_chat_record() {
+        let xml = "<msg><appmsg><title>记录标题</title><des>摘要</des><type>19</type><recorditem><![CDATA[<recordinfo><title>记录标题</title><desc>摘要</desc><datalist count=\"2\"><dataitem datatype=\"1\"><datadesc>第一条</datadesc><sourcename>Harry</sourcename><sourcetime>2026-11-03 07:51:59</sourcetime></dataitem><dataitem datatype=\"3\"><datadesc></datadesc><sourcename>Wantu</sourcename></dataitem></datalist></recordinfo>]]></recorditem></appmsg></msg>";
+        let parsed = parse_content(xml, 49, 19, 81604378673);
+        let record = parsed.record.expect("record");
+        assert_eq!(record.title, "记录标题");
+        assert_eq!(record.items.len(), 2);
+        assert_eq!(record.items[0].sender, "Harry");
+        assert_eq!(record.items[0].text, "第一条");
+        assert_eq!(record.items[1].data_type, Some(3));
+        assert_eq!(record.items[1].text, "");
     }
 
     #[test]

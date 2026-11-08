@@ -92,7 +92,7 @@ fn exports_all_formats_and_media() {
     let json: Value =
         serde_json::from_slice(&fs::read(output.join("conversation.json")).unwrap()).unwrap();
     let messages = json["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 10);
+    assert_eq!(messages.len(), 11);
     assert!(messages.iter().any(|message| message["content"] == "hello group"));
     assert!(messages
         .iter()
@@ -133,11 +133,16 @@ fn exports_all_formats_and_media() {
     let start = html.find(marker).expect("chat data island") + marker.len();
     let end = html[start..].find("</script>").expect("data end") + start;
     let data: Value = serde_json::from_str(&html[start..end]).expect("embedded chat json");
-    assert_eq!(data["messages"].as_array().unwrap().len(), 10);
+    assert_eq!(data["messages"].as_array().unwrap().len(), 11);
     let embedded = data["messages"].as_array().unwrap();
     assert!(embedded
         .iter()
         .any(|message| message["missing"]["name"] == "report.html"));
+    let record = embedded
+        .iter()
+        .find(|message| message["record"]["title"] == "草帽Wantu与Harry的聊天记录")
+        .expect("chat record");
+    assert_eq!(record["record"]["items"].as_array().unwrap().len(), 2);
     let linked = embedded
         .iter()
         .find(|message| message["quote"]["sender"] == "Alice")
@@ -151,7 +156,7 @@ fn exports_all_formats_and_media() {
     assert!(messages.iter().all(|message| message.get("source").is_none()));
     let report: Value =
         serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
-    assert_eq!(report["conversations"][0]["message_count"], 10);
+    assert_eq!(report["conversations"][0]["message_count"], 11);
     assert!(report["conversations"][0]["media"]["saved"].as_u64().unwrap() >= 1);
 }
 
@@ -211,7 +216,7 @@ fn exported_chatlab_matches_spec_shape() {
     assert_eq!(value["meta"]["platform"], "wechat");
     assert_eq!(value["meta"]["type"], "group");
     assert!(!value["members"].as_array().unwrap().is_empty());
-    assert_eq!(value["messages"].as_array().unwrap().len(), 10);
+    assert_eq!(value["messages"].as_array().unwrap().len(), 11);
     let lines = fs::read_to_string(output.join("conversation.chatlab.jsonl")).unwrap();
     let lines: Vec<&str> = lines.lines().collect();
     assert!(lines[0].contains("\"_type\":\"header\""));

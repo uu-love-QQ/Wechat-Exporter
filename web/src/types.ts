@@ -21,6 +21,19 @@ export interface MissingMedia {
   durationMs?: number | null
 }
 
+export interface ChatRecordItem {
+  type: number | null
+  text: string
+  sender: string
+  time: string
+}
+
+export interface ChatRecord {
+  title: string
+  desc: string
+  items: ChatRecordItem[]
+}
+
 export interface ChatMessage {
   index: number
   sender: string
@@ -29,6 +42,7 @@ export interface ChatMessage {
   mine: boolean
   content: string
   quote: QuoteRef | null
+  record: ChatRecord | null
   media: ChatMedia | null
   missing: MissingMedia | null
 }
