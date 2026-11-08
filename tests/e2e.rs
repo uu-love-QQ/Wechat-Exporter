@@ -193,12 +193,12 @@ fn searches_across_shards() {
 }
 
 #[test]
-fn list_query_searches_messages() {
+fn list_query_filters_conversations() {
     let (_temp, source) = fixture();
     let (code, stdout, stderr) = run_with_key(&[
         "list",
         "-q",
-        "hello",
+        "Alice",
         "--source-database",
         source.to_str().unwrap(),
         "--page-size",
@@ -206,8 +206,12 @@ fn list_query_searches_messages() {
     ]);
     assert_eq!(code, 0, "stderr={stderr}");
     let value: Value = serde_json::from_str(&stdout).expect("json");
-    assert_eq!(value["query"], "hello");
-    assert!(value["items"].as_array().unwrap().iter().any(|item| item["conversation_id"] == ALICE));
+    assert_eq!(value["query"], "Alice");
+    assert_eq!(value["total"], 1);
+    let conversations = value["conversations"].as_array().unwrap();
+    assert_eq!(conversations.len(), 1);
+    assert_eq!(conversations[0]["id"], ALICE);
+    assert!(value["next_cursor"].is_null());
 }
 
 #[test]

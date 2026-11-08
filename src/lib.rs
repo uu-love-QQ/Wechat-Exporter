@@ -324,21 +324,40 @@ fn run_list(
     conversations: &[Conversation],
     account_id: Option<&str>,
 ) -> Result<()> {
+    let query = options.list_query.as_deref().map(str::to_lowercase);
+    let filtered: Vec<&Conversation> = conversations
+        .iter()
+        .filter(|conversation| {
+            let Some(query) = query.as_deref() else {
+                return true;
+            };
+            let haystack = [
+                conversation.id.as_str(),
+                conversation.name.as_str(),
+                conversation.nickname.as_str(),
+                conversation.remark.as_str(),
+                conversation.alias.as_str(),
+            ]
+            .join(" ")
+            .to_lowercase();
+            haystack.contains(query)
+        })
+        .collect();
     let offset = match &options.cursor {
         Some(cursor) => util::decode_cursor("list", cursor)?.2,
         None => 0,
     } as usize;
     let page_size = options.page_size as usize;
-    let end = offset.saturating_add(page_size).min(conversations.len());
-    let page: Vec<_> = if offset < conversations.len() {
-        conversations[offset..end]
+    let end = offset.saturating_add(page_size).min(filtered.len());
+    let page: Vec<_> = if offset < filtered.len() {
+        filtered[offset..end]
             .iter()
-            .map(Conversation::to_json)
+            .map(|conversation| conversation.to_json())
             .collect()
     } else {
         Vec::new()
     };
-    let next_cursor = if end < conversations.len() {
+    let next_cursor = if end < filtered.len() {
         Some(util::encode_cursor("list", 0, "", end as u64))
     } else {
         None
@@ -347,7 +366,8 @@ fn run_list(
         "schema": util::SCHEMA,
         "generator": util::GENERATOR,
         "account_id": account_id,
-        "total": conversations.len(),
+        "query": options.list_query,
+        "total": filtered.len(),
         "conversations": page,
         "next_cursor": next_cursor,
     });

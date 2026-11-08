@@ -147,15 +147,11 @@ pub struct ListArgs {
     #[command(flatten)]
     pub common: CommonArgs,
 
-    /// 关键词全文检索 (等价于 search 子命令；提供后输出匹配消息)
+    /// 按会话名称、备注、昵称或 ID 过滤会话
     #[arg(short = 'q', long = "query", value_name = "TEXT", help_heading = "查询")]
     pub query: Option<String>,
 
-    /// 配合 -q 使用：匹配消息按时间正序排列
-    #[arg(long = "ascending", action = ArgAction::SetTrue, help_heading = "查询")]
-    pub ascending: bool,
-
-    /// 单页会话或结果数量 (范围 1..1000，缺省 50)
+    /// 单页会话数量 (范围 1..1000，缺省 50)
     #[arg(
         long = "page-size",
         short = 'p',
@@ -467,6 +463,7 @@ pub struct ValidatedCli {
     pub end_time_ms: Option<i64>,
     pub page_size: u32,
     pub cursor: Option<String>,
+    pub list_query: Option<String>,
     pub ascending: bool,
     pub include_media: bool,
     pub keep_output: bool,
@@ -533,6 +530,7 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         end_time_ms: None,
         page_size: 50,
         cursor: None,
+        list_query: None,
         ascending: false,
         include_media: false,
         keep_output: false,
@@ -654,6 +652,7 @@ impl Command {
                 end_time_ms: None,
                 page_size: 50,
                 cursor: None,
+                list_query: None,
                 ascending: false,
                 include_media: false,
                 keep_output: false,
@@ -677,28 +676,18 @@ impl Command {
                 Ok(options)
             }
             Command::List(args) => {
-                if let Some(query) = args.query {
-                    if query.is_empty() || query.contains('\0') || query.len() > 512 {
-                        bail!("search text must be nonempty, contain no NUL, and be at most 512 UTF-8 bytes");
+                if let Some(query) = &args.query {
+                    if query.trim().is_empty() || query.contains('\0') || query.len() > 512 {
+                        bail!("list query must be nonempty, contain no NUL, and be at most 512 UTF-8 bytes");
                     }
-                    let common = args.common.validate()?;
-                    let page_size = parse_page_size(args.page_size)?;
-                    let mut options = validated(common, Mode::Search(query));
-                    options.ascending = args.ascending;
-                    options.page_size = page_size;
-                    options.cursor = args.cursor;
-                    Ok(options)
-                } else {
-                    if args.ascending {
-                        bail!("--ascending requires -q/--query");
-                    }
-                    let common = args.common.validate()?;
-                    let page_size = parse_page_size(args.page_size)?;
-                    let mut options = validated(common, Mode::List);
-                    options.page_size = page_size;
-                    options.cursor = args.cursor;
-                    Ok(options)
                 }
+                let common = args.common.validate()?;
+                let page_size = parse_page_size(args.page_size)?;
+                let mut options = validated(common, Mode::List);
+                options.list_query = args.query.map(|query| query.trim().to_string());
+                options.page_size = page_size;
+                options.cursor = args.cursor;
+                Ok(options)
             }
             Command::Search(args) => {
                 if args.query.is_empty()

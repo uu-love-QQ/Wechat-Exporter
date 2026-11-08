@@ -172,10 +172,9 @@ wechat-exporter list --source-database /path/to/db_storage --cursor <BASE64>
 | `-K, --key <HEX>` / `--key-file <PATH>` | 数据库密钥 |
 | `--self-username <WXID>` | 指定当前登录账号 |
 | `--plaintext` | 按未加密 SQLite 打开 |
-| `-q, --query <TEXT>` | 关键词全文检索，等价于 `search` 子命令 |
-| `--ascending` | 配合 `-q`，匹配消息按时间正序 |
+| `-q, --query <TEXT>` | 按会话名称、备注、昵称、别名或 ID 过滤会话 |
 | `-p, --page-size <N>` | 单页数量 1..1000，缺省 50 |
-| `--cursor <BASE64>` | 上一页返回的 `next_cursor` |
+| `--cursor <BASE64>` | 上一页返回的 `next_cursor`，用于继续翻页 |
 | `--debug` | 详细调试输出 |
 
 ### search
@@ -283,6 +282,9 @@ wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json 
 
 导出与报告执行时会在终端显示进度条：消息 `已处理/总数`、附件 `已处理/总数`，
 报告还会显示当前扫描会话与阶段。`--silent` 可关闭进度条，保留最终 JSON/错误输出。
+
+`list` / `search` 返回的 `next_cursor` 是分页游标（Base64 编码的偏移量），
+不是密钥或错误码；把上一页返回的值原样传给 `--cursor` 即可继续下一页。
 
 `export-report.json` 的顶层和每个 `conversations[]` 条目都包含
 `start_time` / `end_time`（Unix 秒）与 `start_time_text` / `end_time_text`，
