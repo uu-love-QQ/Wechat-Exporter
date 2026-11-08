@@ -128,11 +128,26 @@ fn exports_all_formats_and_media() {
     let markdown = fs::read_to_string(output.join("conversation.md")).unwrap();
     assert!(markdown.contains("文件: report.html (未索引，空缺)"), "{markdown}");
     let html = fs::read_to_string(output.join("conversation.html")).unwrap();
-    assert!(html.contains("media-missing"), "{html}");
-    assert!(html.contains("href=\"#msg-"), "quote jump link missing");
-    assert!(html.contains("quote-missing"), "missing-quote fallback missing");
-    assert!(html.contains("原消息未找到"), "missing-quote note missing");
-    assert!(html.contains("id=\"msg-"), "message anchors missing");
+    assert!(!html.contains("__CHAT_DATA__"), "template placeholder left behind");
+    let marker = "id=\"chat-data\" type=\"application/json\">";
+    let start = html.find(marker).expect("chat data island") + marker.len();
+    let end = html[start..].find("</script>").expect("data end") + start;
+    let data: Value = serde_json::from_str(&html[start..end]).expect("embedded chat json");
+    assert_eq!(data["messages"].as_array().unwrap().len(), 10);
+    let embedded = data["messages"].as_array().unwrap();
+    assert!(embedded
+        .iter()
+        .any(|message| message["missing"]["name"] == "report.html"));
+    let linked = embedded
+        .iter()
+        .find(|message| message["quote"]["sender"] == "Alice")
+        .expect("linked quote");
+    assert!(linked["quote"]["target"].is_number(), "linked quote target");
+    let lost = embedded
+        .iter()
+        .find(|message| message["quote"]["sender"] == "Ghost")
+        .expect("missing quote");
+    assert!(lost["quote"]["target"].is_null(), "missing quote target");
     assert!(messages.iter().all(|message| message.get("source").is_none()));
     let report: Value =
         serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();

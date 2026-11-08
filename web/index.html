@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>聊天记录</title>
+    <script>
+      try {
+        const stored = localStorage.getItem('wechat-theme')
+        if (stored === 'dark' || (!stored && matchMedia('(prefers-color-scheme: dark)').matches)) {
+          document.documentElement.classList.add('dark')
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script id="chat-data" type="application/json">__CHAT_DATA__</script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

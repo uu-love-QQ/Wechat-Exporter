@@ -116,6 +116,15 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 
 ### HTML 界面与引用跳转
 
+HTML 导出由 `web/` 前端模板生成（Vite + React 19 + Tailwind v4 + shadcn/ui），
+构建为单文件 HTML 后由 Rust 注入会话 JSON。修改 UI 后重新生成模板：
+
+```bash
+cd web
+npm install
+npm run export:template   # 构建并复制到 src/export/chat_template.html
+```
+
 HTML 导出是自包含的响应式聊天界面：吸顶标题栏、即时搜索（`/` 聚焦、`Esc` 清空）、
 亮/暗主题切换、按日期分组、左右消息气泡、图片/音频/视频内嵌、缺失附件提示与“回到最新”按钮。
 
