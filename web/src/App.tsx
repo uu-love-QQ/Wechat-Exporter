@@ -173,48 +173,57 @@ function MessageRow({
           <time>{message.time}</time>
         </div>
 
-        {message.quote && message.quote.target !== null && (
+        {message.quote && (
           <div
             className={cn(
               'mb-2 rounded-lg border-l-2 p-2 text-sm',
               mine
                 ? 'border-primary-foreground/40 bg-background/15'
-                : 'border-primary bg-muted/60',
+                : message.quote.target === null
+                  ? 'border-destructive/50 bg-muted/60'
+                  : 'border-primary bg-muted/60',
             )}
           >
             <div className="flex items-center gap-2 text-xs">
               <span className={cn('font-medium', mine ? 'text-primary-foreground' : 'text-foreground')}>
                 {message.quote.sender || '未知'}
               </span>
+              {message.quote.target !== null ? (
+                <button
+                  type="button"
+                  onClick={() => onJump(message.quote!.target!)}
+                  className={cn('ml-auto underline-offset-2 hover:underline', mine ? 'text-primary-foreground' : 'text-primary')}
+                >
+                  查看原消息
+                </button>
+              ) : (
+                <span className={cn('ml-auto text-xs', mine ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
+                  原消息不在导出范围
+                </span>
+              )}
+            </div>
+            {message.quote.target !== null ? (
               <button
                 type="button"
                 onClick={() => onJump(message.quote!.target!)}
-                className={cn('ml-auto underline-offset-2 hover:underline', mine ? 'text-primary-foreground' : 'text-primary')}
+                className={cn(
+                  'mt-1 block w-full whitespace-pre-wrap text-left',
+                  mine ? 'text-primary-foreground/80' : 'text-muted-foreground',
+                )}
               >
-                查看原消息
+                {message.quote.text}
               </button>
-            </div>
-            <button
-              type="button"
-              onClick={() => onJump(message.quote!.target!)}
-              className={cn(
-                'mt-1 block w-full whitespace-pre-wrap text-left',
-                mine ? 'text-primary-foreground/80' : 'text-muted-foreground',
-              )}
-            >
-              {message.quote.text}
-            </button>
+            ) : (
+              <div
+                className={cn(
+                  'mt-1 whitespace-pre-wrap',
+                  mine ? 'text-primary-foreground/90' : 'text-foreground/90',
+                )}
+              >
+                {message.quote.text}
+              </div>
+            )}
           </div>
-        )}
-
-        {message.quote && message.quote.target === null && (
-          <Alert variant="destructive" className="mb-2">
-            <TriangleAlert />
-            <AlertTitle>原消息未找到</AlertTitle>
-            <AlertDescription>
-              可能已删除或不在导出范围内{message.quote.text ? `。原内容：${message.quote.text}` : ''}
-            </AlertDescription>
-          </Alert>
         )}
 
         {message.content && (
