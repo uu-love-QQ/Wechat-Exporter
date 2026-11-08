@@ -729,18 +729,20 @@ fn write_xlsx(context: &ExportContext<'_>, path: &Path) -> Result<()> {
 
 const REPORT_CSS: &str = r#"
 :root {
-  --bg: #eef3fb;
+  --bg: #f6f8fc;
   --panel: #ffffff;
-  --panel-2: #f5f8fe;
+  --panel-2: #f8fafc;
   --fg: #0f172a;
   --muted: #64748b;
-  --line: #e2e8f0;
-  --accent: #2563eb;
-  --accent-soft: #dbeafe;
-  --me: #2563eb;
-  --other: #10b981;
-  --c1: #2563eb;
-  --c2: #10b981;
+  --line: #e6ebf3;
+  --accent: #4f7cff;
+  --accent-soft: #e8f0ff;
+  --me: #4f7cff;
+  --other: #22c55e;
+  --purple: #8b5cf6;
+  --pink: #ec4899;
+  --c1: #4f7cff;
+  --c2: #22c55e;
   --c3: #f59e0b;
   --c4: #8b5cf6;
   --c5: #ec4899;
@@ -750,9 +752,9 @@ const REPORT_CSS: &str = r#"
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #080d18;
+    --bg: #0b1120;
     --panel: #111827;
-    --panel-2: #182235;
+    --panel-2: #172033;
     --fg: #e5e7eb;
     --muted: #94a3b8;
     --line: #263244;
@@ -760,6 +762,8 @@ const REPORT_CSS: &str = r#"
     --accent-soft: #1e3a5f;
     --me: #60a5fa;
     --other: #34d399;
+    --purple: #a78bfa;
+    --pink: #f472b6;
     --c1: #60a5fa;
     --c2: #34d399;
     --c3: #fbbf24;
@@ -792,8 +796,8 @@ h3 { font-size: 13px; line-height: 1.35; color: var(--muted); font-weight: 600; 
   border-radius: 24px;
   padding: 24px;
   color: #fff;
-  background: linear-gradient(135deg, #312e81 0%, #2563eb 52%, #0284c7 100%);
-  box-shadow: 0 18px 45px -22px rgba(37, 99, 235, .75);
+  background: linear-gradient(135deg, #4f8ef7 0%, #8b5cf6 55%, #f472b6 100%);
+  box-shadow: 0 18px 40px -18px rgba(79, 142, 247, .6);
 }
 .hero::after {
   content: "";
@@ -814,14 +818,26 @@ h3 { font-size: 13px; line-height: 1.35; color: var(--muted); font-weight: 600; 
   letter-spacing: .16em;
   text-transform: uppercase;
 }
-.hero h1 { margin: 10px 0 16px; max-width: 34ch; }
+.hero h1 { margin: 10px 0 8px; max-width: 34ch; font-size: clamp(22px, 3.4vw, 28px); }
+.hero-sub { color: rgba(255, 255, 255, .92); font-size: 14px; line-height: 1.6; }
+.hero-range {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 16px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .18);
+  color: rgba(255, 255, 255, .92);
+  font-size: 12px;
+  backdrop-filter: blur(4px);
+}
 .hero-total { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .hero-total strong { font-size: 42px; line-height: 1; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
 .hero-total span { color: rgba(255, 255, 255, .8); font-size: 14px; }
 .hero-meta { margin-top: 14px; color: rgba(255, 255, 255, .72); font-size: 12px; display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .kpis {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
   gap: 10px;
   margin: 14px 0;
 }
@@ -832,10 +848,21 @@ h3 { font-size: 13px; line-height: 1.35; color: var(--muted); font-weight: 600; 
 }
 .kpi { padding: 14px 16px; min-width: 0; }
 .kpi span { display: block; color: var(--muted); font-size: 11px; }
-.kpi strong { display: block; margin-top: 3px; font-size: 25px; line-height: 1.2; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.kpi strong {
+  display: block; margin-top: 3px; font-size: 25px; line-height: 1.2;
+  letter-spacing: -.03em; font-variant-numeric: tabular-nums;
+  background: linear-gradient(135deg, var(--accent), var(--purple));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
 .kpi small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card { padding: 18px; margin-bottom: 14px; min-width: 0; }
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.section-head h2 { position: relative; padding-left: 11px; }
+.section-head h2::before {
+  content: ""; position: absolute; left: 0; top: 2px; bottom: 2px; width: 3px;
+  border-radius: 3px; background: linear-gradient(180deg, var(--accent), var(--purple));
+}
 .badge { color: var(--muted); font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; white-space: nowrap; }
 .activity-grid { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(0, 1.3fr); gap: 18px; align-items: start; }
 .big-number { font-size: 34px; line-height: 1; letter-spacing: -.04em; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -925,6 +952,31 @@ footer { margin-top: 22px; color: var(--muted); font-size: 10px; text-align: cen
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.pk-summary { margin: 0 0 12px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+.pk-summary b { color: var(--fg); }
+.pk-summary b.me { color: var(--me); }
+.pk-summary b.other { color: var(--other); }
+.pk-bar { display: flex; height: 40px; overflow: hidden; border-radius: 999px; background: var(--panel-2); }
+.pk-sent, .pk-recv {
+  display: flex; align-items: center; justify-content: center; min-width: 0;
+  color: #fff; font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden;
+}
+.pk-sent { background: linear-gradient(90deg, #4f7cff, #60a5fa); }
+.pk-recv { background: linear-gradient(90deg, #22c55e, #4ade80); }
+.pk-counts { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; color: var(--muted); font-size: 11px; }
+.pk-counts b { color: var(--fg); }
+.top-days .bar { display: flex; height: 8px; overflow: hidden; border-radius: 999px; background: var(--panel-2); }
+.top-days .bar-sent { height: 100%; background: var(--me); }
+.top-days .bar-recv { height: 100%; background: var(--other); }
+.top-days .track { display: none; }
+.word.me { background: var(--accent-soft); border-color: transparent; color: #2f5aa5; }
+.word.other { background: #e6f7ec; border-color: transparent; color: #1a7f3c; }
+.word strong { margin-left: 3px; font-weight: 700; opacity: .62; }
+.word.hot { color: #fff; background: var(--accent); border-color: transparent; }
+@media (prefers-color-scheme: dark) {
+  .word.me { background: #1e3a5f; color: #bfdbfe; }
+  .word.other { background: #143d2b; color: #bbf7d0; }
 }
 @media (max-width: 640px) {
   main { padding: 12px 10px 40px; }
@@ -1039,24 +1091,25 @@ fn collect_words(text: &str, words: &mut BTreeMap<String, usize>) {
     flush_ascii(&mut ascii, words);
 }
 
-fn word_cloud(words: &BTreeMap<String, usize>) -> String {
+fn word_cloud(words: &BTreeMap<String, usize>, mine: bool) -> String {
     let mut rows: Vec<(&String, &usize)> = words.iter().collect();
     rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
     rows.truncate(18);
     let max = rows.first().map(|(_, count)| **count).unwrap_or(1);
     let mut html = String::new();
-    for (index, (word, count)) in rows.iter().enumerate() {
+    for (word, count) in rows.iter() {
         let size = 12.0 + (**count as f64 / max as f64) * 11.0;
-        let hot = if index < 4 { " hot" } else { "" };
+        let side = if mine { "me" } else { "other" };
         use std::fmt::Write as _;
         write!(
             &mut html,
-            "<span class=\"word{}\" style=\"font-size:{:.0}px\" title=\"{} · {} 次\">{}</span>",
-            hot,
+            "<span class=\"word {}\" style=\"font-size:{:.0}px\" title=\"{} · {} 次\">{} <strong>{}</strong></span>",
+            side,
             size,
             escape_html(word),
             count,
-            escape_html(word)
+            escape_html(word),
+            count
         )
         .ok();
     }
@@ -1093,6 +1146,9 @@ fn write_analytics_report(context: &ExportContext<'_>, path: &Path) -> Result<()
     let mut chars = 0usize;
     let mut me_chars = 0usize;
     let mut other_chars = 0usize;
+    let mut me_msgs = 0usize;
+    let mut other_msgs = 0usize;
+    let mut max_chars = 0usize;
     let mut first = i64::MAX;
     let mut last = i64::MIN;
     let mut me_words: BTreeMap<String, usize> = BTreeMap::new();
@@ -1104,6 +1160,12 @@ fn write_analytics_report(context: &ExportContext<'_>, path: &Path) -> Result<()
         last = last.max(message.create_time);
         let message_chars = message.content.chars().count();
         chars += message_chars;
+        max_chars = max_chars.max(message_chars);
+        if message.is_send {
+            me_msgs += 1;
+        } else {
+            other_msgs += 1;
+        }
         let sender = if message.sender_name.trim().is_empty() {
             if message.is_send {
                 if context.self_name.is_empty() { "我" } else { &context.self_name }
@@ -1226,16 +1288,13 @@ fn write_analytics_report(context: &ExportContext<'_>, path: &Path) -> Result<()
     let max_hour = hours_me.iter().chain(hours_other.iter()).copied().max().unwrap_or(1).max(1);
     let max_week = week_me.iter().chain(week_other.iter()).copied().max().unwrap_or(1).max(1);
     let max_sender_pct = max_sender.max(1);
-    let top_days: Vec<(String, usize)> = {
-        let mut rows: Vec<(String, usize)> = day_rows
-            .iter()
-            .map(|(day, me, other)| (day.clone(), me + other))
-            .collect();
-        rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let top_days: Vec<(String, usize, usize)> = {
+        let mut rows: Vec<(String, usize, usize)> = day_rows.clone();
+        rows.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)).then(a.0.cmp(&b.0)));
         rows.truncate(10);
         rows
     };
-    let top_day_max = top_days.first().map(|(_, count)| *count).unwrap_or(1).max(1);
+    let top_day_max = top_days.first().map(|(_, me, other)| me + other).unwrap_or(1).max(1);
 
     let chart_width = 820.0;
     let pad_left = 24.0;
@@ -1291,6 +1350,23 @@ fn write_analytics_report(context: &ExportContext<'_>, path: &Path) -> Result<()
         summary
     };
 
+    let other_label = if context.group() {
+        "其他人".to_string()
+    } else {
+        let name = context.display_name().trim();
+        if name.is_empty() { "对方".to_string() } else { name.to_string() }
+    };
+    let sent_pct = if total == 0 { 0.0 } else { me_msgs as f64 * 100.0 / total as f64 };
+    let recv_pct = 100.0 - sent_pct;
+    let sent_avg = if me_msgs == 0 { 0.0 } else { me_chars as f64 / me_msgs as f64 };
+    let recv_avg = if other_msgs == 0 { 0.0 } else { other_chars as f64 / other_msgs as f64 };
+    let avg_len = if total == 0 { 0.0 } else { chars as f64 / total as f64 };
+    let book_note = if chars >= 3000 {
+        format!("≈ {:.1} 本《小王子》", chars as f64 / 30_000.0)
+    } else {
+        "含系统与媒体消息".to_string()
+    };
+
     let mut html = String::with_capacity(32_000);
     html.push_str("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>");
     html.push_str(&escape_html(&format!("聊天分析报告 - {}", context.display_name())));
@@ -1298,29 +1374,42 @@ fn write_analytics_report(context: &ExportContext<'_>, path: &Path) -> Result<()
     html.push_str(REPORT_CSS);
     html.push_str("</style></head><body><main>");
 
-    html.push_str("<header class=\"hero\"><div class=\"eyebrow\">");
+    html.push_str("<header class=\"hero\"><div class=\"eyebrow\">CHAT REPORT · 聊天分析</div><h1>");
     html.push_str(if context.group() { "微信群聊天记录 · 可视化报告" } else { "微信聊天记录 · 可视化报告" });
-    html.push_str("</div><h1>");
-    html.push_str(&escape_html(context.display_name()));
-    html.push_str("</h1><div class=\"hero-total\"><strong>");
-    html.push_str(&format_count(total));
-    html.push_str("</strong><span>条聊天记录</span></div><div class=\"hero-meta\"><span>");
-    html.push_str(if context.group() { "群聊" } else { "私聊" });
+    html.push_str("</h1><div class=\"hero-sub\">");
+    if context.group() {
+        write!(
+            &mut html,
+            "群聊「{}」 · 共 {} 条记录",
+            escape_html(context.display_name()),
+            format_count(total)
+        ).ok();
+    } else {
+        write!(
+            &mut html,
+            "与 {} 的对话轨迹 · 共 {} 条记录",
+            escape_html(&other_label),
+            format_count(total)
+        ).ok();
+    }
     write!(
         &mut html,
-        "</span><span>{} 至 {}</span><span>{} 天</span><span>导出于 {}</span></div></header>",
+        "</div><div class=\"hero-range\">{} &nbsp;→&nbsp; {}</div><div class=\"hero-meta\"><span>跨度 {} 天 · 活跃 {} 天</span><span>导出于 {}</span></div></header>",
         escape_html(&first_stamp),
         escape_html(&last_stamp),
         span_days,
+        days_count,
         escape_html(&format_timestamp(context.exported_at_sec()))
     ).ok();
 
     html.push_str("<section class=\"kpis\" aria-label=\"核心指标\">");
     let metrics = [
+        ("导出消息数", format_count(total), "含系统与媒体消息".to_string()),
+        ("聊天总字数", format_count(chars), book_note),
+        ("活跃天数", format_count(days_count), format!("跨度 {} 天", span_days)),
+        ("单日最高", format_count(peak.1), peak.0.clone()),
+        ("平均字数", format!("{avg_len:.1}"), format!("最长 {} 字", format_count(max_chars))),
         ("互动人数", format_count(sender_rows.len()), "位发送者".to_string()),
-        ("聊天总条数", format_count(total), format!("人均 {:.0} 条", total as f64 / sender_rows.len().max(1) as f64)),
-        ("总字数", format_count(chars), format!("人均 {:.0} 字", chars as f64 / sender_rows.len().max(1) as f64)),
-        ("单日发消息", format_count(peak.1), peak.0.clone()),
     ];
     for (label, value, note) in metrics {
         write!(
@@ -1332,6 +1421,19 @@ fn write_analytics_report(context: &ExportContext<'_>, path: &Path) -> Result<()
         ).ok();
     }
     html.push_str("</section>");
+
+    write!(
+        &mut html,
+        "<section class=\"card\"><div class=\"section-head\"><h2>我们的对话比例</h2><span class=\"badge\">共 {} 条</span></div><p class=\"pk-summary\">我发了 <b class=\"me\">{}</b> 条，{}发了 <b class=\"other\">{}</b> 条。</p><div class=\"pk-bar\" role=\"img\" aria-label=\"我 {}%，{} {}%\"><div class=\"pk-sent\" style=\"width:{sent_pct:.1}%\">我 {sent_pct:.0}%</div><div class=\"pk-recv\" style=\"width:{recv_pct:.1}%\">{} {recv_pct:.0}%</div></div><div class=\"pk-counts\"><span>平均每条 <b>{sent_avg:.1}</b> 字</span><span>平均每条 <b>{recv_avg:.1}</b> 字</span></div></section>",
+        format_count(total),
+        format_count(me_msgs),
+        escape_html(&other_label),
+        format_count(other_msgs),
+        sent_pct,
+        escape_html(&other_label),
+        recv_pct,
+        escape_html(&other_label)
+    ).ok();
 
     write!(
         &mut html,
@@ -1450,24 +1552,29 @@ fn write_analytics_report(context: &ExportContext<'_>, path: &Path) -> Result<()
     html.push_str("</tbody></table></div></details></section>");
 
     html.push_str("<section class=\"card\" style=\"margin-bottom:0\"><div class=\"section-head\"><h2>最活跃的日子</h2><span class=\"badge\">TOP 10</span></div><ol class=\"top-days\">");
-    for (index, (day, count)) in top_days.iter().enumerate() {
+    for (index, (day, me, other)) in top_days.iter().enumerate() {
+        let count = me + other;
         write!(
             &mut html,
-            "<li><span class=\"rank\">{:02}</span><span class=\"date\">{}</span><div class=\"track\"><div class=\"fill\" style=\"width:{:.1}%\"></div></div><span class=\"count\">{} 条</span></li>",
+            "<li><span class=\"rank\">{:02}</span><span class=\"date\">{}</span><div class=\"bar\" title=\"我 {} / {} {} \"><div class=\"bar-sent\" style=\"width:{:.1}%\"></div><div class=\"bar-recv\" style=\"width:{:.1}%\"></div></div><span class=\"count\">{} 条</span></li>",
             index + 1,
             escape_html(day),
-            *count as f64 * 100.0 / top_day_max as f64,
-            format_count(*count)
+            me,
+            escape_html(&other_label),
+            other,
+            *me as f64 * 100.0 / top_day_max as f64,
+            *other as f64 * 100.0 / top_day_max as f64,
+            format_count(count)
         ).ok();
     }
     html.push_str("</ol><p class=\"chart-note\">按单日消息数排序；条数相同的日期按日期排序。</p></section></div>");
 
     html.push_str("<section class=\"card\"><div class=\"section-head\"><h2>我们的高频词</h2><span class=\"badge\">文本消息</span></div><div class=\"words-grid\"><div><h3>我最常说的</h3><div class=\"cloud\">");
-    html.push_str(&word_cloud(&me_words));
+    html.push_str(&word_cloud(&me_words, true));
     html.push_str("</div><p class=\"chart-note\">统计我发出的文本，共 ");
     html.push_str(&format_count(me_chars));
     html.push_str(" 字（词云基于文本消息样本）</p></div><div><h3>大家最常说的</h3><div class=\"cloud\">");
-    html.push_str(&word_cloud(&other_words));
+    html.push_str(&word_cloud(&other_words, false));
     html.push_str("</div><p class=\"chart-note\">统计其他人发出的文本，共 ");
     html.push_str(&format_count(other_chars));
     html.push_str(" 字</p></div></div></section>");

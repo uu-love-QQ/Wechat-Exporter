@@ -220,6 +220,8 @@ fn exports_visual_report() {
     let html = fs::read_to_string(&report).unwrap();
     assert!(html.contains("聊天分析报告"));
     assert!(html.contains("消息趋势"));
+    assert!(html.contains("我们的对话比例"));
+    assert!(html.contains("平均字数"));
     assert!(html.contains("我通常在几点发消息"));
     assert!(html.contains("消息类型占比"));
     assert!(html.contains("最活跃的日子"));

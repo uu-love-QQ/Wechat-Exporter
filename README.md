@@ -212,10 +212,11 @@ wechat-exporter export --key <64位Hex密钥> \
   --conversation-id wxid_xxx --format json --report --output-dir /path/to/out
 ```
 
-`--report` 额外生成 `conversation.report.html`：渐变头图与核心指标、活跃度概览、
-互动排行、我/其他人的每日趋势、24 小时与星期分布、消息类型环形图、
-最活跃日期 TOP 10、以及双方高频词云。图表附带数据表和 `aria-label` 摘要；
-报告为自包含静态 HTML，无外部脚本和网络请求，支持亮/暗主题。
+`--report` 额外生成 `conversation.report.html`：蓝紫渐变头图与 6 项核心指标
+（消息数、总字数、活跃天数、单日最高、平均字数、互动人数）、对话比例 PK 条、
+活跃度概览、互动排行、我/其他人的每日趋势、24 小时与星期分布、消息类型环形图、
+最活跃日期 TOP 10（含双方占比）、以及双方高频词云。图表附带数据表和
+`aria-label` 摘要；报告为自包含静态 HTML，无外部脚本和网络请求，支持亮/暗主题。
 
 | 参数 | 说明 |
 |---|---|
