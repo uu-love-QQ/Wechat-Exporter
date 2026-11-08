@@ -181,6 +181,53 @@ fn searches_across_shards() {
 }
 
 #[test]
+fn list_query_searches_messages() {
+    let (_temp, source) = fixture();
+    let (code, stdout, stderr) = run_with_key(&[
+        "list",
+        "-q",
+        "hello",
+        "--source-database",
+        source.to_str().unwrap(),
+        "--page-size",
+        "10",
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let value: Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(value["query"], "hello");
+    assert!(value["items"].as_array().unwrap().iter().any(|item| item["conversation_id"] == ALICE));
+}
+
+#[test]
+fn exports_visual_report() {
+    let (temp, source) = fixture();
+    let output = temp.path().join("report-out");
+    let (code, _, stderr) = run_with_key(&[
+        "export",
+        "--source-database",
+        source.to_str().unwrap(),
+        "--conversation-id",
+        GROUP,
+        "--format",
+        "json",
+        "--report",
+        "--output-dir",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let report = output.join("conversation.report.html");
+    assert!(report.exists(), "missing report html");
+    let html = fs::read_to_string(&report).unwrap();
+    assert!(html.contains("聊天分析报告"));
+    assert!(html.contains("24 小时活跃度"));
+    assert!(html.contains("每日消息趋势"));
+    assert!(html.contains("发送者排行"));
+    let exported: Value =
+        serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
+    assert_eq!(exported["conversations"][0]["documents"]["report"], "conversation.report.html");
+}
+
+#[test]
 fn help_scopes_options_to_subcommands() {
     let root = Command::new(env!("CARGO_BIN_EXE_wechat-exporter"))
         .arg("--help")
@@ -198,6 +245,7 @@ fn help_scopes_options_to_subcommands() {
         .expect("list help");
     let list = String::from_utf8_lossy(&list.stdout);
     assert!(list.contains("--page-size"));
+    assert!(list.contains("--query"));
     assert!(!list.contains("--conversation-id"));
     assert!(!list.contains("--output-dir"));
     assert!(!list.contains("--format"));
@@ -209,6 +257,7 @@ fn help_scopes_options_to_subcommands() {
     let export = String::from_utf8_lossy(&export.stdout);
     assert!(export.contains("--conversation-id"));
     assert!(export.contains("--format"));
+    assert!(export.contains("--report"));
     assert!(!export.contains("--page-size"));
     assert!(!export.contains("--ascending"));
 }

@@ -162,6 +162,7 @@ wechat-exporter detect --source-database /path/to/xwechat_files
 
 ```bash
 wechat-exporter list --key <64位Hex密钥> --page-size 20
+wechat-exporter list -q "关键词" --key <64位Hex密钥>
 wechat-exporter list --source-database /path/to/db_storage --cursor <BASE64>
 ```
 
@@ -171,6 +172,8 @@ wechat-exporter list --source-database /path/to/db_storage --cursor <BASE64>
 | `-K, --key <HEX>` / `--key-file <PATH>` | 数据库密钥 |
 | `--self-username <WXID>` | 指定当前登录账号 |
 | `--plaintext` | 按未加密 SQLite 打开 |
+| `-q, --query <TEXT>` | 关键词全文检索，等价于 `search` 子命令 |
+| `--ascending` | 配合 `-q`，匹配消息按时间正序 |
 | `-p, --page-size <N>` | 单页数量 1..1000，缺省 50 |
 | `--cursor <BASE64>` | 上一页返回的 `next_cursor` |
 | `--debug` | 详细调试输出 |
@@ -205,7 +208,13 @@ wechat-exporter export --key <64位Hex密钥> \
   --conversation-id "123456789@chatroom" --format html --output-dir /path/to/out
 wechat-exporter export --source-database /path/to/db_storage \
   --conversation-id wxid_xxx --format all --include-media --output-dir /path/to/out
+wechat-exporter export --key <64位Hex密钥> \
+  --conversation-id wxid_xxx --format json --report --output-dir /path/to/out
 ```
+
+`--report` 额外生成 `conversation.report.html`：消息总数、参与人数、活跃天数、
+总字数、媒体文件/缺失数、发送者排行、消息类型分布、24 小时活跃度和每日消息趋势图。
+报告为自包含静态 HTML，无外部脚本和网络请求。
 
 | 参数 | 说明 |
 |---|---|
@@ -220,6 +229,7 @@ wechat-exporter export --source-database /path/to/db_storage \
 | `--start-time-ms <MS>` / `--end-time-ms <MS>` | 时间范围（Unix 毫秒） |
 | `-o, --output-dir <DIR>` | 绝对路径输出目录，必须尚不存在 |
 | `-k, --keep-output` | 保留临时输出目录 |
+| `--report` | 生成可视化分析报告 `conversation.report.html` |
 | `--debug` | 详细调试输出 |
 
 ## 六、HTML 界面与引用跳转

@@ -36,6 +36,7 @@ pub fn write_conversation(
     context: &ExportContext<'_>,
     output_dir: &Path,
     formats: &[Format],
+    report: bool,
 ) -> Result<BTreeMap<String, PathBuf>> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
@@ -55,6 +56,11 @@ pub fn write_conversation(
             Format::Weclone => write_weclone(context, &path)?,
         }
         written.insert(format.name().to_string(), path);
+    }
+    if report {
+        let path = output_dir.join(REPORT_FILE_NAME);
+        write_analytics_report(context, &path)?;
+        written.insert("report".to_string(), path);
     }
     Ok(written)
 }
@@ -556,6 +562,8 @@ fn write_weclone(context: &ExportContext<'_>, path: &Path) -> Result<()> {
 
 const CHAT_TEMPLATE: &str = include_str!("chat_template.html");
 
+pub const REPORT_FILE_NAME: &str = "conversation.report.html";
+
 fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
     let mut by_server: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut by_local: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -716,6 +724,394 @@ fn write_xlsx(context: &ExportContext<'_>, path: &Path) -> Result<()> {
     workbook
         .save(path)
         .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", path.display()))
+}
+
+const REPORT_CSS: &str = r#"
+:root {
+  --bg: #f4f6fb;
+  --panel: #ffffff;
+  --panel-2: #f8fafc;
+  --fg: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --accent: #2563eb;
+  --accent-2: #0d9488;
+  --warn: #d97706;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1120;
+    --panel: #111827;
+    --panel-2: #172033;
+    --fg: #e5e7eb;
+    --muted: #94a3b8;
+    --line: #263244;
+    --accent: #60a5fa;
+    --accent-2: #2dd4bf;
+    --warn: #fbbf24;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+main { max-width: 980px; margin: 0 auto; padding: 40px 20px 64px; }
+.hero { margin-bottom: 24px; }
+.eyebrow {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+h1 { margin: 6px 0 8px; font-size: 30px; line-height: 1.2; letter-spacing: -.02em; }
+h2 { margin: 0 0 14px; font-size: 15px; }
+p { margin: 0; }
+.muted { color: var(--muted); }
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin: 24px 0;
+}
+.kpi, .card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+.kpi { padding: 16px 18px; }
+.kpi span { display: block; color: var(--muted); font-size: 12px; }
+.kpi strong { display: block; margin-top: 2px; font-size: 26px; line-height: 1.25; letter-spacing: -.02em; }
+.kpi small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.card { padding: 22px; margin-bottom: 16px; }
+.rows { display: flex; flex-direction: column; gap: 10px; }
+.row { display: grid; grid-template-columns: minmax(80px, 1fr) 2.2fr auto; gap: 10px; align-items: center; }
+.row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .value { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.track { height: 8px; overflow: hidden; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); }
+.fill { height: 100%; border-radius: inherit; background: var(--accent); }
+.fill.teal { background: var(--accent-2); }
+.hours { display: grid; grid-template-columns: repeat(24, 1fr); gap: 3px; align-items: end; height: 150px; padding-top: 8px; }
+.hour { display: flex; flex-direction: column; justify-content: flex-end; align-items: stretch; gap: 4px; height: 100%; min-width: 0; }
+.hbar { min-height: 2px; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--accent), var(--accent-2)); opacity: .9; }
+.hour small { color: var(--muted); font-size: 9px; text-align: center; font-variant-numeric: tabular-nums; }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart-caption { display: flex; justify-content: space-between; margin-top: 8px; color: var(--muted); font-size: 11px; }
+footer { margin-top: 28px; color: var(--muted); font-size: 11px; text-align: center; }
+@media (max-width: 560px) {
+  main { padding: 24px 14px 48px; }
+  h1 { font-size: 23px; }
+  .card { padding: 18px; }
+  .row { grid-template-columns: 70px 1fr auto; }
+  .hour small { font-size: 7px; }
+}
+"#;
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn percent(part: usize, total: usize) -> String {
+    if total == 0 {
+        "0%".to_string()
+    } else {
+        format!("{:.0}%", part as f64 * 100.0 / total as f64)
+    }
+}
+
+fn write_analytics_report(context: &ExportContext<'_>, path: &Path) -> Result<()> {
+    use std::fmt::Write as _;
+
+    let mut hours = [0usize; 24];
+    let mut days: BTreeMap<String, usize> = BTreeMap::new();
+    let mut senders: BTreeMap<String, usize> = BTreeMap::new();
+    let mut types: BTreeMap<String, usize> = BTreeMap::new();
+    let mut media: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut missing_media = 0usize;
+    let mut chars = 0usize;
+    let mut first = i64::MAX;
+    let mut last = i64::MIN;
+
+    for message in context.messages {
+        first = first.min(message.create_time);
+        last = last.max(message.create_time);
+        chars += message.content.chars().count();
+        let stamp = format_timestamp(message.create_time);
+        if let Some(day) = stamp.get(..10) {
+            *days.entry(day.to_string()).or_default() += 1;
+        }
+        if let Some(hour) = stamp.get(11..13).and_then(|value| value.parse::<usize>().ok()) {
+            if hour < 24 {
+                hours[hour] += 1;
+            }
+        }
+        let sender = if message.sender_name.trim().is_empty() {
+            if message.is_send {
+                if context.self_name.is_empty() {
+                    "我"
+                } else {
+                    &context.self_name
+                }
+            } else {
+                "未知"
+            }
+        } else {
+            message.sender_name.as_str()
+        };
+        *senders.entry(sender.to_string()).or_default() += 1;
+        let type_name = if message.type_name.trim().is_empty() {
+            "其他".to_string()
+        } else {
+            message.type_name.clone()
+        };
+        *types.entry(type_name).or_default() += 1;
+        if let Some(item) = &message.media {
+            *media.entry(item.kind.label()).or_default() += 1;
+            if message.media_path.is_none() {
+                missing_media += 1;
+            }
+        }
+    }
+
+    let total = context.messages.len();
+    let days_count = days.len().max(1);
+    let span_days = if total > 0 {
+        (((last - first).max(0) / 86_400) + 1) as usize
+    } else {
+        0
+    };
+    let mut sender_rows: Vec<(String, usize)> = senders.into_iter().collect();
+    sender_rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut type_rows: Vec<(String, usize)> = types.into_iter().collect();
+    type_rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    let max_sender = sender_rows.first().map(|(_, count)| *count).unwrap_or(1);
+    let max_type = type_rows.first().map(|(_, count)| *count).unwrap_or(1);
+    let max_hour = hours.iter().copied().max().unwrap_or(1).max(1);
+    let media_total: usize = media.values().sum();
+
+    let day_rows: Vec<(String, usize)> = days.iter().map(|(day, count)| (day.clone(), *count)).collect();
+    let max_day = day_rows.iter().map(|(_, count)| *count).max().unwrap_or(1).max(1);
+    let chart_width = 820.0;
+    let pad_left = 24.0;
+    let pad_right = 24.0;
+    let base_y = 160.0;
+    let top_y = 24.0;
+    let usable = chart_width - pad_left - pad_right;
+    let line_points: Vec<(f64, f64)> = day_rows
+        .iter()
+        .enumerate()
+        .map(|(index, (_, count))| {
+            let x = if day_rows.len() <= 1 {
+                pad_left + usable / 2.0
+            } else {
+                pad_left + usable * index as f64 / (day_rows.len() - 1) as f64
+            };
+            let y = base_y - (base_y - top_y) * (*count as f64 / max_day as f64);
+            (x, y)
+        })
+        .collect();
+    let line_path = line_points
+        .iter()
+        .enumerate()
+        .map(|(index, (x, y))| {
+            format!(
+                "{}{:.1},{:.1}",
+                if index == 0 { "M" } else { " L" },
+                x,
+                y
+            )
+        })
+        .collect::<String>();
+    let area_path = if line_points.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{} L{:.1},{:.1} L{:.1},{:.1} Z",
+            line_path,
+            line_points.last().map(|point| point.0).unwrap_or(base_y),
+            base_y,
+            line_points.first().map(|point| point.0).unwrap_or(base_y),
+            base_y
+        )
+    };
+    let circles: String = line_points
+        .iter()
+        .map(|(x, y)| format!(r#"<circle cx="{x:.1}" cy="{y:.1}" r="2.4" fill="var(--accent)" />"#))
+        .collect();
+
+    let first_stamp = if total > 0 { format_timestamp(first) } else { "-".to_string() };
+    let last_stamp = if total > 0 { format_timestamp(last) } else { "-".to_string() };
+    let first_day = day_rows.first().map(|(day, _)| day.as_str()).unwrap_or("-");
+    let last_day = day_rows.last().map(|(day, _)| day.as_str()).unwrap_or("-");
+
+    let mut html = String::with_capacity(18_000);
+    html.push_str("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>");
+    html.push_str(&escape_html(&format!("聊天分析报告 - {}", context.display_name())));
+    html.push_str("</title><style>");
+    html.push_str(REPORT_CSS);
+    html.push_str("</style></head><body><main>");
+    html.push_str("<header class=\"hero\"><div class=\"eyebrow\">CHAT ANALYTICS · 聊天分析</div><h1>");
+    html.push_str(&escape_html(context.display_name()));
+    html.push_str("</h1><p class=\"muted\">");
+    html.push_str(if context.group() { "群聊" } else { "私聊" });
+    write!(
+        &mut html,
+        " · {} 至 {} · 导出于 {}</p></header>",
+        escape_html(&first_stamp),
+        escape_html(&last_stamp),
+        escape_html(&format_timestamp(context.exported_at_sec()))
+    ).ok();
+
+    html.push_str("<section class=\"kpis\">");
+    let kpis = [
+        ("消息总数", total.to_string(), format!("{} 天", days_count)),
+        ("参与人数", sender_rows.len().to_string(), "按发送者去重".to_string()),
+        ("活跃天数", days_count.to_string(), format!("平均 {:.0} 条/天", total as f64 / days_count as f64)),
+        ("总字数", chars.to_string(), format!("平均 {:.0} 字/条", chars as f64 / total.max(1) as f64)),
+        (
+            "媒体文件",
+            media_total.to_string(),
+            if missing_media > 0 {
+                format!("{} 个已索引 · {} 个缺失", media_total - missing_media, missing_media)
+            } else {
+                "全部已索引".to_string()
+            },
+        ),
+        ("时间跨度", format!("{} 天", span_days), format!("活跃 {} 天", days_count)),
+    ];
+    for (label, value, note) in kpis {
+        write!(
+            &mut html,
+            "<div class=\"kpi\"><span>{}</span><strong>{}</strong><small>{}</small></div>",
+            escape_html(label),
+            escape_html(&value),
+            escape_html(&note)
+        ).ok();
+    }
+    html.push_str("</section>");
+
+    html.push_str("<div class=\"grid\">");
+    html.push_str("<section class=\"card\"><h2>发送者排行</h2><div class=\"rows\">");
+    if sender_rows.is_empty() {
+        html.push_str("<p class=\"muted\">没有发送者数据。</p>");
+    }
+    for (name, count) in sender_rows.iter().take(8) {
+        write!(
+            &mut html,
+            "<div class=\"row\"><span class=\"name\">{}</span><div class=\"track\"><div class=\"fill\" style=\"width:{:.1}%\"></div></div><span class=\"value\">{} · {}</span></div>",
+            escape_html(name),
+            *count as f64 * 100.0 / max_sender as f64,
+            count,
+            percent(*count, total)
+        ).ok();
+    }
+    html.push_str("</div></section>");
+
+    html.push_str("<section class=\"card\"><h2>消息类型</h2><div class=\"rows\">");
+    if type_rows.is_empty() {
+        html.push_str("<p class=\"muted\">没有类型数据。</p>");
+    }
+    for (name, count) in type_rows.iter().take(9) {
+        write!(
+            &mut html,
+            "<div class=\"row\"><span class=\"name\">{}</span><div class=\"track\"><div class=\"fill teal\" style=\"width:{:.1}%\"></div></div><span class=\"value\">{} · {}</span></div>",
+            escape_html(name),
+            *count as f64 * 100.0 / max_type as f64,
+            count,
+            percent(*count, total)
+        ).ok();
+    }
+    if !media.is_empty() {
+        html.push_str("</div><p class=\"muted\" style=\"margin-top:12px;font-size:12px\">媒体构成：");
+        let mut first_item = true;
+        for (label, count) in &media {
+            if !first_item {
+                html.push_str(" · ");
+            }
+            first_item = false;
+            write!(&mut html, "{} {}", escape_html(label), count).ok();
+        }
+        html.push_str("</p>");
+    }
+    html.push_str("</section></div>");
+
+    html.push_str("<section class=\"card\"><h2>24 小时活跃度</h2><div class=\"hours\">");
+    for (hour, count) in hours.iter().enumerate() {
+        let height = if *count == 0 {
+            2.0
+        } else {
+            (*count as f64 * 100.0 / max_hour as f64).max(4.0)
+        };
+        write!(
+            &mut html,
+            "<div class=\"hour\" title=\"{:02}:00 · {} 条\"><div class=\"hbar\" style=\"height:{:.1}%\"></div><small>{:02}</small></div>",
+            hour,
+            count,
+            height,
+            hour
+        ).ok();
+    }
+    html.push_str("</div><div class=\"chart-caption\"><span>00:00</span><span>12:00</span><span>23:00</span></div></section>");
+
+    html.push_str("<section class=\"card\"><h2>每日消息趋势</h2><svg viewBox=\"0 0 820 190\" role=\"img\" aria-label=\"每日消息趋势\">");
+    write!(
+        &mut html,
+        "<line x1=\"{pad_left}\" y1=\"{base_y}\" x2=\"{}\" y2=\"{base_y}\" stroke=\"var(--line)\" stroke-width=\"1\" />",
+        chart_width - pad_right
+    ).ok();
+    if !area_path.is_empty() {
+        write!(
+            &mut html,
+            "<path d=\"{}\" fill=\"var(--accent)\" opacity=\"0.08\" />",
+            area_path
+        ).ok();
+        write!(
+            &mut html,
+            "<path d=\"{}\" fill=\"none\" stroke=\"var(--accent)\" stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" />",
+            line_path
+        ).ok();
+    }
+    html.push_str(&circles);
+    write!(
+        &mut html,
+        "<text x=\"{pad_left}\" y=\"184\" fill=\"var(--muted)\" font-size=\"11\">{}</text>",
+        escape_html(first_day)
+    ).ok();
+    write!(
+        &mut html,
+        "<text x=\"{}\" y=\"184\" fill=\"var(--muted)\" font-size=\"11\" text-anchor=\"end\">{}</text>",
+        chart_width - pad_right,
+        escape_html(last_day)
+    ).ok();
+    write!(
+        &mut html,
+        "<text x=\"{}\" y=\"16\" fill=\"var(--muted)\" font-size=\"11\" text-anchor=\"middle\">峰值 {} 条/天</text>",
+        chart_width / 2.0,
+        max_day
+    ).ok();
+    html.push_str("</svg></section>");
+
+    write!(
+        &mut html,
+        "<footer>由 {} 生成 · 会话 ID: {} · 共 {} 条消息</footer>",
+        escape_html(GENERATOR),
+        escape_html(&context.conversation.id),
+        total
+    ).ok();
+    html.push_str("</main></body></html>");
+
+    fs::write(path, html).with_context(|| format!("failed to write {}", path.display()))
 }
 
 pub fn write_report(

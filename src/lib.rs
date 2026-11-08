@@ -528,7 +528,12 @@ fn run_export(
             include_media: options.include_media,
             avatar_path,
         };
-        let written = export::write_conversation(&context, &conversation_dir, &options.formats)?;
+        let written = export::write_conversation(
+            &context,
+            &conversation_dir,
+            &options.formats,
+            options.report,
+        )?;
         total_messages += messages.len();
         let documents: serde_json::Map<String, serde_json::Value> = written
             .iter()

@@ -137,7 +137,15 @@ pub struct ListArgs {
     #[command(flatten)]
     pub common: CommonArgs,
 
-    /// 单页会话数量 (范围 1..1000，缺省 50)
+    /// 关键词全文检索 (等价于 search 子命令；提供后输出匹配消息)
+    #[arg(short = 'q', long = "query", value_name = "TEXT", help_heading = "查询")]
+    pub query: Option<String>,
+
+    /// 配合 -q 使用：匹配消息按时间正序排列
+    #[arg(long = "ascending", action = ArgAction::SetTrue, help_heading = "查询")]
+    pub ascending: bool,
+
+    /// 单页会话或结果数量 (范围 1..1000，缺省 50)
     #[arg(
         long = "page-size",
         short = 'p',
@@ -241,6 +249,10 @@ pub struct ExportArgs {
         help_heading = "导出"
     )]
     pub keep_output: bool,
+
+    /// 生成可视化聊天分析报告 conversation.report.html
+    #[arg(long = "report", action = ArgAction::SetTrue, help_heading = "导出")]
+    pub report: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -350,6 +362,7 @@ pub struct ValidatedCli {
     pub key: Option<[u8; 32]>,
     pub plaintext: bool,
     pub debug: bool,
+    pub report: bool,
 }
 
 struct CommonValidated {
@@ -393,6 +406,7 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         key: common.key,
         plaintext: common.plaintext,
         debug: common.debug,
+        report: false,
     }
 }
 
@@ -509,6 +523,7 @@ impl Command {
                 key: None,
                 plaintext: true,
                 debug: args.debug,
+                report: false,
             }),
             Command::Init(args) => {
                 let common = args.common.validate()?;
@@ -518,12 +533,28 @@ impl Command {
                 Ok(options)
             }
             Command::List(args) => {
-                let common = args.common.validate()?;
-                let page_size = parse_page_size(args.page_size)?;
-                let mut options = validated(common, Mode::List);
-                options.page_size = page_size;
-                options.cursor = args.cursor;
-                Ok(options)
+                if let Some(query) = args.query {
+                    if query.is_empty() || query.contains('\0') || query.len() > 512 {
+                        bail!("search text must be nonempty, contain no NUL, and be at most 512 UTF-8 bytes");
+                    }
+                    let common = args.common.validate()?;
+                    let page_size = parse_page_size(args.page_size)?;
+                    let mut options = validated(common, Mode::Search(query));
+                    options.ascending = args.ascending;
+                    options.page_size = page_size;
+                    options.cursor = args.cursor;
+                    Ok(options)
+                } else {
+                    if args.ascending {
+                        bail!("--ascending requires -q/--query");
+                    }
+                    let common = args.common.validate()?;
+                    let page_size = parse_page_size(args.page_size)?;
+                    let mut options = validated(common, Mode::List);
+                    options.page_size = page_size;
+                    options.cursor = args.cursor;
+                    Ok(options)
+                }
             }
             Command::Search(args) => {
                 if args.query.is_empty()
@@ -597,6 +628,7 @@ impl Command {
                 options.keep_output = args.keep_output;
                 options.output_dir = args.output_dir;
                 options.image_key = image_key;
+                options.report = args.report;
                 Ok(options)
             }
         }
