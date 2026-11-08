@@ -194,6 +194,12 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let mut options = cli.validate()?;
 
+    if let Mode::Report(kind) = &options.mode {
+        if let Some(path) = &options.from_json {
+            return report::run_from_json(*kind, &options, path);
+        }
+    }
+
     if matches!(options.mode, Mode::DetectDatabases) {
         return run_detect_databases();
     }
@@ -478,6 +484,8 @@ fn run_export(
 
     let mut report_conversations = Vec::new();
     let mut total_messages = 0usize;
+    let mut overall_start = i64::MAX;
+    let mut overall_end = i64::MIN;
     for conversation in &selected {
         let mut messages = store.load_messages(
             &conversation.id,
@@ -557,11 +565,19 @@ fn run_export(
                 (name.clone(), serde_json::json!(relative))
             })
             .collect();
+        let start_time = messages.iter().map(|message| message.create_time).min().unwrap_or(0);
+        let end_time = messages.iter().map(|message| message.create_time).max().unwrap_or(0);
+        overall_start = overall_start.min(start_time);
+        overall_end = overall_end.max(end_time);
         let mut entry = serde_json::json!({
             "id": conversation.id,
             "name": conversation.name,
             "type": if conversation.is_group { "group" } else { "private" },
             "message_count": messages.len(),
+            "start_time": start_time,
+            "end_time": end_time,
+            "start_time_text": util::format_timestamp(start_time),
+            "end_time_text": util::format_timestamp(end_time),
             "documents": documents,
         });
         if let Some(media) = media {
@@ -585,6 +601,8 @@ fn run_export(
         exported_at_ms,
         &options.formats,
         &report_conversations,
+        if overall_start == i64::MAX { 0 } else { overall_start },
+        if overall_end == i64::MIN { 0 } else { overall_end },
     )?;
     let result = serde_json::json!({
         "schema": util::SCHEMA,
@@ -594,6 +612,8 @@ fn run_export(
         "report": report_path,
         "conversation_count": report_conversations.len(),
         "message_count": total_messages,
+        "start_time": if overall_start == i64::MAX { 0 } else { overall_start },
+        "end_time": if overall_end == i64::MIN { 0 } else { overall_end },
         "formats": options.formats.iter().map(|format| format.name()).collect::<Vec<_>>(),
         "keep_output": options.keep_output || options.output_dir.is_some(),
     });

@@ -297,6 +297,10 @@ pub struct ReportArgs {
     /// group/dual/annual 报告年份；缺省或 0 表示全部历史
     #[arg(long = "year", value_name = "YYYY", help_heading = "报告")]
     pub year: Option<i32>,
+
+    /// 从已导出的 conversation.json、export-report.json 或导出目录加载，跳过数据库
+    #[arg(long = "from-json", value_name = "PATH", help_heading = "报告")]
+    pub from_json: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -409,6 +413,7 @@ pub struct ValidatedCli {
     pub debug: bool,
     pub report: bool,
     pub report_year: i32,
+    pub from_json: Option<PathBuf>,
 }
 
 struct CommonValidated {
@@ -454,6 +459,7 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         debug: common.debug,
         report: false,
         report_year: 0,
+        from_json: None,
     }
 }
 
@@ -572,6 +578,7 @@ impl Command {
                 debug: args.debug,
                 report: false,
                 report_year: 0,
+                from_json: None,
             }),
             Command::Init(args) => {
                 let common = args.common.validate()?;
@@ -696,6 +703,11 @@ impl Command {
                         bail!("conversation ID must be nonempty, at most 1024 bytes, and contain no control characters");
                     }
                 }
+                if let Some(path) = &args.from_json {
+                    if !path.exists() {
+                        bail!("--from-json path does not exist: {}", path.display());
+                    }
+                }
                 match args.kind {
                     ReportKind::Private | ReportKind::Annual => {
                         if args.conversation_id.is_some() {
@@ -706,7 +718,7 @@ impl Command {
                         }
                     }
                     ReportKind::Group | ReportKind::Dual => {
-                        if args.conversation_id.is_none() {
+                        if args.conversation_id.is_none() && args.from_json.is_none() {
                             bail!("{} report requires --conversation-id", match args.kind {
                                 ReportKind::Group => "group",
                                 _ => "dual",
@@ -721,11 +733,23 @@ impl Command {
                 if year != 0 && !(1970..=2100).contains(&year) {
                     bail!("report year must be 1970..2100, or 0 for all history");
                 }
-                let common = args.common.validate()?;
-                let mut options = validated(common, Mode::Report(args.kind));
+                let mut options = if args.from_json.is_some() {
+                    let common = CommonValidated {
+                        source_database: PathBuf::from("."),
+                        key: None,
+                        self_username: args.common.self_username,
+                        plaintext: true,
+                        debug: args.common.debug,
+                    };
+                    validated(common, Mode::Report(args.kind))
+                } else {
+                    let common = args.common.validate()?;
+                    validated(common, Mode::Report(args.kind))
+                };
                 options.output_dir = Some(args.output_dir);
                 options.conversation_ids = args.conversation_id.into_iter().collect();
                 options.report_year = year;
+                options.from_json = args.from_json;
                 Ok(options)
             }
         }

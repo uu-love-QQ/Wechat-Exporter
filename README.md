@@ -253,6 +253,11 @@ wechat-exporter report dual --key <64位Hex> \
 
 # 年度报告：指定年份；--year 0 生成跨年度长期报告
 wechat-exporter report annual --key <64位Hex> --year 2024 --output-dir /path/to/report
+
+# 直接从已导出的 JSON 生成（无需数据库和密钥）
+wechat-exporter report private --from-json /path/to/export --output-dir /path/to/report
+wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json \
+  --output-dir /path/to/report
 ```
 
 | 类型 | 输出 | 说明 |
@@ -267,10 +272,15 @@ wechat-exporter report annual --key <64位Hex> --year 2024 --output-dir /path/to
 | `-o, --output-dir <DIR>` | 报告输出目录（必填，绝对路径） |
 | `-c, --conversation-id <ID>` | `group` / `dual` 必填 |
 | `--year <YYYY>` | `group` / `dual` / `annual` 的年份；缺省或 `0` 为全部历史 |
+| `--from-json <PATH>` | 从 `conversation.json`、`export-report.json` 或导出目录读取，跳过数据库 |
 | `-s, --source-database` / `-K, --key` / `--key-file` | 与其他子命令相同 |
 
 `group` 报告优先从联系人库的 `chatroom_member` + `name2id` 读取完整群名册；
 表结构不兼容时回退为“消息中出现的成员”，并在报告中标注成员数。
+
+`export-report.json` 的顶层和每个 `conversations[]` 条目都包含
+`start_time` / `end_time`（Unix 秒）与 `start_time_text` / `end_time_text`，
+可直接用于确认导出范围，也可作为 `report --from-json` 的输入。
 
 ## 六、HTML 界面与引用跳转
 

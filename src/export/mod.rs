@@ -1597,6 +1597,8 @@ pub fn write_report(
     exported_at_ms: i64,
     formats: &[Format],
     conversations: &[Value],
+    start_time: i64,
+    end_time: i64,
 ) -> Result<PathBuf> {
     let path = output_dir.join("export-report.json");
     let value = json!({
@@ -1605,6 +1607,10 @@ pub fn write_report(
         "account_id": account_id,
         "exported_at_unix_ms": exported_at_ms,
         "formats": formats.iter().map(|format| format.name()).collect::<Vec<_>>(),
+        "start_time": start_time,
+        "end_time": end_time,
+        "start_time_text": format_timestamp(start_time),
+        "end_time_text": format_timestamp(end_time),
         "conversations": conversations,
     });
     fs::write(&path, serde_json::to_vec_pretty(&value)?)

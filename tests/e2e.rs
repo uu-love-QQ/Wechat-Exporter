@@ -158,6 +158,10 @@ fn exports_all_formats_and_media() {
     let report: Value =
         serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
     assert_eq!(report["conversations"][0]["message_count"], 11);
+    assert!(report["conversations"][0]["start_time"].as_i64().unwrap() > 0);
+    assert!(report["conversations"][0]["end_time"].as_i64().unwrap() >= report["conversations"][0]["start_time"].as_i64().unwrap());
+    assert!(report["start_time"].as_i64().unwrap() > 0);
+    assert!(report["end_time"].as_i64().unwrap() >= report["start_time"].as_i64().unwrap());
     assert!(report["conversations"][0]["media"]["saved"].as_u64().unwrap() >= 1);
 }
 
@@ -256,6 +260,48 @@ fn generates_four_report_types() {
         let html = fs::read_to_string(dir.join(file)).unwrap();
         assert!(html.contains(needle), "{kind} missing {needle}");
         assert!(!html.contains("{}"), "{kind} has template placeholder");
+    }
+}
+
+#[test]
+fn reports_from_exported_json() {
+    let (temp, source) = fixture();
+    let exported = temp.path().join("json-src");
+    let (code, _, stderr) = run_with_key(&[
+        "export",
+        "--source-database",
+        source.to_str().unwrap(),
+        "--format",
+        "json",
+        "--output-dir",
+        exported.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let reports = temp.path().join("json-reports");
+    fs::create_dir_all(&reports).unwrap();
+    let cases = [
+        ("private", None, "private-report.html", "好友消息排行"),
+        ("group", Some(GROUP), "group-report.html", "群成员详细信息"),
+        ("annual", None, "annual-report.html", "年度报告"),
+        ("dual", Some(ALICE), "dual-report.html", "我们的对话比例"),
+    ];
+    for (kind, conversation, file, needle) in cases {
+        let dir = reports.join(kind);
+        let mut args = vec![
+            "report",
+            kind,
+            "--from-json",
+            exported.to_str().unwrap(),
+            "--output-dir",
+            dir.to_str().unwrap(),
+        ];
+        if let Some(id) = conversation {
+            args.extend(["--conversation-id", id]);
+        }
+        let (code, stdout, stderr) = run_with_key(&args);
+        assert_eq!(code, 0, "{kind} stderr={stderr} stdout={stdout}");
+        let html = fs::read_to_string(dir.join(file)).unwrap();
+        assert!(html.contains(needle), "{kind} missing {needle}");
     }
 }
 

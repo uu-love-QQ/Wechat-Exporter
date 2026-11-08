@@ -1,14 +1,14 @@
 use anyhow::{bail, Context, Result};
-use chrono::{Local, TimeZone, Timelike};
+use chrono::{Datelike, Local, TimeZone, Timelike};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::{ReportKind, ValidatedCli};
 use crate::export::{self, ExportContext};
 use crate::util::{format_timestamp, GENERATOR};
-use crate::wechat::model::{Contact, Conversation, ExportMessage};
+use crate::wechat::model::{Contact, Conversation, ExportMessage, MediaKind, MediaRef, MessageSource};
 use crate::wechat::shards::Store;
 
 const PRIVATE_ID_EXCLUDES: &[&str] = &[
@@ -882,5 +882,345 @@ pub fn run(
         "report": path,
     });
     println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+#[derive(Clone)]
+struct LoadedConversation {
+    conversation: Conversation,
+    messages: Vec<ExportMessage>,
+    exported_at_ms: i64,
+}
+
+fn read_json(path: &Path) -> Result<serde_json::Value> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to parse JSON {}", path.display()))
+}
+
+fn find_conversation_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > 3 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            find_conversation_files(&path, depth + 1, out);
+        } else if path.file_name().and_then(|name| name.to_str()) == Some("conversation.json") {
+            out.push(path);
+        }
+    }
+}
+
+fn load_json_conversation(path: &Path) -> Result<LoadedConversation> {
+    let value = read_json(path)?;
+    parse_json_conversation(&value, path)
+}
+
+fn parse_json_conversation(value: &serde_json::Value, path: &Path) -> Result<LoadedConversation> {
+    let session = value.get("session");
+    let id = session
+        .and_then(|session| session.get("id"))
+        .and_then(|id| id.as_str())
+        .unwrap_or("")
+        .to_string();
+    let name = session
+        .and_then(|session| session.get("name"))
+        .and_then(|name| name.as_str())
+        .or_else(|| session.and_then(|session| session.get("remark")).and_then(|name| name.as_str()))
+        .unwrap_or("conversation")
+        .to_string();
+    let is_group = session
+        .and_then(|session| session.get("kind"))
+        .and_then(|kind| kind.as_str())
+        .map(|kind| kind == "group")
+        .unwrap_or_else(|| id.ends_with("@chatroom"));
+    let messages_json = value
+        .get("messages")
+        .and_then(|messages| messages.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut messages = Vec::with_capacity(messages_json.len());
+    for (index, message) in messages_json.iter().enumerate() {
+        let sender = message.get("sender");
+        let sender_id = sender
+            .and_then(|sender| sender.get("id"))
+            .and_then(|id| id.as_str())
+            .unwrap_or("")
+            .to_string();
+        let sender_name = sender
+            .and_then(|sender| sender.get("name"))
+            .and_then(|name| name.as_str())
+            .unwrap_or("")
+            .to_string();
+        let media = message.get("media").and_then(|media| {
+            let kind = match media.get("kind").and_then(|kind| kind.as_str()).unwrap_or("image") {
+                "video" => MediaKind::Video,
+                "voice" => MediaKind::Voice,
+                "emoji" => MediaKind::Emoji,
+                "file" => MediaKind::File,
+                _ => MediaKind::Image,
+            };
+            let path = media.get("path").and_then(|path| path.as_str()).unwrap_or("");
+            Some(MediaRef {
+                md5: media.get("md5").and_then(|md5| md5.as_str()).unwrap_or("").to_string(),
+                file_name: media.get("name").and_then(|name| name.as_str()).unwrap_or("").to_string(),
+                kind,
+                ..MediaRef::default()
+            }).map(|media_ref| (media_ref, path.to_string()))
+        });
+        let (media_ref, media_path) = match media {
+            Some((media_ref, path)) => (Some(media_ref), if path.is_empty() { None } else { Some(path) }),
+            None => (None, None),
+        };
+        let create_time = message.get("time").and_then(|time| time.as_i64()).unwrap_or(0);
+        messages.push(ExportMessage {
+            index: index + 1,
+            local_id: message.get("id").and_then(|id| id.as_i64()).unwrap_or(index as i64 + 1),
+            server_id: message
+                .get("platformId")
+                .and_then(|id| id.as_str())
+                .and_then(|id| id.parse::<i64>().ok())
+                .unwrap_or(0),
+            create_time,
+            sender_id,
+            sender_name,
+            nickname: sender.and_then(|sender| sender.get("nickname")).and_then(|value| value.as_str()).unwrap_or("").to_string(),
+            remark: sender.and_then(|sender| sender.get("remark")).and_then(|value| value.as_str()).unwrap_or("").to_string(),
+            alias: sender.and_then(|sender| sender.get("alias")).and_then(|value| value.as_str()).unwrap_or("").to_string(),
+            is_send: message.get("fromMe").and_then(|value| value.as_bool()).unwrap_or(false),
+            local_type: message.get("typeCode").and_then(|value| value.as_i64()).unwrap_or(0),
+            base_type: message.get("typeCode").and_then(|value| value.as_i64()).unwrap_or(0),
+            type_name: message.get("type").and_then(|value| value.as_str()).unwrap_or("消息").to_string(),
+            content: message.get("content").and_then(|value| value.as_str()).unwrap_or("").to_string(),
+            source: MessageSource::default(),
+            app_subtype: message.get("app").and_then(|app| app.get("type")).and_then(|value| value.as_i64()),
+            media: media_ref,
+            media_path,
+            quote: None,
+            record: None,
+        });
+    }
+    if messages.is_empty() {
+        bail!("no messages in {}", path.display());
+    }
+    messages.sort_by_key(|message| message.create_time);
+    let first = messages.iter().map(|message| message.create_time).min().unwrap_or(0);
+    let last = messages.iter().map(|message| message.create_time).max().unwrap_or(0);
+    let exported_at_ms = value
+        .get("weflow")
+        .and_then(|weflow| weflow.get("exportedAt"))
+        .and_then(|value| value.as_i64())
+        .map(|seconds| seconds * 1000)
+        .unwrap_or_else(now_ms);
+    Ok(LoadedConversation {
+        conversation: Conversation {
+            id,
+            name,
+            nickname: session.and_then(|s| s.get("nickname")).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            remark: session.and_then(|s| s.get("remark")).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            alias: session.and_then(|s| s.get("alias")).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            is_group,
+            unread_count: 0,
+            sort_timestamp: last,
+            last_timestamp: last,
+            message_count: messages.len() as i64,
+        },
+        messages,
+        exported_at_ms: exported_at_ms.max(first * 1000),
+    })
+}
+
+fn load_json_path(path: &Path) -> Result<Vec<LoadedConversation>> {
+    let mut files = Vec::new();
+    if path.is_dir() {
+        let report = path.join("export-report.json");
+        if report.is_file() {
+            return load_export_report(&report);
+        }
+        find_conversation_files(path, 0, &mut files);
+    } else {
+        let value = read_json(path)?;
+        if value.get("conversations").is_some() {
+            return load_export_report(path);
+        }
+        files.push(path.to_path_buf());
+    }
+    let mut loaded = Vec::new();
+    for file in files {
+        if let Ok(item) = load_json_conversation(&file) {
+            loaded.push(item);
+        }
+    }
+    if loaded.is_empty() {
+        bail!("no conversation JSON found at {}", path.display());
+    }
+    Ok(loaded)
+}
+
+fn load_export_report(path: &Path) -> Result<Vec<LoadedConversation>> {
+    let value = read_json(path)?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut loaded = Vec::new();
+    let Some(conversations) = value.get("conversations").and_then(|value| value.as_array()) else {
+        bail!("export-report.json has no conversations array");
+    };
+    for conversation in conversations {
+        let Some(json_path) = conversation
+            .get("documents")
+            .and_then(|documents| documents.get("json"))
+            .and_then(|value| value.as_str())
+        else {
+            continue;
+        };
+        let path = base.join(json_path);
+        if let Ok(item) = load_json_conversation(&path) {
+            loaded.push(item);
+        }
+    }
+    if loaded.is_empty() {
+        bail!("export-report.json does not reference readable conversation.json files");
+    }
+    Ok(loaded)
+}
+
+fn filter_year(mut loaded: Vec<LoadedConversation>, year: i32) -> Vec<LoadedConversation> {
+    if year == 0 {
+        return loaded;
+    }
+    for item in &mut loaded {
+        item.messages.retain(|message| {
+            Local
+                .timestamp_opt(message.create_time, 0)
+                .single()
+                .map(|date| date.year() == year)
+                .unwrap_or(false)
+        });
+    }
+    loaded.retain(|item| !item.messages.is_empty());
+    loaded
+}
+
+fn aggregate_loaded(loaded: &[LoadedConversation], include_groups: bool, private_only: bool) -> Aggregate {
+    let mut aggregate = Aggregate::new();
+    for item in loaded {
+        if private_only && !is_private_conversation(&item.conversation) {
+            continue;
+        }
+        if !include_groups && item.conversation.is_group {
+            continue;
+        }
+        let sent = item.messages.iter().filter(|message| message.is_send).count();
+        for message in &item.messages {
+            aggregate.observe(message);
+        }
+        let map = if item.conversation.is_group {
+            &mut aggregate.groups
+        } else {
+            &mut aggregate.friends
+        };
+        let entry = map.entry(item.conversation.id.clone()).or_insert_with(|| FriendAgg {
+            id: item.conversation.id.clone(),
+            name: item.conversation.name.clone(),
+            ..FriendAgg::default()
+        });
+        entry.name = item.conversation.name.clone();
+        entry.total += item.messages.len();
+        entry.sent += sent;
+        entry.received += item.messages.len() - sent;
+        entry.last = entry.last.max(item.messages.iter().map(|message| message.create_time).max().unwrap_or(0));
+    }
+    aggregate
+}
+
+fn select_loaded<'a>(
+    loaded: &'a [LoadedConversation],
+    selector: Option<&String>,
+    want_group: bool,
+) -> Result<&'a LoadedConversation> {
+    if let Some(selector) = selector {
+        return loaded
+            .iter()
+            .find(|item| item.conversation.id == *selector || item.conversation.name == *selector)
+            .with_context(|| format!("conversation not found in JSON: {selector}"));
+    }
+    if loaded.len() == 1 {
+        let item = &loaded[0];
+        if want_group != item.conversation.is_group {
+            bail!("selected JSON conversation does not match report type");
+        }
+        return Ok(item);
+    }
+    bail!("multiple conversations found; pass --conversation-id");
+}
+
+pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> Result<()> {
+    let output_dir = options.output_dir.as_ref().context("report output directory is missing")?;
+    fs::create_dir_all(output_dir).with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let loaded = filter_year(load_json_path(path)?, options.report_year);
+    if loaded.is_empty() {
+        bail!("no messages available in the selected JSON for year {}", options.report_year);
+    }
+    match kind {
+        ReportKind::Private => {
+            let aggregate = aggregate_loaded(&loaded, false, true);
+            if aggregate.total == 0 {
+                bail!("no private conversation messages found in JSON");
+            }
+            let html = render_private(&aggregate);
+            let path = output_dir.join("private-report.html");
+            fs::write(&path, html).with_context(|| format!("failed to write {}", path.display()))?;
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"private","report":path}))?);
+        }
+        ReportKind::Group => {
+            let item = select_loaded(&loaded, options.conversation_ids.first(), true)?;
+            if !item.conversation.is_group {
+                bail!("group report requires a group conversation");
+            }
+            let empty = HashMap::new();
+            let (html, _) = group_report(&item.conversation, &item.messages, None, &[], &empty)?;
+            let path = output_dir.join("group-report.html");
+            fs::write(&path, html).with_context(|| format!("failed to write {}", path.display()))?;
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"group","report":path,"conversation_id":item.conversation.id}))?);
+        }
+        ReportKind::Annual => {
+            let aggregate = aggregate_loaded(&loaded, true, false);
+            if aggregate.total == 0 {
+                bail!("no messages found in JSON");
+            }
+            let html = render_annual(options.report_year, &aggregate);
+            let path = output_dir.join("annual-report.html");
+            fs::write(&path, html).with_context(|| format!("failed to write {}", path.display()))?;
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"annual","year":options.report_year,"report":path}))?);
+        }
+        ReportKind::Dual => {
+            let item = select_loaded(&loaded, options.conversation_ids.first(), false)?;
+            if item.conversation.is_group {
+                bail!("dual report requires a private conversation");
+            }
+            let self_name = item
+                .messages
+                .iter()
+                .find(|message| message.is_send)
+                .map(|message| message.sender_name.clone())
+                .unwrap_or_default();
+            let context = ExportContext {
+                conversation: &item.conversation,
+                messages: &item.messages,
+                self_username: None,
+                self_name,
+                exported_at_ms: item.exported_at_ms,
+                include_media: false,
+                avatar_path: None,
+            };
+            let path = output_dir.join("dual-report.html");
+            export::write_analytics_report(&context, &path)?;
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"dual","report":path,"conversation_id":item.conversation.id}))?);
+        }
+    }
     Ok(())
 }
