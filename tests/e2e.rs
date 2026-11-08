@@ -219,9 +219,11 @@ fn exports_visual_report() {
     assert!(report.exists(), "missing report html");
     let html = fs::read_to_string(&report).unwrap();
     assert!(html.contains("聊天分析报告"));
-    assert!(html.contains("24 小时活跃度"));
-    assert!(html.contains("每日消息趋势"));
-    assert!(html.contains("发送者排行"));
+    assert!(html.contains("消息趋势"));
+    assert!(html.contains("我通常在几点发消息"));
+    assert!(html.contains("消息类型占比"));
+    assert!(html.contains("最活跃的日子"));
+    assert!(html.contains("我们的高频词"));
     let exported: Value =
         serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
     assert_eq!(exported["conversations"][0]["documents"]["report"], "conversation.report.html");
