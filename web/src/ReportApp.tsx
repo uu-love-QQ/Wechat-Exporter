@@ -398,8 +398,10 @@ function WordCloud({ words }: { words: Array<{ word: string; count: number }> })
 function KpiCard({ kpi }: { kpi: ReportKpi }) {
   return (
     <Card size="sm">
-      <CardContent className="flex flex-col gap-0.5 px-4">
-        <span className="text-xs text-muted-foreground">{kpi.label}</span>
+      <CardHeader>
+        <CardDescription>{kpi.label}</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-0.5">
         <span className="text-2xl font-semibold tracking-tight tabular-nums">{kpi.value}</span>
         <span className="truncate text-xs text-muted-foreground">{kpi.note}</span>
       </CardContent>
