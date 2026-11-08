@@ -604,6 +604,8 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
                     "path": path,
                     "kind": media.kind.as_str(),
                     "name": media.file_name,
+                    "width": media.width,
+                    "height": media.height,
                 })
             })
         });

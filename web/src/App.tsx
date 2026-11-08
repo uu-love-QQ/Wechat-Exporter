@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Empty,
+  EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
@@ -89,6 +90,19 @@ function initialTheme(): boolean {
   return document.documentElement.classList.contains('dark')
 }
 
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  )
+  useEffect(() => {
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const onChange = () => setReduced(query.matches)
+    query.addEventListener('change', onChange)
+    return () => query.removeEventListener('change', onChange)
+  }, [])
+  return reduced
+}
+
 function MediaBlock({ media, mine }: { media: ChatMedia; mine: boolean }) {
   const href = media.path
   if (media.kind === 'image' || media.kind === 'emoji') {
@@ -98,7 +112,9 @@ function MediaBlock({ media, mine }: { media: ChatMedia; mine: boolean }) {
           src={href}
           alt={media.name || KIND_LABEL[media.kind]}
           loading="lazy"
-          className="max-h-[420px] max-w-full rounded-xl border object-contain"
+          width={media.width ?? undefined}
+          height={media.height ?? undefined}
+          className="h-auto max-h-[420px] w-auto max-w-full rounded-xl border object-contain"
         />
       </a>
     )
@@ -121,7 +137,7 @@ function MediaBlock({ media, mine }: { media: ChatMedia; mine: boolean }) {
           : 'border-border bg-muted/50 text-foreground hover:border-primary',
       )}
     >
-      <FileText className="size-4 shrink-0" />
+      <FileText className="size-4 shrink-0" aria-hidden="true" />
       <span className="break-all">{media.name || '附件'}</span>
     </a>
   )
@@ -143,15 +159,32 @@ function MissingMediaAlert({ missing }: { missing: MissingMedia }) {
 function MessageRow({
   message,
   flash,
+  showAvatar,
   onJump,
 }: {
   message: ChatMessage
   flash: boolean
+  showAvatar: boolean
   onJump: (index: number) => void
 }) {
   const mine = message.mine
   return (
-    <div id={`msg-${message.index}`} className={cn('flex scroll-mt-24', mine ? 'justify-end' : 'justify-start')}>
+    <div
+      id={`msg-${message.index}`}
+      tabIndex={-1}
+      className={cn(
+        'message-row flex scroll-mt-36 items-end gap-2 rounded-2xl focus:outline-2 focus:outline-offset-4 focus:outline-ring sm:scroll-mt-24',
+        mine ? 'justify-end' : 'justify-start',
+      )}
+    >
+      {!mine &&
+        (showAvatar ? (
+          <Avatar size="sm" className="mb-1" aria-hidden="true">
+            <AvatarFallback>{(message.sender || '?').slice(0, 1)}</AvatarFallback>
+          </Avatar>
+        ) : (
+          <div className="size-6 shrink-0" aria-hidden="true" />
+        ))}
       <div
         className={cn(
           'max-w-[78%] rounded-2xl border px-4 py-3 shadow-sm transition-shadow',
@@ -227,7 +260,7 @@ function MessageRow({
         )}
 
         {message.content && (
-          <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{message.content}</div>
+          <div className="whitespace-pre-wrap break-words text-base leading-relaxed">{message.content}</div>
         )}
 
         {message.media && <MediaBlock media={message.media} mine={mine} />}
@@ -243,6 +276,7 @@ function App() {
   const [flash, setFlash] = useState<number | null>(null)
   const [showBottom, setShowBottom] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const reducedMotion = usePrefersReducedMotion()
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -302,7 +336,8 @@ function App() {
     const run = () => {
       const target = document.getElementById(`msg-${index}`)
       if (!target) return
-      target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      target.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' })
+      target.focus({ preventScroll: true })
       setFlash(index)
       window.setTimeout(() => setFlash((current) => (current === index ? null : current)), 1400)
     }
@@ -319,33 +354,44 @@ function App() {
   return (
     <TooltipProvider>
       <div className="min-h-dvh bg-background text-foreground">
+        <a
+          href="#messages"
+          className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-primary-foreground"
+        >
+          跳到消息内容
+        </a>
         <header className="sticky top-0 z-20 border-b bg-background/85 backdrop-blur">
           <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3 px-4 py-3">
-            <Avatar size="lg">
+            <Avatar size="lg" aria-hidden="true">
               <AvatarFallback>{initial}</AvatarFallback>
             </Avatar>
             <div className="min-w-0 flex-1">
               <h1 className="truncate text-base font-semibold">{DATA.title}</h1>
               <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <Badge variant="secondary">{DATA.kind}</Badge>
-                <span>{query ? `${filtered.length} / ${DATA.messages.length} 条消息` : `共 ${DATA.messages.length} 条消息`}</span>
+                <span aria-live="polite" aria-atomic="true">
+                  {query ? `${filtered.length} / ${DATA.messages.length} 条消息` : `共 ${DATA.messages.length} 条消息`}
+                </span>
                 <span className="hidden font-mono sm:inline">{DATA.id}</span>
                 <span>导出于 {DATA.exportedAt}</span>
               </div>
             </div>
             <div className="ml-auto flex w-full items-center gap-2 sm:w-auto">
-              <InputGroup className="max-w-none flex-1 sm:w-64 sm:flex-none">
-                <InputGroupAddon>
-                  <Search />
-                </InputGroupAddon>
-                <InputGroupInput
-                  ref={inputRef}
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="搜索消息…（/ 聚焦）"
-                  aria-label="搜索消息"
-                />
-              </InputGroup>
+              <div role="search" className="min-w-0 flex-1 sm:w-64 sm:flex-none">
+                <InputGroup className="h-12 max-w-none sm:h-9">
+                  <InputGroupAddon>
+                    <Search aria-hidden="true" />
+                  </InputGroupAddon>
+                  <InputGroupInput
+                    ref={inputRef}
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="搜索消息…（/ 聚焦）"
+                    aria-label="搜索消息"
+                    className="h-full"
+                  />
+                </InputGroup>
+              </div>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -353,8 +399,9 @@ function App() {
                     size="icon"
                     onClick={() => setDark((value) => !value)}
                     aria-label="切换主题"
+                    style={{ minWidth: 44, minHeight: 44 }}
                   >
-                    {dark ? <Sun /> : <Moon />}
+                    {dark ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>切换主题</TooltipContent>
@@ -363,7 +410,7 @@ function App() {
           </div>
         </header>
 
-        <main className="mx-auto max-w-4xl px-4 py-6 pb-24">
+        <main id="messages" tabIndex={-1} className="mx-auto max-w-4xl scroll-mt-36 px-4 py-6 pb-24 outline-none sm:scroll-mt-20">
           <div className="mb-4 flex items-center justify-between text-xs text-muted-foreground">
             <span>{query ? `筛选出 ${filtered.length} 条` : '点击引用可跳转原消息'}</span>
             <span>/ 聚焦搜索 · Esc 清空</span>
@@ -372,17 +419,31 @@ function App() {
           {filtered.length === 0 ? (
             <Empty className="mt-10 border">
               <EmptyMedia variant="icon">
-                <SearchX />
+                <SearchX aria-hidden="true" />
               </EmptyMedia>
               <EmptyHeader>
                 <EmptyTitle>没有匹配的消息</EmptyTitle>
                 <EmptyDescription>试试其他关键词，或按 Esc 清空筛选。</EmptyDescription>
               </EmptyHeader>
+              <EmptyContent>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setQuery('')
+                    inputRef.current?.focus()
+                  }}
+                >
+                  清空搜索
+                </Button>
+              </EmptyContent>
             </Empty>
           ) : (
             <div className="flex flex-col gap-3">
               {filtered.map((message, position) => {
-                const showDay = position === 0 || filtered[position - 1].day !== message.day
+                const previous = position > 0 ? filtered[position - 1] : null
+                const showDay = !previous || previous.day !== message.day
+                const showAvatar = !message.mine && (!previous || previous.sender !== message.sender)
                 return (
                   <div key={message.index} className="contents">
                     {showDay && (
@@ -392,7 +453,12 @@ function App() {
                         <Separator className="flex-1" />
                       </div>
                     )}
-                    <MessageRow message={message} flash={flash === message.index} onJump={jumpTo} />
+                    <MessageRow
+                      message={message}
+                      flash={flash === message.index}
+                      showAvatar={showAvatar}
+                      onJump={jumpTo}
+                    />
                   </div>
                 )
               })}
@@ -404,11 +470,13 @@ function App() {
           <Button
             variant="outline"
             size="icon"
-            onClick={() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })}
+            onClick={() =>
+              window.scrollTo({ top: document.body.scrollHeight, behavior: reducedMotion ? 'auto' : 'smooth' })
+            }
             className="fixed right-5 bottom-5 z-20 rounded-full shadow-md"
             aria-label="回到最新"
           >
-            <ArrowDown />
+            <ArrowDown aria-hidden="true" />
           </Button>
         )}
       </div>

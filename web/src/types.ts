@@ -10,6 +10,8 @@ export interface ChatMedia {
   path: string
   kind: MediaKind
   name: string
+  width?: number | null
+  height?: number | null
 }
 
 export interface MissingMedia {
