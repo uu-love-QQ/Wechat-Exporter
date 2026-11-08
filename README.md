@@ -128,7 +128,7 @@ npm run export:template   # 构建并复制到 src/export/chat_template.html
 HTML 导出是自包含的响应式聊天界面：吸顶标题栏、即时搜索（`/` 聚焦、`Esc` 清空）、
 亮/暗主题切换、按日期分组、左右消息气泡、图片/音频/视频内嵌、缺失附件提示与“回到最新”按钮。
 配色使用 Messenger 蓝 + 柔和蓝灰表面，亮/暗两套 token 配对；左上角会话头像优先读取联系人
-`head_img_url` 并缓存到 `media/avatar/`，失败则回退首字母色块；语音消息按 XML
+联系人头像 URL（`small_head_url` / `head_img_url` 等）并缓存到 `media/avatar/`，失败则回退首字母色块；语音消息按 XML
 `voicelength` 显示时长（如 `0.5 秒`、`2 分 05 秒`）。
 
 每条消息写入稳定锚点 `id="msg-N"`。引用消息（type 57）解析 `<refermsg><svrid>`：

@@ -506,7 +506,7 @@ fn run_export(
                         None
                     } else {
                         download_avatar(url, &conversation_dir).map(|path| {
-                            path.strip_prefix(&output_dir)
+                            path.strip_prefix(&conversation_dir)
                                 .unwrap_or(path.as_path())
                                 .to_string_lossy()
                                 .replace('\\', "/")

@@ -69,10 +69,14 @@ pub fn load_contacts(
             "''"
         };
         let avatar_expr = [
+            "small_head_url",
+            "smallheadurl",
             "small_head_img_url",
             "smallheadimgurl",
             "head_img_url",
             "headimgurl",
+            "big_head_url",
+            "bigheadurl",
             "big_head_img_url",
             "bigheadimgurl",
             "avatar_url",
@@ -144,7 +148,7 @@ mod tests {
         let path = dir.path().join("contact.db");
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(
-            "CREATE TABLE contact (username TEXT, nick_name TEXT, remark TEXT, alias TEXT, local_type INTEGER, delete_flag INTEGER, small_head_img_url TEXT);
+            "CREATE TABLE contact (username TEXT, nick_name TEXT, remark TEXT, alias TEXT, local_type INTEGER, delete_flag INTEGER, small_head_url TEXT);
              INSERT INTO contact VALUES ('wxid_a', 'Alice', '', '', 1, 0, 'http://example.test/a.jpg');",
         )
         .unwrap();
