@@ -96,12 +96,25 @@ impl MediaKind {
     }
 }
 
+/// A quoted message embedded in a reply (`<refermsg>`).
+#[derive(Clone, Debug, Default)]
+pub struct QuoteRef {
+    pub server_id: Option<i64>,
+    pub sender: String,
+    pub content: String,
+    pub create_time: Option<i64>,
+    pub quoted_type: Option<i64>,
+    /// The reply body typed by the sender.
+    pub reply: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct ParsedContent {
     pub text: String,
     pub type_name: String,
     pub app_subtype: Option<i64>,
     pub media: Option<MediaRef>,
+    pub quote: Option<QuoteRef>,
 }
 
 #[derive(Clone, Debug)]
@@ -139,6 +152,7 @@ pub struct ExportMessage {
     pub app_subtype: Option<i64>,
     pub media: Option<MediaRef>,
     pub media_path: Option<String>,
+    pub quote: Option<QuoteRef>,
 }
 
 impl ExportMessage {

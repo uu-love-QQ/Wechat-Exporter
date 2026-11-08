@@ -564,6 +564,7 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
     out.push_str(
         "<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f5f6f8;color:#222}.page{max-width:900px;margin:0 auto;padding:24px}.header{background:#fff;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 3px #0001}.title{margin:0 0 8px;font-size:22px}.meta{color:#666;font-size:13px;display:flex;gap:16px;flex-wrap:wrap}.controls{margin-top:12px;display:flex;gap:8px}.controls input{flex:1;padding:8px 10px;border:1px solid #ddd;border-radius:8px}.message{background:#fff;border-radius:10px;padding:12px 16px;margin-bottom:10px;box-shadow:0 1px 2px #0001}.message .head{display:flex;justify-content:space-between;color:#666;font-size:12px;margin-bottom:6px}.message .sender{font-weight:600;color:#333}.message .content{white-space:pre-wrap;word-break:break-word;line-height:1.55}.message.me{border-left:4px solid #2f80ed}.message img{max-width:320px;border-radius:6px;display:block;margin-top:8px}a{color:#2f80ed}</style>\n",
     );
+    out.push_str("<style>.quote{margin:0 0 8px;padding:8px 10px;border-left:3px solid #c8d0da;background:#f7f8fa;border-radius:6px;font-size:13px;color:#555}.quote.quote-missing{border-left-color:#e0b4b4;background:#fdf6f6}.quote-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:#777;margin-bottom:2px}.quote-sender{font-weight:600;color:#444}.quote-text{white-space:pre-wrap}.quote a{color:#2a6fd6;text-decoration:none}.quote a:hover{text-decoration:underline}.quote-note{color:#b05050;font-size:12px}.message{scroll-margin-top:12px}</style>\n");
     out.push_str("</head>\n<body>\n<div class=\"page\">\n<div class=\"header\">\n");
     out.push_str(&format!(
         "<h1 class=\"title\">{}</h1>\n",
@@ -577,14 +578,73 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
         crate::util::escape_html(&format_timestamp(context.exported_at_sec()))
     ));
     out.push_str("<div class=\"controls\"><input id=\"searchInput\" type=\"search\" placeholder=\"搜索消息...\" /></div>\n</div>\n<div id=\"messages\">\n");
+    let mut by_server: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut by_local: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for previous in context.messages {
+        by_local.entry(previous.local_id.to_string()).or_insert(previous.index);
+        if previous.server_id > 0 {
+            by_server.entry(previous.server_id.to_string()).or_insert(previous.index);
+        }
+    }
     for message in context.messages {
         out.push_str(&format!(
-            "<div class=\"message{}\" data-text=\"{}\">\n<div class=\"head\"><span class=\"sender\">{}</span><span class=\"time\">{}</span></div>\n<div class=\"content\">{}</div>\n",
+            "<div class=\"message{}\" id=\"msg-{}\" data-text=\"{}\">\n<div class=\"head\"><span class=\"sender\">{}</span><span class=\"time\">{}</span></div>\n",
             if message.is_send { " me" } else { "" },
+            message.index,
             crate::util::escape_html(&message.sender_name),
             crate::util::escape_html(&message.sender_name),
             crate::util::escape_html(&format_timestamp(message.create_time)),
-            crate::util::escape_html(&message.content),
+        ));
+        let mut body = message.content.as_str();
+        if let Some(quote) = &message.quote {
+            let quoted_label = match quote.quoted_type {
+                Some(3) => "[图片]",
+                Some(34) => "[语音]",
+                Some(43) => "[视频]",
+                Some(47) => "[表情]",
+                Some(49) => "[文件]",
+                _ => "[消息]",
+            };
+            let quoted_text = if quote.content.is_empty() {
+                quoted_label.to_string()
+            } else {
+                quote.content.clone()
+            };
+            let sender = if quote.sender.is_empty() {
+                "未知".to_string()
+            } else {
+                quote.sender.clone()
+            };
+            let target = quote.server_id.and_then(|id| {
+                let key = id.to_string();
+                by_server
+                    .get(&key)
+                    .or_else(|| by_local.get(&key))
+                    .copied()
+            });
+            match target {
+                Some(index) => {
+                    out.push_str(&format!(
+                        "<blockquote class=\"quote\"><div class=\"quote-head\"><span class=\"quote-sender\">{}</span><a href=\"#msg-{}\">查看原消息</a></div><div class=\"quote-text\"><a href=\"#msg-{}\">{}</a></div></blockquote>\n",
+                        crate::util::escape_html(&sender),
+                        index,
+                        index,
+                        crate::util::escape_html(&quoted_text),
+                    ));
+                }
+                None => {
+                    out.push_str(&format!(
+                        "<blockquote class=\"quote quote-missing\"><div class=\"quote-head\"><span class=\"quote-sender\">{}</span><span class=\"quote-note\">原消息未找到（可能已删除或不在导出范围内）</span></div><div class=\"quote-text\">{}</div></blockquote>\n",
+                        crate::util::escape_html(&sender),
+                        crate::util::escape_html(&quoted_text),
+                    ));
+                }
+            }
+            body = quote.reply.as_str();
+        }
+        out.push_str(&format!(
+            "<div class=\"content\">{}</div>\n",
+            crate::util::escape_html(body)
         ));
         if let Some(media_path) = &message.media_path {
             let escaped = crate::util::escape_html(media_path);

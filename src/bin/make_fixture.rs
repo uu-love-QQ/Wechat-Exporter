@@ -268,7 +268,7 @@ fn build(out: &Path) -> Result<()> {
             0,
             None,
         )?;
-        let quote_xml = "<msg><appmsg><title>reply body</title><type>57</type><refermsg><displayname>Alice</displayname><content>original text</content></refermsg></appmsg></msg>";
+        let quote_xml = "<msg><appmsg><title>reply body</title><type>57</type><refermsg><type>1</type><svrid>9003</svrid><displayname>Alice</displayname><content>original text</content><createtime>1703001620</createtime></refermsg></appmsg></msg>";
         insert_message(
             &conn,
             &group_table,
@@ -319,6 +319,20 @@ fn build(out: &Path) -> Result<()> {
             3,
             1703001680,
             file_xml.as_bytes(),
+            0,
+            None,
+        )?;
+        let missing_quote_xml = "<msg><appmsg><title>reply to gone</title><type>57</type><refermsg><type>1</type><svrid>123456789012345678</svrid><displayname>Ghost</displayname><content>vanished text</content><createtime>1703000000</createtime></refermsg></appmsg></msg>";
+        insert_message(
+            &conn,
+            &group_table,
+            10,
+            9010,
+            49,
+            10,
+            2,
+            1703001690,
+            missing_quote_xml.as_bytes(),
             0,
             None,
         )?;

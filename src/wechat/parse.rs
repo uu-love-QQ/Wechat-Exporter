@@ -391,6 +391,46 @@ pub fn parse_message_source(raw: &str) -> MessageSource {
     MessageSource { notes }
 }
 
+fn tag_block<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{name}");
+    let close = format!("</{name}>");
+    let start = xml.find(&open)?;
+    let end = xml[start..].find(&close)? + start + close.len();
+    Some(&xml[start..end])
+}
+
+/// Parse the structured quote block so the HTML exporter can link back to the
+/// original message and detect when it is outside the exported set.
+fn quote_ref(xml: &str) -> Option<crate::wechat::model::QuoteRef> {
+    let block = tag_block(xml, "refermsg")?;
+    let number = |tag: &str| {
+        xml_value(block, tag)
+            .and_then(|value| value.trim().parse::<i64>().ok())
+    };
+    let text = |tag: &str| xml_value(block, tag).unwrap_or_default().trim().to_string();
+    let content = strip_tags(&text("content")).trim().to_string();
+    let sender = text("displayname");
+    let reply = xml_value(xml, "title").unwrap_or_default().trim().to_string();
+    let quote = crate::wechat::model::QuoteRef {
+        server_id: number("svrid"),
+        sender,
+        content,
+        create_time: number("createtime"),
+        quoted_type: number("type"),
+        reply,
+    };
+    if quote.server_id.is_none()
+        && quote.sender.is_empty()
+        && quote.content.is_empty()
+        && quote.reply.is_empty()
+        && quote.create_time.is_none()
+    {
+        None
+    } else {
+        Some(quote)
+    }
+}
+
 fn quote_text(xml: &str) -> Option<String> {
     let quoted_sender = xml_value(xml, "displayname").unwrap_or_default();
     let quoted = xml_value(xml, "content").unwrap_or_default();
@@ -441,6 +481,7 @@ pub fn parse_content(
             type_name: "其他消息".to_string(),
             app_subtype: Some(62),
             media: None,
+            quote: None,
         };
     }
 
@@ -654,6 +695,7 @@ pub fn parse_content(
         type_name,
         app_subtype,
         media,
+        quote: quote_ref(&xml),
     }
 }
 
@@ -715,6 +757,19 @@ mod tests {
 
         let attachment = r#"<msg><appmsg><appattach><cdnattachurl>3057aa</cdnattachurl></appattach></appmsg></msg>"#;
         assert_eq!(extract_cdn_url(attachment), None);
+    }
+
+    #[test]
+    fn parses_structured_quote_metadata() {
+        let xml = "<msg><appmsg><title>reply</title><type>57</type><refermsg><type>1</type><svrid>9003</svrid><displayname>Alice</displayname><content>original text</content><createtime>1703001620</createtime></refermsg></appmsg></msg>";
+        let parsed = parse_content(xml, 49, 57, 244813135921);
+        let quote = parsed.quote.expect("quote metadata");
+        assert_eq!(quote.server_id, Some(9003));
+        assert_eq!(quote.sender, "Alice");
+        assert_eq!(quote.content, "original text");
+        assert_eq!(quote.create_time, Some(1703001620));
+        assert_eq!(quote.quoted_type, Some(1));
+        assert_eq!(quote.reply, "reply");
     }
 
     #[test]

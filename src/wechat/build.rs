@@ -139,5 +139,6 @@ pub fn export_message(
         app_subtype: parsed.app_subtype,
         media,
         media_path: None,
+        quote: parsed.quote,
     }
 }

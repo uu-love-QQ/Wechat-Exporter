@@ -92,7 +92,7 @@ fn exports_all_formats_and_media() {
     let json: Value =
         serde_json::from_slice(&fs::read(output.join("conversation.json")).unwrap()).unwrap();
     let messages = json["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 9);
+    assert_eq!(messages.len(), 10);
     assert!(messages.iter().any(|message| message["content"] == "hello group"));
     assert!(messages
         .iter()
@@ -129,10 +129,14 @@ fn exports_all_formats_and_media() {
     assert!(markdown.contains("文件: report.html (未索引，空缺)"), "{markdown}");
     let html = fs::read_to_string(output.join("conversation.html")).unwrap();
     assert!(html.contains("media-missing"), "{html}");
+    assert!(html.contains("href=\"#msg-"), "quote jump link missing");
+    assert!(html.contains("quote-missing"), "missing-quote fallback missing");
+    assert!(html.contains("原消息未找到"), "missing-quote note missing");
+    assert!(html.contains("id=\"msg-"), "message anchors missing");
     assert!(messages.iter().all(|message| message.get("source").is_none()));
     let report: Value =
         serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
-    assert_eq!(report["conversations"][0]["message_count"], 9);
+    assert_eq!(report["conversations"][0]["message_count"], 10);
     assert!(report["conversations"][0]["media"]["saved"].as_u64().unwrap() >= 1);
 }
 
@@ -192,7 +196,7 @@ fn exported_chatlab_matches_spec_shape() {
     assert_eq!(value["meta"]["platform"], "wechat");
     assert_eq!(value["meta"]["type"], "group");
     assert!(!value["members"].as_array().unwrap().is_empty());
-    assert_eq!(value["messages"].as_array().unwrap().len(), 9);
+    assert_eq!(value["messages"].as_array().unwrap().len(), 10);
     let lines = fs::read_to_string(output.join("conversation.chatlab.jsonl")).unwrap();
     let lines: Vec<&str> = lines.lines().collect();
     assert!(lines[0].contains("\"_type\":\"header\""));

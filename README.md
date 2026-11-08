@@ -114,6 +114,14 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
   --output-dir "C:\Users\14744\Downloads\uuMovies\test"
 ```
 
+### HTML 引用消息跳转
+
+HTML 导出会为每条消息写入稳定锚点 `id="msg-N"`。引用消息（type 57）解析
+`<refermsg><svrid>`，在导出集合内找到原消息时渲染可点击的 `#msg-N` 链接；
+找不到（已删除、超出时间范围或分片缺失）时显示
+「原消息未找到（可能已删除或不在导出范围内）」，不会留下悬空链接。
+引用块同时显示原发送者与原消息摘要，回复正文独立渲染。
+
 ## 私有文件（novac2c）
 
 微信 4.x 的私有文件（PDF/ZIP/APK 等）只给出 `cdnattachurl` + `aeskey`。该 CDN 端点需要
