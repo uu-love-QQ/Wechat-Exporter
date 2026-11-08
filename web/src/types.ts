@@ -36,6 +36,7 @@ export interface ChatMessage {
 export interface ChatData {
   title: string
   kind: string
+  isGroup: boolean
   id: string
   exportedAt: string
   avatar?: string | null

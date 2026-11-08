@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDown,
   FileText,
-  Mic,
   Moon,
+  Pause,
+  Play,
   Search,
   SearchX,
   Sun,
@@ -43,6 +44,7 @@ const KIND_LABEL: Record<MediaKind, string> = {
 const DEV_DATA: ChatData = {
   title: '测试群',
   kind: '群聊',
+  isGroup: true,
   id: '123456789@chatroom',
   exportedAt: '2023-12-20 00:00:00',
   messages: [
@@ -107,6 +109,120 @@ function formatDuration(milliseconds: number): string {
   return `${Number.isInteger(seconds) ? seconds.toFixed(0) : seconds} 秒`
 }
 
+function VoicePlayer({
+  src,
+  durationMs,
+  mine,
+  seed,
+}: {
+  src: string
+  durationMs?: number | null
+  mine: boolean
+  seed: number
+}) {
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const [playing, setPlaying] = useState(false)
+  const [current, setCurrent] = useState(0)
+  const [loaded, setLoaded] = useState(0)
+
+  const total = loaded > 0 ? loaded : (durationMs ?? 0) / 1000
+  const progress = total > 0 ? Math.min(1, current / total) : 0
+  const bars = Array.from({ length: 22 }, (_, index) => 28 + ((index * 37 + seed * 17) % 62))
+
+  const toggle = () => {
+    const audio = audioRef.current
+    if (!audio) return
+    if (audio.paused) {
+      void audio.play().catch(() => setPlaying(false))
+    } else {
+      audio.pause()
+    }
+  }
+
+  const seek = (event: React.MouseEvent<HTMLButtonElement>) => {
+    const audio = audioRef.current
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (!audio || rect.width <= 0 || total <= 0) return
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+    audio.currentTime = ratio * total
+    setCurrent(ratio * total)
+  }
+
+  return (
+    <div
+      className={cn(
+        'mt-3 flex items-center gap-2.5 rounded-full border px-2 py-1.5',
+        mine ? 'mine-border mine-surface' : 'border-border bg-muted/60',
+      )}
+    >
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label={playing ? '暂停语音' : '播放语音'}
+        className={cn(
+          'grid size-9 shrink-0 place-items-center rounded-full transition-transform active:scale-95',
+          mine
+            ? 'bg-[var(--me-fg)] text-[var(--me-bg)]'
+            : 'bg-primary text-primary-foreground',
+        )}
+      >
+        {playing ? <Pause className="size-4" aria-hidden="true" /> : <Play className="size-4 translate-x-px" aria-hidden="true" />}
+      </button>
+      <button
+        type="button"
+        onClick={seek}
+        aria-label="跳转语音播放位置"
+        className="flex h-7 min-w-0 flex-1 items-center gap-[2px]"
+      >
+        {bars.map((height, index) => {
+          const active = (index + 0.5) / bars.length <= progress
+          return (
+            <span
+              key={index}
+              style={{ height: `${height}%` }}
+              className={cn(
+                'min-w-0 flex-1 rounded-full',
+                mine
+                  ? active
+                    ? 'bg-[var(--me-fg)]'
+                    : 'bg-[var(--me-fg)]/35'
+                  : active
+                    ? 'bg-primary'
+                    : 'bg-primary/25',
+              )}
+            />
+          )
+        })}
+      </button>
+      <span
+        className={cn(
+          'shrink-0 pr-1 text-xs tabular-nums',
+          mine ? 'mine-muted' : 'text-muted-foreground',
+        )}
+      >
+        {total > 0 ? formatDuration(total * 1000) : '语音'}
+      </span>
+      <audio
+        ref={audioRef}
+        src={src}
+        preload="metadata"
+        className="hidden"
+        onLoadedMetadata={(event) => {
+          const value = event.currentTarget.duration
+          if (Number.isFinite(value) && value > 0) setLoaded(value)
+        }}
+        onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => {
+          setPlaying(false)
+          setCurrent(0)
+        }}
+      />
+    </div>
+  )
+}
+
 function initialTheme(): boolean {
   if (typeof document === 'undefined') return false
   return document.documentElement.classList.contains('dark')
@@ -125,7 +241,7 @@ function usePrefersReducedMotion(): boolean {
   return reduced
 }
 
-function MediaBlock({ media, mine }: { media: ChatMedia; mine: boolean }) {
+function MediaBlock({ media, mine, seed }: { media: ChatMedia; mine: boolean; seed: number }) {
   const href = media.path
   if (media.kind === 'image' || media.kind === 'emoji') {
     return (
@@ -145,18 +261,7 @@ function MediaBlock({ media, mine }: { media: ChatMedia; mine: boolean }) {
     return <video src={href} controls preload="metadata" className="mt-3 w-full max-w-md rounded-xl" />
   }
   if (media.kind === 'voice') {
-    return (
-      <div className="mt-3">
-        <div className={cn('flex items-center gap-1.5 text-xs', mine ? 'mine-muted' : 'text-muted-foreground')}>
-          <Mic className="size-4" aria-hidden="true" />
-          <span>
-            语音消息
-            {media.durationMs ? ` · ${formatDuration(media.durationMs)}` : ''}
-          </span>
-        </div>
-        <audio src={href} controls preload="metadata" className="mt-2 w-full max-w-sm" />
-      </div>
-    )
+    return <VoicePlayer src={href} durationMs={media.durationMs} mine={mine} seed={seed} />
   }
   return (
     <a
@@ -207,8 +312,9 @@ function MessageRow({
       id={`msg-${message.index}`}
       tabIndex={-1}
       className={cn(
-        'message-row flex scroll-mt-36 items-end gap-2 rounded-2xl focus:outline-2 focus:outline-offset-4 focus:outline-ring sm:scroll-mt-24',
+        'message-row flex scroll-mt-36 items-end gap-2 rounded-2xl outline-none sm:scroll-mt-24',
         mine ? 'justify-end' : 'justify-start',
+        flash && 'message-flash',
       )}
     >
       {!mine &&
@@ -223,11 +329,10 @@ function MessageRow({
         ))}
       <div
         className={cn(
-          'max-w-[78%] rounded-2xl border px-4 py-3 shadow-sm transition-shadow',
+          'bubble-card max-w-[78%] rounded-2xl border px-4 py-3 shadow-sm transition-shadow',
           mine
             ? 'border-[var(--me-border)] bg-[var(--me-bg)] text-[var(--me-fg)]'
             : 'border-border bg-card text-card-foreground',
-          flash && 'ring-2 ring-ring ring-offset-2 ring-offset-background',
         )}
       >
         <div
@@ -299,7 +404,7 @@ function MessageRow({
           <div className="whitespace-pre-wrap break-words text-base leading-relaxed">{message.content}</div>
         )}
 
-        {message.media && <MediaBlock media={message.media} mine={mine} />}
+        {message.media && <MediaBlock media={message.media} mine={mine} seed={message.index} />}
         {message.missing && <MissingMediaAlert missing={message.missing} />}
       </div>
     </div>
@@ -487,7 +592,7 @@ function App() {
               {filtered.map((message, position) => {
                 const previous = position > 0 ? filtered[position - 1] : null
                 const showDay = !previous || previous.day !== message.day
-                const showAvatar = !message.mine && (!previous || previous.sender !== message.sender)
+                const showAvatar = DATA.isGroup && !message.mine && (!previous || previous.sender !== message.sender)
                 return (
                   <div key={message.index} className="contents">
                     {showDay && (

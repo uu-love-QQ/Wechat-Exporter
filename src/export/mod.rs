@@ -638,6 +638,7 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
     let payload = serde_json::json!({
         "title": context.display_name(),
         "kind": if context.group() { "群聊" } else { "私聊" },
+        "isGroup": context.group(),
         "id": context.conversation.id,
         "exportedAt": format_timestamp(context.exported_at_sec()),
         "avatar": context.avatar_path,

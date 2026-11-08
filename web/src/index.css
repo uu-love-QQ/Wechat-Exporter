@@ -210,3 +210,7 @@
     background-color: color-mix(in oklab, var(--me-fg) 14%, transparent);
   }
 }
+
+.message-flash .bubble-card {
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 14%, transparent);
+}
