@@ -285,13 +285,20 @@ wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json 
 ## 六、HTML 界面与引用跳转
 
 HTML 导出由 `web/` 前端模板生成（Vite + React 19 + Tailwind v4 + shadcn/ui），
-构建为单文件 HTML 后由 Rust 注入会话 JSON。修改 UI 后重新生成模板：
+构建为单文件 HTML 后由 Rust 注入 JSON。修改 UI 后重新生成模板：
 
 ```bash
 cd web
 npm install
-npm run export:template   # 构建并复制到 src/export/chat_template.html
+npm run export:template   # 构建聊天模板与 shadcn 报告模板
 ```
+
+- 聊天界面 → `src/export/chat_template.html`
+- 报告界面（React + shadcn/ui）→ `src/export/report_template.html`
+
+报告使用 shadcn 的 Card、Table、Tabs、Progress、Badge、Separator 组件，
+由 Rust 注入 `report-data` JSON；报告模板独立构建为单文件
+`dist-report/report.html`，不依赖外部脚本或 CDN。
 
 HTML 导出是自包含的响应式聊天界面：吸顶标题栏、即时搜索（`/` 聚焦、`Esc` 清空）、
 亮/暗主题切换、按日期分组、左右消息气泡、图片/音频/视频内嵌、缺失附件提示与“回到最新”按钮。

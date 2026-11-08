@@ -39,6 +39,14 @@ fn run_with_key(args: &[&str]) -> (i32, String, String) {
     )
 }
 
+fn embedded_report(html: &str) -> Value {
+    assert!(!html.contains("__REPORT_DATA__"), "report template placeholder left behind");
+    let marker = "id=\"report-data\" type=\"application/json\">";
+    let start = html.find(marker).expect("report data island") + marker.len();
+    let end = html[start..].find("</script>").expect("report data end") + start;
+    serde_json::from_str(&html[start..end]).expect("embedded report json")
+}
+
 #[test]
 fn lists_conversations() {
     let (_temp, source) = fixture();
@@ -222,14 +230,13 @@ fn exports_visual_report() {
     let report = output.join("conversation.report.html");
     assert!(report.exists(), "missing report html");
     let html = fs::read_to_string(&report).unwrap();
-    assert!(html.contains("聊天分析报告"));
-    assert!(html.contains("消息趋势"));
-    assert!(html.contains("我们的对话比例"));
-    assert!(html.contains("平均字数"));
-    assert!(html.contains("我通常在几点发消息"));
-    assert!(html.contains("消息类型占比"));
-    assert!(html.contains("最活跃的日子"));
-    assert!(html.contains("我们的高频词"));
+    let data = embedded_report(&html);
+    assert_eq!(data["kind"], "group");
+    assert!(data["kpis"].as_array().unwrap().len() >= 4);
+    assert_eq!(data["members"].as_array().unwrap().len(), 3);
+    assert!(!data["types"].as_array().unwrap().is_empty());
+    assert!(!data["trend"].as_array().unwrap().is_empty());
+    assert!(data["words"]["me"].as_array().unwrap().len() > 0);
     let exported: Value =
         serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
     assert_eq!(exported["conversations"][0]["documents"]["report"], "conversation.report.html");
@@ -239,10 +246,10 @@ fn exports_visual_report() {
 fn generates_four_report_types() {
     let (temp, source) = fixture();
     let cases = [
-        ("private", Vec::<&str>::new(), "private-report.html", "好友消息排行"),
-        ("group", vec!["--conversation-id", GROUP], "group-report.html", "群成员详细信息"),
-        ("annual", vec!["--year", "2023"], "annual-report.html", "2023 年度报告"),
-        ("dual", vec!["--conversation-id", ALICE], "dual-report.html", "我们的对话比例"),
+        ("private", Vec::<&str>::new(), "private-report.html", "friends"),
+        ("group", vec!["--conversation-id", GROUP], "group-report.html", "members"),
+        ("annual", vec!["--year", "2023"], "annual-report.html", "groups"),
+        ("dual", vec!["--conversation-id", ALICE], "dual-report.html", "ratio"),
     ];
     for (kind, extra, file, needle) in cases {
         let dir = temp.path().join(format!("report-{kind}"));
@@ -258,8 +265,13 @@ fn generates_four_report_types() {
         let (code, stdout, stderr) = run_with_key(&args);
         assert_eq!(code, 0, "{kind} stderr={stderr} stdout={stdout}");
         let html = fs::read_to_string(dir.join(file)).unwrap();
-        assert!(html.contains(needle), "{kind} missing {needle}");
-        assert!(!html.contains("{}"), "{kind} has template placeholder");
+        let data = embedded_report(&html);
+        assert_eq!(data["kind"], kind, "{kind} kind mismatch");
+        if needle == "ratio" {
+            assert!(data[needle].is_object(), "{kind} missing {needle}");
+        } else {
+            assert!(data[needle].is_array(), "{kind} missing {needle}");
+        }
     }
 }
 
@@ -280,10 +292,10 @@ fn reports_from_exported_json() {
     let reports = temp.path().join("json-reports");
     fs::create_dir_all(&reports).unwrap();
     let cases = [
-        ("private", None, "private-report.html", "好友消息排行"),
-        ("group", Some(GROUP), "group-report.html", "群成员详细信息"),
-        ("annual", None, "annual-report.html", "年度报告"),
-        ("dual", Some(ALICE), "dual-report.html", "我们的对话比例"),
+        ("private", None, "private-report.html", "friends"),
+        ("group", Some(GROUP), "group-report.html", "members"),
+        ("annual", None, "annual-report.html", "groups"),
+        ("dual", Some(ALICE), "dual-report.html", "ratio"),
     ];
     for (kind, conversation, file, needle) in cases {
         let dir = reports.join(kind);
@@ -301,7 +313,13 @@ fn reports_from_exported_json() {
         let (code, stdout, stderr) = run_with_key(&args);
         assert_eq!(code, 0, "{kind} stderr={stderr} stdout={stdout}");
         let html = fs::read_to_string(dir.join(file)).unwrap();
-        assert!(html.contains(needle), "{kind} missing {needle}");
+        let data = embedded_report(&html);
+        assert_eq!(data["kind"], kind, "{kind} kind mismatch");
+        if needle == "ratio" {
+            assert!(data[needle].is_object(), "{kind} missing {needle}");
+        } else {
+            assert!(data[needle].is_array(), "{kind} missing {needle}");
+        }
     }
 }
 

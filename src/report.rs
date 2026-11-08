@@ -105,9 +105,13 @@ struct Aggregate {
     sent: usize,
     received: usize,
     chars: usize,
+    chars_me: usize,
+    chars_other: usize,
     hours_me: [usize; 24],
     hours_other: [usize; 24],
     hours_all: [usize; 24],
+    weekdays_me: [usize; 7],
+    weekdays_other: [usize; 7],
     days: BTreeMap<String, (usize, usize)>,
     months: BTreeMap<String, (usize, usize)>,
     types: BTreeMap<String, usize>,
@@ -116,6 +120,9 @@ struct Aggregate {
     friends: BTreeMap<String, FriendAgg>,
     groups: BTreeMap<String, FriendAgg>,
     members: BTreeMap<String, MemberAgg>,
+    words_me: BTreeMap<String, usize>,
+    words_other: BTreeMap<String, usize>,
+    word_budget: usize,
     first: i64,
     last: i64,
 }
@@ -125,6 +132,7 @@ impl Aggregate {
         Self {
             first: i64::MAX,
             last: i64::MIN,
+            word_budget: 2_000_000,
             ..Self::default()
         }
     }
@@ -136,7 +144,21 @@ impl Aggregate {
         } else {
             self.received += 1;
         }
-        self.chars += message.content.chars().count();
+        let message_chars = message.content.chars().count();
+        self.chars += message_chars;
+        if message.is_send {
+            self.chars_me += message_chars;
+        } else {
+            self.chars_other += message_chars;
+        }
+        if message.media.is_none() && message.record.is_none() && self.word_budget > 0 {
+            if message.is_send {
+                export::collect_words(&message.content, &mut self.words_me);
+            } else {
+                export::collect_words(&message.content, &mut self.words_other);
+            }
+            self.word_budget = self.word_budget.saturating_sub(message_chars.min(3000));
+        }
         self.first = self.first.min(message.create_time);
         self.last = self.last.max(message.create_time);
         let type_name = if message.type_name.trim().is_empty() {
@@ -155,16 +177,19 @@ impl Aggregate {
             let day = date.format("%Y-%m-%d").to_string();
             let month = date.format("%Y-%m").to_string();
             let hour = date.hour() as usize;
+            let weekday = date.weekday().num_days_from_monday() as usize;
             let bucket = self.days.entry(day).or_insert((0, 0));
             let month_bucket = self.months.entry(month).or_insert((0, 0));
             if message.is_send {
                 bucket.0 += 1;
                 month_bucket.0 += 1;
                 self.hours_me[hour] += 1;
+                self.weekdays_me[weekday] += 1;
             } else {
                 bucket.1 += 1;
                 month_bucket.1 += 1;
                 self.hours_other[hour] += 1;
+                self.weekdays_other[weekday] += 1;
             }
             self.hours_all[hour] += 1;
         }
@@ -203,7 +228,7 @@ fn private_report(
     contacts: &HashMap<String, Contact>,
     conversations: &[Conversation],
     self_username: Option<&str>,
-) -> Result<(String, Aggregate)> {
+) -> Result<Aggregate> {
     let mut aggregate = Aggregate::new();
     for conversation in conversations.iter().filter(|item| is_private_conversation(item)) {
         let messages = load_messages(store, conversation, contacts, self_username, None, None)?;
@@ -233,7 +258,7 @@ fn private_report(
         bail!("no readable private conversation messages");
     }
     let _ = options;
-    Ok((render_private(&aggregate), aggregate))
+    Ok(aggregate)
 }
 
 fn group_report(
@@ -242,7 +267,7 @@ fn group_report(
     account_id: Option<&str>,
     member_ids: &[String],
     contacts: &HashMap<String, Contact>,
-) -> Result<(String, Aggregate)> {
+) -> Result<Aggregate> {
     let mut aggregate = Aggregate::new();
     for member_id in member_ids {
         let name = contacts
@@ -285,7 +310,8 @@ fn group_report(
         }
         entry.last = entry.last.max(message.create_time);
     }
-    Ok((render_group(conversation, &aggregate, account_id), aggregate))
+    let _ = (conversation, account_id);
+    Ok(aggregate)
 }
 
 fn annual_report(
@@ -294,7 +320,7 @@ fn annual_report(
     contacts: &HashMap<String, Contact>,
     conversations: &[Conversation],
     self_username: Option<&str>,
-) -> Result<(String, Aggregate)> {
+) -> Result<Aggregate> {
     let (start, end) = year_bounds(year);
     let mut aggregate = Aggregate::new();
     for conversation in conversations.iter().filter(|item| is_analyzable_conversation(item)) {
@@ -326,85 +352,7 @@ fn annual_report(
     if aggregate.total == 0 {
         bail!("no messages available for the selected year");
     }
-    Ok((render_annual(year, &aggregate), aggregate))
-}
-
-fn render_page(
-    title: &str,
-    eyebrow: &str,
-    hero_title: &str,
-    hero_sub: &str,
-    hero_range: &str,
-    hero_meta: &str,
-    metrics: &[(String, String, String)],
-    body: &str,
-) -> String {
-    use std::fmt::Write as _;
-    let mut html = String::with_capacity(24_000);
-    html.push_str("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>");
-    html.push_str(&export::escape_html(title));
-    html.push_str("</title><style>");
-    html.push_str(export::REPORT_CSS);
-    html.push_str("</style></head><body><main>");
-    write!(
-        &mut html,
-        "<header class=\"hero\"><div class=\"eyebrow\">{}</div><h1>{}</h1><div class=\"hero-sub\">{}</div><div class=\"hero-range\">{}</div><div class=\"hero-meta\">{}</div></header>",
-        export::escape_html(eyebrow),
-        export::escape_html(hero_title),
-        export::escape_html(hero_sub),
-        export::escape_html(hero_range),
-        export::escape_html(hero_meta)
-    ).ok();
-    html.push_str("<section class=\"kpis\" aria-label=\"核心指标\">");
-    for (label, value, note) in metrics {
-        write!(
-            &mut html,
-            "<div class=\"kpi\"><span>{}</span><strong>{}</strong><small>{}</small></div>",
-            export::escape_html(label),
-            export::escape_html(value),
-            export::escape_html(note)
-        ).ok();
-    }
-    html.push_str("</section>");
-    html.push_str(body);
-    write!(
-        &mut html,
-        "<footer>由 {} 生成 · 静态离线报告</footer></main></body></html>",
-        export::escape_html(GENERATOR)
-    ).ok();
-    html
-}
-
-fn section(title: &str, badge: &str, body: &str) -> String {
-    use std::fmt::Write as _;
-    let mut html = String::new();
-    write!(
-        &mut html,
-        "<section class=\"card\"><div class=\"section-head\"><h2>{}</h2><span class=\"badge\">{}</span></div>{}",
-        export::escape_html(title),
-        export::escape_html(badge),
-        body
-    ).ok();
-    html.push_str("</section>");
-    html
-}
-
-fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    use std::fmt::Write as _;
-    let mut html = String::from("<div class=\"table-wrap\"><table><thead><tr>");
-    for header in headers {
-        write!(&mut html, "<th>{}</th>", export::escape_html(header)).ok();
-    }
-    html.push_str("</tr></thead><tbody>");
-    for row in rows {
-        html.push_str("<tr>");
-        for value in row {
-            write!(&mut html, "<td>{}</td>", export::escape_html(value)).ok();
-        }
-        html.push_str("</tr>");
-    }
-    html.push_str("</tbody></table></div>");
-    html
+    Ok(aggregate)
 }
 
 fn kpis_for(aggregate: &Aggregate, kind: &str) -> Vec<(String, String, String)> {
@@ -435,352 +383,275 @@ fn kpis_for(aggregate: &Aggregate, kind: &str) -> Vec<(String, String, String)> 
     metrics
 }
 
-fn type_rows(types: &BTreeMap<String, usize>, total: usize) -> String {
-    use std::fmt::Write as _;
-    let mut rows: Vec<(&String, &usize)> = types.iter().collect();
+fn series_from_days(days: &BTreeMap<String, (usize, usize)>) -> Vec<serde_json::Value> {
+    days.iter()
+        .map(|(day, (me, other))| serde_json::json!({"label": day, "me": me, "other": other}))
+        .collect()
+}
+
+fn series_from_months(months: &BTreeMap<String, (usize, usize)>) -> Vec<serde_json::Value> {
+    months.iter()
+        .map(|(month, (me, other))| serde_json::json!({"label": month, "me": me, "other": other}))
+        .collect()
+}
+
+fn series_from_hours(me: &[usize; 24], other: &[usize; 24]) -> Vec<serde_json::Value> {
+    (0..24)
+        .map(|hour| serde_json::json!({"label": format!("{hour:02}"), "me": me[hour], "other": other[hour]}))
+        .collect()
+}
+
+fn series_from_week(me: &[usize; 7], other: &[usize; 7]) -> Vec<serde_json::Value> {
+    let labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    (0..7)
+        .map(|day| serde_json::json!({"label": labels[day], "me": me[day], "other": other[day]}))
+        .collect()
+}
+
+fn count_rows(map: &BTreeMap<String, usize>) -> Vec<serde_json::Value> {
+    let mut rows: Vec<(&String, &usize)> = map.iter().collect();
     rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-    rows.truncate(12);
-    let max = rows.first().map(|(_, count)| **count).unwrap_or(1).max(1);
-    let mut html = String::from("<div class=\"rows\">");
-    for (name, count) in &rows {
-        write!(
-            &mut html,
-            "<div class=\"row\"><span class=\"name\">{}</span><div class=\"track\"><div class=\"fill teal\" style=\"width:{:.1}%\"></div></div><span class=\"value\">{} · {}</span></div>",
-            export::escape_html(name),
-            **count as f64 * 100.0 / max as f64,
-            export::format_count(**count),
-            export::percent(**count, total)
-        ).ok();
-    }
-    html.push_str("</div>");
-    html
+    rows.into_iter()
+        .map(|(name, count)| serde_json::json!({"name": name, "count": count}))
+        .collect()
 }
 
-fn hour_rows(hours_me: &[usize; 24], hours_other: &[usize; 24], title: &str, split: bool) -> String {
-    use std::fmt::Write as _;
-    let max = if split {
-        hours_me.iter().chain(hours_other.iter()).copied().max().unwrap_or(1).max(1)
-    } else {
-        hours_me.iter().copied().max().unwrap_or(1).max(1)
-    };
-    let mut html = String::from("<div class=\"grouped\" role=\"img\" aria-label=\"24 小时消息分布\">");
-    for hour in 0..24 {
-        if split {
-            let title = format!("{hour:02}:00 · 我 {} 条 · 其他人 {} 条", hours_me[hour], hours_other[hour]);
-            html.push_str(&export::bar_group(&format!("{hour:02}"), hours_me[hour], hours_other[hour], max, &title));
-        } else {
-            let title = format!("{hour:02}:00 · {} 条", hours_me[hour]);
-            html.push_str(&export::bar_group(&format!("{hour:02}"), hours_me[hour], 0, max, &title));
-        }
-    }
-    html.push_str("</div><div class=\"chart-caption\"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:00</span></div>");
-    if split {
-        write!(
-            &mut html,
-            "<div class=\"legend\"><span><i class=\"dot\"></i>我</span><span><i class=\"dot other\"></i>其他人</span><span>{title} · 峰值 {max} 条</span></div>"
-        ).ok();
-    } else {
-        write!(
-            &mut html,
-            "<div class=\"legend\"><span><i class=\"dot\"></i>消息数</span><span>{title} · 峰值 {max} 条</span></div>"
-        ).ok();
-    }
-    html
-}
-
-fn month_bars(months: &BTreeMap<String, (usize, usize)>, limit: usize) -> String {
-    let mut rows: Vec<(&String, &(usize, usize))> = months.iter().collect();
-    if rows.len() > limit {
-        rows = rows[rows.len() - limit..].to_vec();
-    }
-    let max = rows
-        .iter()
-        .map(|(_, (me, other))| me + other)
-        .max()
-        .unwrap_or(1)
-        .max(1);
-    let mut html = String::from("<div class=\"grouped\" role=\"img\" aria-label=\"月度消息趋势\">");
-    for (month, (me, other)) in &rows {
-        let label = month.get(2..).unwrap_or(month);
-        let title = format!("{} · 我 {} 条 · 其他人 {} 条", month, me, other);
-        html.push_str(&export::bar_group(label, *me, *other, max, &title));
-    }
-    html.push_str("</div><div class=\"chart-caption\"><span>");
-    if let Some((first, _)) = rows.first() {
-        html.push_str(&export::escape_html(first));
-    }
-    html.push_str("</span><span>");
-    if let Some((last, _)) = rows.last() {
-        html.push_str(&export::escape_html(last));
-    }
-    html.push_str("</span></div><div class=\"legend\"><span><i class=\"dot\"></i>我</span><span><i class=\"dot other\"></i>其他人</span></div>");
-    html
-}
-
-fn top_day_rows(days: &BTreeMap<String, (usize, usize)>) -> String {
-    use std::fmt::Write as _;
-    let mut rows: Vec<(&String, usize)> = days
-        .iter()
-        .map(|(day, (me, other))| (day, me + other))
-        .collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-    rows.truncate(10);
-    let max = rows.first().map(|(_, count)| *count).unwrap_or(1).max(1);
-    let mut html = String::from("<div class=\"rows\">");
-    for (day, count) in rows {
-        write!(
-            &mut html,
-            "<div class=\"row\"><span class=\"name\">{}</span><div class=\"track\"><div class=\"fill\" style=\"width:{:.1}%\"></div></div><span class=\"value\">{} 条</span></div>",
-            export::escape_html(day),
-            count as f64 * 100.0 / max as f64,
-            export::format_count(count)
-        ).ok();
-    }
-    html.push_str("</div>");
-    html
-}
-
-fn render_private(aggregate: &Aggregate) -> String {
-    use std::fmt::Write as _;
-    let peak = aggregate.peak();
-    let mut body = String::new();
-    write!(
-        &mut body,
-        "<section class=\"card\"><div class=\"section-head\"><h2>我的发送比例</h2><span class=\"badge\">共 {} 条</span></div><p class=\"pk-summary\">我发了 <b class=\"me\">{}</b> 条，好友发了 <b class=\"other\">{}</b> 条。</p><div class=\"pk-bar\" role=\"img\" aria-label=\"我 {}%，好友 {}%\"><div class=\"pk-sent\" style=\"width:{:.1}%\">我 {:.0}%</div><div class=\"pk-recv\" style=\"width:{:.1}%\">好友 {:.0}%</div></div></section>",
-        export::format_count(aggregate.total),
-        export::format_count(aggregate.sent),
-        export::format_count(aggregate.received),
-        export::percent(aggregate.sent, aggregate.total),
-        export::percent(aggregate.received, aggregate.total),
-        aggregate.sent as f64 * 100.0 / aggregate.total.max(1) as f64,
-        aggregate.sent as f64 * 100.0 / aggregate.total.max(1) as f64,
-        aggregate.received as f64 * 100.0 / aggregate.total.max(1) as f64,
-        aggregate.received as f64 * 100.0 / aggregate.total.max(1) as f64,
-    ).ok();
-
-    let mut friend_rows: Vec<(&FriendAgg, usize)> = aggregate.friends.values().map(|friend| (friend, friend.total)).collect();
-    friend_rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name.cmp(&b.0.name)));
-    let max_friend = friend_rows.first().map(|(_, count)| *count).unwrap_or(1).max(1);
-    let mut ranking = String::from("<div class=\"rows\">");
-    for (friend, count) in friend_rows.iter().take(20) {
-        write!(
-            &mut ranking,
-            "<div class=\"row\"><span class=\"name\" title=\"{}\">{}</span><div class=\"track\"><div class=\"fill\" style=\"width:{:.1}%\"></div></div><span class=\"value\">{} · 我{} / 对方{}</span></div>",
-            export::escape_html(&friend.id),
-            export::escape_html(&friend.name),
-            *count as f64 * 100.0 / max_friend as f64,
-            export::format_count(*count),
-            export::format_count(friend.sent),
-            export::format_count(friend.received)
-        ).ok();
-    }
-    ranking.push_str("</div>");
-    body.push_str(&section("好友消息排行", "TOP 20", &ranking));
-
-    let friend_table: Vec<Vec<String>> = friend_rows
-        .iter()
-        .take(50)
-        .map(|(friend, _)| {
-            vec![
-                friend.name.clone(),
-                friend.id.clone(),
-                export::format_count(friend.total),
-                export::format_count(friend.sent),
-                export::format_count(friend.received),
-                if friend.last > 0 { format_timestamp(friend.last) } else { "-".to_string() },
-            ]
+fn friend_rows(friends: &BTreeMap<String, FriendAgg>, total: usize) -> Vec<serde_json::Value> {
+    let mut rows: Vec<&FriendAgg> = friends.values().collect();
+    rows.sort_by(|a, b| b.total.cmp(&a.total).then(a.name.cmp(&b.name)));
+    rows.into_iter()
+        .map(|friend| {
+            serde_json::json!({
+                "name": friend.name,
+                "id": friend.id,
+                "count": friend.total,
+                "sent": friend.sent,
+                "received": friend.received,
+                "last": if friend.last > 0 { format_timestamp(friend.last) } else { "-".to_string() },
+                "share": if total == 0 { 0.0 } else { friend.total as f64 / total as f64 },
+            })
         })
-        .collect();
-    body.push_str(&section(
-        "好友明细",
-        &format!("{} 位", aggregate.friends.len()),
-        &table(&["好友", "账号", "消息", "我发", "对方发", "最后活跃"], &friend_table),
-    ));
+        .collect()
+}
 
-    let type_body = format!(
-        "{}<div class=\"legend\"><span><i class=\"dot\"></i>文本/媒体/系统消息</span></div>",
-        type_rows(&aggregate.types, aggregate.total)
-    );
-    body.push_str(&section("消息类型占比", "全部私聊", &type_body));
+fn group_rows(groups: &BTreeMap<String, FriendAgg>) -> Vec<serde_json::Value> {
+    let mut rows: Vec<&FriendAgg> = groups.values().collect();
+    rows.sort_by(|a, b| b.total.cmp(&a.total).then(a.name.cmp(&b.name)));
+    rows.into_iter()
+        .map(|group| {
+            serde_json::json!({
+                "name": group.name,
+                "id": group.id,
+                "count": group.total,
+                "last": if group.last > 0 { format_timestamp(group.last) } else { "-".to_string() },
+            })
+        })
+        .collect()
+}
 
-    let hours = hour_rows(&aggregate.hours_me, &aggregate.hours_other, "一天中的分布", true);
-    body.push_str(&section("消息时段分布", "24 小时", &hours));
+fn member_rows(members: &BTreeMap<String, MemberAgg>, total: usize) -> Vec<serde_json::Value> {
+    let mut rows: Vec<&MemberAgg> = members.values().collect();
+    rows.sort_by(|a, b| b.total.cmp(&a.total).then(a.name.cmp(&b.name)));
+    rows.into_iter()
+        .map(|member| {
+            serde_json::json!({
+                "name": member.name,
+                "id": member.id,
+                "count": member.total,
+                "media": member.media,
+                "chars": member.chars,
+                "share": if total == 0 { 0.0 } else { member.total as f64 / total as f64 },
+                "last": if member.last > 0 { format_timestamp(member.last) } else { "-".to_string() },
+            })
+        })
+        .collect()
+}
 
-    let months = month_bars(&aggregate.months, 36);
-    body.push_str(&section("月度趋势", "最近 36 个月", &months));
+fn word_rows(words: &BTreeMap<String, usize>) -> Vec<serde_json::Value> {
+    let mut rows: Vec<(&String, &usize)> = words.iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    rows.truncate(24);
+    rows.into_iter()
+        .map(|(word, count)| serde_json::json!({"word": word, "count": count}))
+        .collect()
+}
 
-    let mut media = String::from("<div class=\"rows\">");
-    for (label, count) in &aggregate.media {
-        write!(
-            &mut media,
-            "<div class=\"row\"><span class=\"name\">{}</span><div class=\"track\"><div class=\"fill teal\" style=\"width:{:.1}%\"></div></div><span class=\"value\">{} 个</span></div>",
-            export::escape_html(label),
-            *count as f64 * 100.0 / aggregate.total.max(1) as f64,
-            count
-        ).ok();
-    }
-    if aggregate.missing_media > 0 {
-        write!(&mut media, "<p class=\"chart-note\">其中 {} 个媒体未在本地索引到。</p>", aggregate.missing_media).ok();
-    }
-    media.push_str("</div>");
-    body.push_str(&section("媒体内容", "图片 / 语音 / 视频 / 表情 / 文件", &media));
+fn top_day_rows_json(days: &BTreeMap<String, (usize, usize)>) -> Vec<serde_json::Value> {
+    let mut rows: Vec<(&String, &(usize, usize))> = days.iter().collect();
+    rows.sort_by(|a, b| (b.1.0 + b.1.1).cmp(&(a.1.0 + a.1.1)).then(a.0.cmp(b.0)));
+    rows.truncate(10);
+    rows.into_iter()
+        .map(|(date, (me, other))| {
+            serde_json::json!({"date": date, "count": me + other, "me": me, "other": other})
+        })
+        .collect()
+}
 
-    let metrics = kpis_for(aggregate, "private");
-    render_page(
+fn payload_common(
+    kind: &str,
+    title: &str,
+    heading: &str,
+    subtitle: &str,
+    range: &str,
+    meta: Vec<String>,
+    kpis: &[(String, String, String)],
+    aggregate: &Aggregate,
+    me_label: &str,
+    other_label: &str,
+) -> serde_json::Value {
+    let ratio = if aggregate.total > 0 {
+        serde_json::json!({
+            "me": aggregate.sent,
+            "other": aggregate.received,
+            "meLabel": me_label,
+            "otherLabel": other_label,
+            "meAvg": if aggregate.sent == 0 { 0.0 } else { aggregate.chars_me as f64 / aggregate.sent as f64 },
+            "otherAvg": if aggregate.received == 0 { 0.0 } else { aggregate.chars_other as f64 / aggregate.received as f64 },
+        })
+    } else {
+        serde_json::Value::Null
+    };
+    let words = if aggregate.words_me.is_empty() && aggregate.words_other.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!({
+            "meLabel": me_label,
+            "otherLabel": other_label,
+            "me": word_rows(&aggregate.words_me),
+            "other": word_rows(&aggregate.words_other),
+        })
+    };
+    serde_json::json!({
+        "kind": kind,
+        "title": title,
+        "heading": heading,
+        "subtitle": subtitle,
+        "range": range,
+        "meta": meta,
+        "kpis": kpis.iter().map(|(label, value, note)| serde_json::json!({
+            "label": label, "value": value, "note": note
+        })).collect::<Vec<_>>(),
+        "ratio": ratio,
+        "trend": series_from_days(&aggregate.days),
+        "months": series_from_months(&aggregate.months),
+        "hours": series_from_hours(&aggregate.hours_me, &aggregate.hours_other),
+        "weekdays": series_from_week(&aggregate.weekdays_me, &aggregate.weekdays_other),
+        "types": count_rows(&aggregate.types),
+        "media": count_rows(&aggregate.media.iter().map(|(name, count)| (name.to_string(), *count)).collect()),
+        "missingMedia": aggregate.missing_media,
+        "topDays": top_day_rows_json(&aggregate.days),
+        "friends": friend_rows(&aggregate.friends, aggregate.total),
+        "groups": group_rows(&aggregate.groups),
+        "members": member_rows(&aggregate.members, aggregate.total),
+        "words": words,
+        "generator": GENERATOR,
+    })
+}
+
+fn payload_private(aggregate: &Aggregate) -> serde_json::Value {
+    let peak = aggregate.peak();
+    payload_common(
+        "private",
         "私聊分析报告",
-        "PRIVATE CHAT ANALYTICS · 私聊分析",
         "私聊分析 · 好友消息全景",
         &format!("共 {} 位好友 · {} 条消息", aggregate.friends.len(), export::format_count(aggregate.total)),
         &format!("{} → {}", format_timestamp(aggregate.first), format_timestamp(aggregate.last)),
-        &format!("跨度 {} 天 · 活跃 {} 天 · 单日峰值 {}", aggregate.span_days(), aggregate.active_days(), export::format_count(peak.1)),
-        &metrics,
-        &body,
+        vec![
+            format!("跨度 {} 天 · 活跃 {} 天", aggregate.span_days(), aggregate.active_days()),
+            format!("单日峰值 {} 条", export::format_count(peak.1)),
+            format!("导出时间 {}", format_timestamp(now_ms() / 1000)),
+        ],
+        &kpis_for(aggregate, "private"),
+        aggregate,
+        "我",
+        "好友",
     )
 }
 
-fn render_group(conversation: &Conversation, aggregate: &Aggregate, account_id: Option<&str>) -> String {
-    use std::fmt::Write as _;
+fn payload_group(conversation: &Conversation, aggregate: &Aggregate) -> serde_json::Value {
     let peak = aggregate.peak();
-    let mut body = String::new();
-    write!(
-        &mut body,
-        "<section class=\"card\"><div class=\"section-head\"><h2>群聊概览</h2><span class=\"badge\">{}</span></div><p class=\"pk-summary\">群 <b>{}</b>，账号 <b>{}</b>，共 <b>{}</b> 位成员。</p><div class=\"pk-counts\"><span>消息总数 <b>{}</b></span><span>总字数 <b>{}</b></span><span>媒体消息 <b>{}</b></span></div></section>",
-        export::escape_html(&conversation.name),
-        export::escape_html(&conversation.id),
-        export::escape_html(account_id.unwrap_or("-")),
-        aggregate.members.len(),
-        export::format_count(aggregate.total),
-        export::format_count(aggregate.chars),
-        aggregate.media.values().sum::<usize>()
-    ).ok();
-
-    let mut members: Vec<(&MemberAgg, usize)> = aggregate.members.values().map(|member| (member, member.total)).collect();
-    members.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name.cmp(&b.0.name)));
-    let max_member = members.first().map(|(_, count)| *count).unwrap_or(1).max(1);
-    let mut ranking = String::from("<div class=\"rows\">");
-    for (member, count) in members.iter().take(20) {
-        write!(
-            &mut ranking,
-            "<div class=\"row\"><span class=\"name\">{}</span><div class=\"track\"><div class=\"fill\" style=\"width:{:.1}%\"></div></div><span class=\"value\">{} · {}</span></div>",
-            export::escape_html(&member.name),
-            *count as f64 * 100.0 / max_member as f64,
-            export::format_count(*count),
-            export::percent(*count, aggregate.total)
-        ).ok();
-    }
-    ranking.push_str("</div>");
-    body.push_str(&section("发言排行", "TOP 20", &ranking));
-
-    let member_table: Vec<Vec<String>> = members
-        .iter()
-        .map(|(member, _)| {
-            vec![
-                member.name.clone(),
-                member.id.clone(),
-                export::format_count(member.total),
-                export::format_count(member.media),
-                export::format_count(member.chars),
-                format!("{}", export::percent(member.total, aggregate.total)),
-                if member.last > 0 { format_timestamp(member.last) } else { "-".to_string() },
-            ]
-        })
-        .collect();
-    body.push_str(&section(
-        "群成员详细信息",
-        &format!("共 {} 人", aggregate.members.len()),
-        &table(&["成员", "账号", "发言", "媒体", "字数", "占比", "最后活跃"], &member_table),
-    ));
-
-    let hours = hour_rows(&aggregate.hours_all, &[0; 24], "群聊活跃时段", false);
-    body.push_str(&section("活跃时段", "24 小时", &hours));
-
-    body.push_str(&section(
-        "消息类型",
-        "全部消息",
-        &type_rows(&aggregate.types, aggregate.total),
-    ));
-
-    let mut media = String::from("<div class=\"rows\">");
-    for (label, count) in &aggregate.media {
-        write!(
-            &mut media,
-            "<div class=\"row\"><span class=\"name\">{}</span><div class=\"track\"><div class=\"fill teal\" style=\"width:{:.1}%\"></div></div><span class=\"value\">{} 个</span></div>",
-            export::escape_html(label),
-            *count as f64 * 100.0 / aggregate.total.max(1) as f64,
-            count
-        ).ok();
-    }
-    if aggregate.missing_media > 0 {
-        write!(&mut media, "<p class=\"chart-note\">其中 {} 个媒体未在本地索引到。</p>", aggregate.missing_media).ok();
-    }
-    media.push_str("</div>");
-    body.push_str(&section("媒体内容", "图片 / 语音 / 视频 / 表情 / 文件", &media));
-
-    let metrics = kpis_for(aggregate, "group");
-    render_page(
+    payload_common(
+        "group",
         &format!("群聊分析报告 - {}", conversation.name),
-        "GROUP CHAT ANALYTICS · 群聊分析",
         &format!("群聊分析 · {}", conversation.name),
         &format!("共 {} 条消息 · {} 位成员", export::format_count(aggregate.total), aggregate.members.len()),
         &format!("{} → {}", format_timestamp(aggregate.first), format_timestamp(aggregate.last)),
-        &format!("跨度 {} 天 · 活跃 {} 天 · 单日峰值 {}", aggregate.span_days(), aggregate.active_days(), export::format_count(peak.1)),
-        &metrics,
-        &body,
+        vec![
+            format!("跨度 {} 天 · 活跃 {} 天", aggregate.span_days(), aggregate.active_days()),
+            format!("单日峰值 {} 条", export::format_count(peak.1)),
+            format!("群 ID {}", conversation.id),
+        ],
+        &kpis_for(aggregate, "group"),
+        aggregate,
+        "我",
+        "其他人",
     )
 }
 
-fn render_annual(year: i32, aggregate: &Aggregate) -> String {
+fn payload_annual(year: i32, aggregate: &Aggregate) -> serde_json::Value {
     let peak = aggregate.peak();
-    let label = if year == 0 { "长期历史报告".to_string() } else { format!("{year} 年度报告") };
-    let mut body = String::new();
-
-    let months = month_bars(&aggregate.months, 36);
-    body.push_str(&section("月度消息", if year == 0 { "最近 36 个月" } else { "全年 12 个月" }, &months));
-
-    let mut friends: Vec<(&FriendAgg, usize)> = aggregate.friends.values().map(|friend| (friend, friend.total)).collect();
-    friends.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name.cmp(&b.0.name)));
-    let friend_table: Vec<Vec<String>> = friends
-        .iter()
-        .take(15)
-        .map(|(friend, _)| {
-            vec![
-                friend.name.clone(),
-                export::format_count(friend.total),
-                export::format_count(friend.sent),
-                export::format_count(friend.received),
-                format_timestamp(friend.last),
-            ]
-        })
-        .collect();
-    body.push_str(&section("好友消息排行", "TOP 15", &table(&["好友", "消息", "我发", "对方发", "最后活跃"], &friend_table)));
-
-    let mut groups: Vec<(&FriendAgg, usize)> = aggregate.groups.values().map(|group| (group, group.total)).collect();
-    groups.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name.cmp(&b.0.name)));
-    let group_table: Vec<Vec<String>> = groups
-        .iter()
-        .take(15)
-        .map(|(group, _)| vec![group.name.clone(), export::format_count(group.total), format_timestamp(group.last)])
-        .collect();
-    body.push_str(&section("群聊消息排行", "TOP 15", &table(&["群聊", "消息", "最后活跃"], &group_table)));
-
-    body.push_str(&section("消息类型", "全部消息", &type_rows(&aggregate.types, aggregate.total)));
-
-    let hours = hour_rows(&aggregate.hours_all, &[0; 24], "活跃时段", false);
-    body.push_str(&section("活跃时段", "24 小时", &hours));
-
-    body.push_str(&section("最活跃的日子", "TOP 10", &top_day_rows(&aggregate.days)));
-
-    let metrics = kpis_for(aggregate, "annual");
-    render_page(
+    let title = if year == 0 { "长期历史报告" } else { &format!("{year} 年度报告") };
+    payload_common(
+        "annual",
         &format!("年度分析报告 - {}", if year == 0 { "全部历史".to_string() } else { year.to_string() }),
-        "ANNUAL CHAT ANALYTICS · 年度报告",
-        &label,
+        title,
         &format!("共 {} 位好友 · {} 个群聊 · {} 条消息", aggregate.friends.len(), aggregate.groups.len(), export::format_count(aggregate.total)),
         &format!("{} → {}", format_timestamp(aggregate.first), format_timestamp(aggregate.last)),
-        &format!("跨度 {} 天 · 活跃 {} 天 · 单日峰值 {}", aggregate.span_days(), aggregate.active_days(), export::format_count(peak.1)),
-        &metrics,
-        &body,
+        vec![
+            format!("跨度 {} 天 · 活跃 {} 天", aggregate.span_days(), aggregate.active_days()),
+            format!("单日峰值 {} 条", export::format_count(peak.1)),
+        ],
+        &kpis_for(aggregate, "annual"),
+        aggregate,
+        "我",
+        "其他人",
     )
+}
+
+fn payload_dual(context: &ExportContext<'_>) -> serde_json::Value {
+    let mut aggregate = Aggregate::new();
+    for message in context.messages {
+        aggregate.observe(message);
+    }
+    let other_label = if context.group() { "其他人" } else { context.display_name() };
+    let total = context.messages.len();
+    payload_common(
+        "dual",
+        &format!("聊天分析报告 - {}", context.display_name()),
+        "微信聊天记录 · 可视化报告",
+        &format!("与 {} 的对话轨迹 · 共 {} 条记录", other_label, export::format_count(total)),
+        &format!("{} → {}", format_timestamp(aggregate.first), format_timestamp(aggregate.last)),
+        vec![
+            format!("跨度 {} 天 · 活跃 {} 天", aggregate.span_days(), aggregate.active_days()),
+            format!("导出于 {}", format_timestamp(context.exported_at_sec())),
+        ],
+        &kpis_for(&aggregate, "dual"),
+        &aggregate,
+        "我",
+        other_label,
+    )
+}
+
+fn write_payload(payload: &serde_json::Value, path: &Path) -> Result<()> {
+    const TEMPLATE: &str = include_str!("export/report_template.html");
+    let data = serde_json::to_string(payload).context("serialize report payload")?;
+    let data = data.replace('<', "\\u003c");
+    let html = TEMPLATE.replace("__REPORT_DATA__", &data);
+    fs::write(path, html).with_context(|| format!("failed to write {}", path.display()))
+}
+
+pub(crate) fn write_dual_report(context: &ExportContext<'_>, path: &Path) -> Result<()> {
+    write_payload(&payload_dual(context), path)
+}
+
+pub(crate) fn write_conversation_report(context: &ExportContext<'_>, path: &Path) -> Result<()> {
+    if context.group() {
+        let empty = HashMap::new();
+        let aggregate = group_report(context.conversation, context.messages, None, &[], &empty)?;
+        write_payload(&payload_group(context.conversation, &aggregate), path)
+    } else {
+        write_dual_report(context, path)
+    }
 }
 
 pub fn run(
@@ -800,10 +671,10 @@ pub fn run(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
     let year = options.report_year;
-    let (html, file_name, report_type, conversation_id) = match kind {
+    let (payload, file_name, report_type, conversation_id) = match kind {
         ReportKind::Private => {
-            let (html, _) = private_report(options, store, contacts, conversations, self_username)?;
-            (html, "private-report.html", "private", None)
+            let aggregate = private_report(options, store, contacts, conversations, self_username)?;
+            (payload_private(&aggregate), "private-report.html", "private", None)
         }
         ReportKind::Group => {
             let id = options.conversation_ids.first().context("group report requires --conversation-id")?;
@@ -825,12 +696,12 @@ pub fn run(
                 options.key.as_ref(),
                 options.plaintext,
             );
-            let (html, _) = group_report(conversation, &messages, account_id, &member_ids, contacts)?;
-            (html, "group-report.html", "group", Some(conversation.id.clone()))
+            let aggregate = group_report(conversation, &messages, account_id, &member_ids, contacts)?;
+            (payload_group(conversation, &aggregate), "group-report.html", "group", Some(conversation.id.clone()))
         }
         ReportKind::Annual => {
-            let (html, _) = annual_report(year, store, contacts, conversations, self_username)?;
-            (html, "annual-report.html", "annual", None)
+            let aggregate = annual_report(year, store, contacts, conversations, self_username)?;
+            (payload_annual(year, &aggregate), "annual-report.html", "annual", None)
         }
         ReportKind::Dual => {
             let id = options.conversation_ids.first().context("dual report requires --conversation-id")?;
@@ -861,7 +732,7 @@ pub fn run(
                 avatar_path: None,
             };
             let path = output_dir.join("dual-report.html");
-            export::write_analytics_report(&context, &path)?;
+            write_dual_report(&context, &path)?;
             let result = serde_json::json!({
                 "type": "dual",
                 "conversation_id": conversation.id,
@@ -874,7 +745,7 @@ pub fn run(
         }
     };
     let path = output_dir.join(file_name);
-    fs::write(&path, html).with_context(|| format!("failed to write {}", path.display()))?;
+    write_payload(&payload, &path)?;
     let result = serde_json::json!({
         "type": report_type,
         "year": year,
@@ -1171,9 +1042,8 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
             if aggregate.total == 0 {
                 bail!("no private conversation messages found in JSON");
             }
-            let html = render_private(&aggregate);
             let path = output_dir.join("private-report.html");
-            fs::write(&path, html).with_context(|| format!("failed to write {}", path.display()))?;
+            write_payload(&payload_private(&aggregate), &path)?;
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"private","report":path}))?);
         }
         ReportKind::Group => {
@@ -1182,9 +1052,9 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
                 bail!("group report requires a group conversation");
             }
             let empty = HashMap::new();
-            let (html, _) = group_report(&item.conversation, &item.messages, None, &[], &empty)?;
+            let aggregate = group_report(&item.conversation, &item.messages, None, &[], &empty)?;
             let path = output_dir.join("group-report.html");
-            fs::write(&path, html).with_context(|| format!("failed to write {}", path.display()))?;
+            write_payload(&payload_group(&item.conversation, &aggregate), &path)?;
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"group","report":path,"conversation_id":item.conversation.id}))?);
         }
         ReportKind::Annual => {
@@ -1192,9 +1062,8 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
             if aggregate.total == 0 {
                 bail!("no messages found in JSON");
             }
-            let html = render_annual(options.report_year, &aggregate);
             let path = output_dir.join("annual-report.html");
-            fs::write(&path, html).with_context(|| format!("failed to write {}", path.display()))?;
+            write_payload(&payload_annual(options.report_year, &aggregate), &path)?;
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"annual","year":options.report_year,"report":path}))?);
         }
         ReportKind::Dual => {
@@ -1218,7 +1087,7 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
                 avatar_path: None,
             };
             let path = output_dir.join("dual-report.html");
-            export::write_analytics_report(&context, &path)?;
+            write_dual_report(&context, &path)?;
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"dual","report":path,"conversation_id":item.conversation.id}))?);
         }
     }
