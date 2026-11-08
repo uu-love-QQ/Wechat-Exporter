@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -15,10 +15,10 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
 本工具支持 Windows 与 Linux 双端原生运行。基于 SQLCipher 4 密码学算法
 （AES-256-CBC + HMAC-SHA512 + zstd）直接解密微信 4.x 本地数据库并完成聊天记录提取。
 【核心功能】
-  1. 自动检索：缺省 --source-database 时自动扫描系统标准微信存储目录（Windows/Linux）
+  1. 自动检索：缺省数据库路径时自动扫描系统标准微信存储目录（Windows/Linux）
   2. 完整解码：支持普通文本、群聊发件人、图片、语音、视频、表情、名片、位置、
               引用回复、文件附件、微信转账、微信小程序、接龙、系统撤回、拍一拍
-  3. 媒体提取：--include-media 自动解密 .dat 图片（传统异或/V1固定AES/V2动态AES）及附件
+  3. 媒体提取：按需解密 .dat 图片（传统异或/V1固定AES/V2动态AES）及附件
   4. 10 种导出格式：
      - json          (完整结构化 JSON，含会话元数据)
      - markdown      (排版美观的 Markdown 聊天记录)
@@ -31,36 +31,42 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
      - sql           (包含创建表与全部 INSERT 语句的标准 SQL 文件)
      - weclone       (标准 WeClone 带 BOM CSV 格式)
 
-【使用示例】
-  • 自动检索本机微信数据库：
-    wechat-exporter --detect-databases
+【使用方式】
+  wechat-exporter <COMMAND> [OPTIONS]
 
-  • 快速列出会话（自动寻找数据库，通过 stdin 传入 64 位 Hex 密钥）：
-    printf '%s' "0123...def" | wechat-exporter --list-conversations --page-size 20
-    # 或直接使用 --key 参数：
-    wechat-exporter --key <64-HEX> --list-conversations
+  init    初始化配置并保存主密钥/图片密钥
+  detect  检索本机微信数据库位置与账号
+  list    列出会话
+  search  全文检索
+  export  导出会话，可附带媒体
 
-  • 全文搜索所有消息（包含 zstd 压缩文本）：
-    wechat-exporter --key <64-HEX> --search "关键词" --ascending
+  查看某个子命令的完整参数：
+    wechat-exporter export --help
 
-  • 导出单个群聊为全部 10 种格式并提取媒体：
-    wechat-exporter --key <64-HEX> --conversation-id "123456789@chatroom" \
-      --format all --include-media --output-dir "/path/to/backup"
-
-  • 手动指定非默认路径数据库：
-    wechat-exporter --source-database "/path/to/xwechat_files/wxid_xxx/db_storage" \
-      --key <64-HEX> --list-conversations
+  密钥可通过命令行参数、密钥文件或 stdin 传入；缺省数据库路径时自动检索。
 "#
 )]
 pub struct Cli {
-    /// 执行子命令 (如 'init' 初始化配置并持久化密钥)
-    #[arg(value_name = "COMMAND", index = 1)]
-    pub command: Option<String>,
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
 
-    /// 初始化配置：提取主密钥、图片 AES 和 XOR 密钥并保存到本地配置文件，后续直接免扫运行
-    #[arg(long = "init", short = 'i', action = ArgAction::SetTrue, help_heading = "数据库与密钥")]
-    pub init: bool,
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// 初始化配置：提取主密钥、图片 AES/XOR 密钥并保存到本地配置文件
+    Init(InitArgs),
+    /// 自动检索并列出本机微信 4.x 数据库位置与账号
+    Detect(DetectArgs),
+    /// 列出聊天会话 (ID、昵称、备注、最后活跃时间、消息数)
+    List(ListArgs),
+    /// 跨会话全文关键词检索 (支持 zstd 压缩内容)
+    Search(SearchArgs),
+    /// 导出指定会话为 JSON/Markdown/HTML 等格式，可同时提取媒体
+    Export(ExportArgs),
+}
 
+#[derive(Args, Debug, Clone)]
+pub struct CommonArgs {
     /// 微信 4.x 的 db_storage 目录或单个会话数据库；缺省时自动检索
     #[arg(
         long = "source-database",
@@ -69,15 +75,6 @@ pub struct Cli {
         help_heading = "数据库与密钥"
     )]
     pub source_database: Option<PathBuf>,
-
-    /// 自动检索并列出本机上所有的微信 4.x 数据库位置与账号
-    #[arg(
-        long = "detect-databases",
-        short = 'D',
-        action = ArgAction::SetTrue,
-        help_heading = "数据库与密钥"
-    )]
-    pub detect_databases: bool,
 
     /// 64 位 Hex 数据库解密密钥 (与 stdin 流输入等价)
     #[arg(
@@ -92,10 +89,6 @@ pub struct Cli {
     #[arg(long = "key-file", value_name = "PATH", help_heading = "数据库与密钥")]
     pub key_file: Option<PathBuf>,
 
-    /// 解密微信 V2 .dat 加密图片所需的 16 字节 (32 位 Hex) AES 密钥
-    #[arg(long = "image-key", value_name = "HEX", help_heading = "数据库与密钥")]
-    pub image_key: Option<String>,
-
     /// 手动指定当前微信登录用户账号 wxid
     #[arg(long = "self-username", value_name = "WXID", help_heading = "数据库与密钥")]
     pub self_username: Option<String>,
@@ -108,35 +101,91 @@ pub struct Cli {
     )]
     pub plaintext: bool,
 
-    /// 列出所有聊天会话 (ID、昵称、备注、最后活跃时间、消息数)
-    #[arg(
-        long = "list-conversations",
-        short = 'l',
-        action = ArgAction::SetTrue,
-        help_heading = "查询"
-    )]
-    pub list_conversations: bool,
+    /// 开启详细调试输出 (媒体寻址、解密导出与语音探测细节)
+    #[arg(long = "debug", action = ArgAction::SetTrue, help_heading = "其他")]
+    pub debug: bool,
+}
 
-    /// 跨会话全文关键词检索 (支持检索 zstd 压缩内容)
-    #[arg(long = "search", short = 'q', value_name = "TEXT", help_heading = "查询")]
-    pub search: Option<String>,
+#[derive(Args, Debug)]
+pub struct InitArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// 解密微信 V2 .dat 加密图片所需的 16 字节 (32 位 Hex) AES 密钥
+    #[arg(long = "image-key", value_name = "HEX", help_heading = "数据库与密钥")]
+    pub image_key: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct DetectArgs {
+    /// 只扫描指定目录；缺省时使用系统标准微信存储路径
+    #[arg(
+        long = "source-database",
+        short = 's',
+        value_name = "PATH",
+        help_heading = "数据库"
+    )]
+    pub source_database: Option<PathBuf>,
+
+    /// 开启详细调试输出
+    #[arg(long = "debug", action = ArgAction::SetTrue, help_heading = "其他")]
+    pub debug: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ListArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// 单页会话数量 (范围 1..1000，缺省 50)
+    #[arg(
+        long = "page-size",
+        short = 'p',
+        value_name = "N",
+        help_heading = "分页"
+    )]
+    pub page_size: Option<u32>,
+
+    /// 分页游标 (Base64 编码，上一页返回的 next_cursor)
+    #[arg(long = "cursor", value_name = "BASE64", help_heading = "分页")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct SearchArgs {
+    /// 要检索的关键词 (最多 512 字节，可匹配 zstd 压缩文本)
+    #[arg(value_name = "TEXT")]
+    pub query: String,
+
+    #[command(flatten)]
+    pub common: CommonArgs,
 
     /// 搜索结果按时间正序排列 (缺省为倒序)
     #[arg(long = "ascending", action = ArgAction::SetTrue, help_heading = "查询")]
     pub ascending: bool,
 
-    /// 列表或搜索时的单页数量 (范围 1..1000，缺省 50)
+    /// 单页结果数量 (范围 1..1000，缺省 50)
     #[arg(
         long = "page-size",
         short = 'p',
         value_name = "N",
-        help_heading = "查询"
+        help_heading = "分页"
     )]
     pub page_size: Option<u32>,
 
     /// 分页游标 (Base64 编码，上一页返回的 next_cursor)
-    #[arg(long = "cursor", value_name = "BASE64", help_heading = "查询")]
+    #[arg(long = "cursor", value_name = "BASE64", help_heading = "分页")]
     pub cursor: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ExportArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// 解密微信 V2 .dat 加密图片所需的 16 字节 (32 位 Hex) AES 密钥
+    #[arg(long = "image-key", value_name = "HEX", help_heading = "导出")]
+    pub image_key: Option<String>,
 
     /// 指定导出的会话 ID (如 wxid_xxx 或 xxx@chatroom，可重复指定)
     #[arg(
@@ -184,7 +233,7 @@ pub struct Cli {
     )]
     pub output_dir: Option<PathBuf>,
 
-    /// 保持临时导出的输出目录不被清除
+    /// 保留临时输出目录
     #[arg(
         long = "keep-output",
         short = 'k',
@@ -192,10 +241,6 @@ pub struct Cli {
         help_heading = "导出"
     )]
     pub keep_output: bool,
-
-    /// 开启详细调试输出 (打印图片/表情的原图与缩略图信息、寻址过程及解密导出细节)
-    #[arg(long = "debug", action = ArgAction::SetTrue, help_heading = "其他")]
-    pub debug: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -307,12 +352,147 @@ pub struct ValidatedCli {
     pub debug: bool,
 }
 
+struct CommonValidated {
+    source_database: PathBuf,
+    key: Option<[u8; 32]>,
+    self_username: Option<String>,
+    plaintext: bool,
+    debug: bool,
+}
+
+impl CommonArgs {
+    fn validate(self) -> Result<CommonValidated> {
+        let source_database = resolve_source_database(self.source_database)?;
+        let key = crate::util::read_key(self.key.as_deref(), self.key_file.as_deref())?;
+        Ok(CommonValidated {
+            source_database,
+            key,
+            self_username: self.self_username,
+            plaintext: self.plaintext,
+            debug: self.debug,
+        })
+    }
+}
+
+fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
+    ValidatedCli {
+        source_database: common.source_database,
+        mode,
+        formats: Vec::new(),
+        conversation_ids: Vec::new(),
+        start_time_ms: None,
+        end_time_ms: None,
+        page_size: 50,
+        cursor: None,
+        ascending: false,
+        include_media: false,
+        keep_output: false,
+        output_dir: None,
+        self_username: common.self_username,
+        image_key: None,
+        key: common.key,
+        plaintext: common.plaintext,
+        debug: common.debug,
+    }
+}
+
+fn resolve_source_database(source: Option<PathBuf>) -> Result<PathBuf> {
+    match source {
+        Some(path) => {
+            if !path.exists() {
+                bail!(
+                    "source database or db_storage directory does not exist: {}",
+                    path.display()
+                );
+            }
+            Ok(path)
+        }
+        None => {
+            let candidates = crate::wechat::discover::auto_detect_candidates();
+            if candidates.is_empty() {
+                bail!("{}", crate::wechat::discover::format_scanned_roots_message());
+            }
+            let selected = &candidates[0];
+            eprintln!(
+                "[i] 自动检索到微信数据库: {}\n    (账号: {}, 共检测到 {} 个候选账号)",
+                selected.db_storage.display(),
+                selected.account_id,
+                candidates.len()
+            );
+            if candidates.len() > 1 {
+                eprintln!("    其他候选账号 (如需切换请使用 --source-database <路径>):");
+                for (i, candidate) in candidates.iter().enumerate().skip(1) {
+                    eprintln!(
+                        "      [{}] 账号: {} | 路径: {}",
+                        i + 1,
+                        candidate.account_id,
+                        candidate.db_storage.display()
+                    );
+                }
+            }
+            Ok(selected.db_storage.clone())
+        }
+    }
+}
+
+fn parse_image_key(raw: Option<&str>) -> Result<Option<[u8; 16]>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let cleaned = raw.trim();
+    if cleaned.len() != 32 || !cleaned.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("--image-key must be exactly 32 hexadecimal characters");
+    }
+    let bytes = hex::decode(cleaned).expect("validated hex");
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&bytes);
+    Ok(Some(key))
+}
+
+fn parse_page_size(value: Option<u32>) -> Result<u32> {
+    let page_size = value.unwrap_or(50);
+    if !(1..=1000).contains(&page_size) {
+        bail!("page size must be 1..1000");
+    }
+    Ok(page_size)
+}
+
+fn parse_formats(values: &[String]) -> Result<Vec<Format>> {
+    if values.is_empty() {
+        return Ok(Format::all());
+    }
+    let mut out = Vec::new();
+    for value in values {
+        if value == "all" {
+            for format in Format::all() {
+                if !out.contains(&format) {
+                    out.push(format);
+                }
+            }
+        } else {
+            let format = Format::parse(value)?;
+            if !out.contains(&format) {
+                out.push(format);
+            }
+        }
+    }
+    Ok(out)
+}
+
 impl Cli {
     pub fn validate(self) -> Result<ValidatedCli> {
-        if self.detect_databases {
-            let dummy_source = self.source_database.unwrap_or_else(|| PathBuf::from("."));
-            return Ok(ValidatedCli {
-                source_database: dummy_source,
+        let Some(command) = self.command else {
+            bail!("a subcommand is required; run `wechat-exporter --help`");
+        };
+        command.validate()
+    }
+}
+
+impl Command {
+    pub fn validate(self) -> Result<ValidatedCli> {
+        match self {
+            Command::Detect(args) => Ok(ValidatedCli {
+                source_database: args.source_database.unwrap_or_else(|| PathBuf::from(".")),
                 mode: Mode::DetectDatabases,
                 formats: Vec::new(),
                 conversation_ids: Vec::new(),
@@ -328,196 +508,97 @@ impl Cli {
                 image_key: None,
                 key: None,
                 plaintext: true,
-                debug: self.debug,
-            });
-        }
-
-        let is_init = self.command.as_deref() == Some("init") || self.init;
-        // Automatic discovery if --source-database is not provided
-        let source_database = match self.source_database {
-            Some(path) => {
-                if !path.exists() {
-                    bail!("source database or db_storage directory does not exist: {}", path.display());
-                }
-                path
+                debug: args.debug,
+            }),
+            Command::Init(args) => {
+                let common = args.common.validate()?;
+                let image_key = parse_image_key(args.image_key.as_deref())?;
+                let mut options = validated(common, Mode::Init);
+                options.image_key = image_key;
+                Ok(options)
             }
-            None => {
-                let candidates = crate::wechat::discover::auto_detect_candidates();
-                if candidates.is_empty() {
-                    bail!("{}", crate::wechat::discover::format_scanned_roots_message());
+            Command::List(args) => {
+                let common = args.common.validate()?;
+                let page_size = parse_page_size(args.page_size)?;
+                let mut options = validated(common, Mode::List);
+                options.page_size = page_size;
+                options.cursor = args.cursor;
+                Ok(options)
+            }
+            Command::Search(args) => {
+                if args.query.is_empty()
+                    || args.query.contains('\0')
+                    || args.query.len() > 512
+                {
+                    bail!("search text must be nonempty, contain no NUL, and be at most 512 UTF-8 bytes");
                 }
-                let selected = &candidates[0];
-                eprintln!(
-                    "[i] 自动检索到微信数据库: {}\n    (账号: {}, 共检测到 {} 个候选账号)",
-                    selected.db_storage.display(),
-                    selected.account_id,
-                    candidates.len()
-                );
-                if candidates.len() > 1 {
-                    eprintln!("    其他候选账号 (如需切换请使用 --source-database <路径>):");
-                    for (i, c) in candidates.iter().enumerate().skip(1) {
-                        eprintln!("      [{}] 账号: {} | 路径: {}", i + 1, c.account_id, c.db_storage.display());
+                let common = args.common.validate()?;
+                let page_size = parse_page_size(args.page_size)?;
+                let mut options = validated(common, Mode::Search(args.query));
+                options.ascending = args.ascending;
+                options.page_size = page_size;
+                options.cursor = args.cursor;
+                Ok(options)
+            }
+            Command::Export(args) => {
+                for id in &args.conversation_ids {
+                    if id.is_empty() || id.len() > 1024 || id.chars().any(char::is_control) {
+                        bail!("conversation ID must be nonempty, at most 1024 bytes, and contain no control characters");
                     }
                 }
-                selected.db_storage.clone()
-            }
-        };
-
-        if self.list_conversations && self.search.is_some() {
-            bail!("--search conflicts with --list-conversations");
-        }
-        if let Some(text) = &self.search {
-            if text.is_empty() || text.contains('\0') || text.len() > 512 {
-                bail!("search text must be nonempty, contain no NUL, and be at most 512 UTF-8 bytes");
-            }
-        }
-        for id in &self.conversation_ids {
-            if id.is_empty() || id.len() > 1024 || id.chars().any(char::is_control) {
-                bail!("conversation ID must be nonempty, at most 1024 bytes, and contain no control characters");
-            }
-        }
-        let page_size = self.page_size.unwrap_or(50);
-        if !(1..=1000).contains(&page_size) {
-            bail!("page size must be 1..1000");
-        }
-        if (self.page_size.is_some() || self.cursor.is_some())
-            && !(self.list_conversations || self.search.is_some())
-        {
-            bail!("--page-size and --cursor require --list-conversations or --search");
-        }
-        if self.ascending && self.search.is_none() {
-            bail!("--ascending requires --search");
-        }
-        if self.start_time_ms.is_some_and(|v| v <= 0) {
-            bail!("export time must be a positive int64 decimal value");
-        }
-        if self.end_time_ms.is_some_and(|v| v <= 0) {
-            bail!("export time must be a positive int64 decimal value");
-        }
-        if let (Some(start), Some(end)) = (self.start_time_ms, self.end_time_ms) {
-            if start > end {
-                bail!("export time range is inverted");
-            }
-        }
-
-        let mode = if is_init {
-            Mode::Init
-        } else if self.list_conversations {
-            Mode::List
-        } else if let Some(text) = self.search.clone() {
-            Mode::Search(text)
-        } else {
-            Mode::Export
-        };
-
-        if matches!(mode, Mode::List) {
-            if !self.formats.is_empty()
-                || !self.conversation_ids.is_empty()
-                || self.include_media
-                || self.start_time_ms.is_some()
-                || self.end_time_ms.is_some()
-                || self.output_dir.is_some()
-                || self.keep_output
-            {
-                bail!("--list-conversations conflicts with export options");
-            }
-        }
-
-        if matches!(mode, Mode::Search(_)) {
-            if !self.formats.is_empty()
-                || self.include_media
-                || self.start_time_ms.is_some()
-                || self.end_time_ms.is_some()
-                || self.output_dir.is_some()
-                || self.keep_output
-            {
-                bail!("--search conflicts with export options");
-            }
-        }
-
-        let formats = if self.formats.is_empty() {
-            Format::all()
-        } else {
-            let mut out = Vec::new();
-            for value in &self.formats {
-                if value == "all" {
-                    for format in Format::all() {
-                        if !out.contains(&format) {
-                            out.push(format);
+                if args.start_time_ms.is_some_and(|value| value <= 0) {
+                    bail!("export time must be a positive int64 decimal value");
+                }
+                if args.end_time_ms.is_some_and(|value| value <= 0) {
+                    bail!("export time must be a positive int64 decimal value");
+                }
+                if let (Some(start), Some(end)) = (args.start_time_ms, args.end_time_ms) {
+                    if start > end {
+                        bail!("export time range is inverted");
+                    }
+                }
+                let formats = parse_formats(&args.formats)?;
+                let image_key = parse_image_key(args.image_key.as_deref())?;
+                if (!args.formats.is_empty()
+                    || !args.conversation_ids.is_empty()
+                    || args.start_time_ms.is_some()
+                    || args.end_time_ms.is_some())
+                    && args.output_dir.is_none()
+                    && !args.keep_output
+                {
+                    bail!("--format requires --output-dir or --keep-output");
+                }
+                if !args.conversation_ids.is_empty()
+                    && args.output_dir.is_none()
+                    && !args.keep_output
+                {
+                    bail!("--conversation-id requires --output-dir or --keep-output");
+                }
+                if let Some(dir) = &args.output_dir {
+                    if !dir.is_absolute() {
+                        bail!("output directory must be an absolute path");
+                    }
+                    if let Some(parent) = dir.parent() {
+                        if !parent.exists() {
+                            bail!("output directory parent does not exist");
                         }
                     }
-                } else {
-                    let format = Format::parse(value)?;
-                    if !out.contains(&format) {
-                        out.push(format);
+                    if dir.is_file() {
+                        bail!("output directory is an existing file, not a directory");
                     }
                 }
-            }
-            out
-        };
-
-        if matches!(mode, Mode::Export) {
-            if (!self.formats.is_empty()
-                || !self.conversation_ids.is_empty()
-                || self.start_time_ms.is_some()
-                || self.end_time_ms.is_some())
-                && self.output_dir.is_none()
-                && !self.keep_output
-            {
-                bail!("--format requires --output-dir or --keep-output");
-            }
-            if !self.conversation_ids.is_empty() && self.output_dir.is_none() && !self.keep_output {
-                bail!("--conversation-id requires --output-dir or --keep-output");
-            }
-            if let Some(dir) = &self.output_dir {
-                if !dir.is_absolute() {
-                    bail!("output directory must be an absolute path");
-                }
-                if let Some(parent) = dir.parent() {
-                    if !parent.exists() {
-                        bail!("output directory parent does not exist");
-                    }
-                }
-                if dir.is_file() {
-                    bail!("output directory is an existing file, not a directory");
-                }
+                let common = args.common.validate()?;
+                let mut options = validated(common, Mode::Export);
+                options.formats = formats;
+                options.conversation_ids = args.conversation_ids;
+                options.start_time_ms = args.start_time_ms;
+                options.end_time_ms = args.end_time_ms;
+                options.include_media = args.include_media;
+                options.keep_output = args.keep_output;
+                options.output_dir = args.output_dir;
+                options.image_key = image_key;
+                Ok(options)
             }
         }
-
-        let image_key = match self.image_key.as_deref() {
-            Some(raw) => {
-                let cleaned = raw.trim();
-                if cleaned.len() != 32 || !cleaned.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    bail!("--image-key must be exactly 32 hexadecimal characters");
-                }
-                let bytes = hex::decode(cleaned).expect("validated hex");
-                let mut key = [0u8; 16];
-                key.copy_from_slice(&bytes);
-                Some(key)
-            }
-            None => None,
-        };
-
-        let key = crate::util::read_key(self.key.as_deref(), self.key_file.as_deref())?;
-
-        Ok(ValidatedCli {
-            source_database,
-            mode,
-            formats,
-            conversation_ids: self.conversation_ids,
-            start_time_ms: self.start_time_ms,
-            end_time_ms: self.end_time_ms,
-            page_size,
-            cursor: self.cursor,
-            ascending: self.ascending,
-            include_media: self.include_media,
-            keep_output: self.keep_output,
-            output_dir: self.output_dir,
-            self_username: self.self_username,
-            image_key,
-            key,
-            plaintext: self.plaintext,
-            debug: self.debug,
-        })
     }
 }

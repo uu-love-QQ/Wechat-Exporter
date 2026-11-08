@@ -45,12 +45,10 @@ cargo build --target x86_64-pc-windows-gnu --release
 ### 自动检索相关命令
 ```bash
 # 查看本机所有已检测到的微信 4.x 数据库与账号列表
-wechat-exporter --detect-databases
-# 简写
-wechat-exporter -D
+wechat-exporter detect
 
 # 自动选用最新活跃账号列出会话列表（无需输入路径）
-wechat-exporter --key <64位Hex密钥> --list-conversations
+wechat-exporter list --key <64位Hex密钥>
 ```
 
 ---
@@ -90,16 +88,16 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 
 ```powershell
 # 1. 仅检测并列出本机所有微信数据库账号
-.\wechat-exporter.exe -D
+.\wechat-exporter.exe detect
 
 # 2. 列出最近活跃会话（自动关联电脑管家迁移路径，传入主口令）
-.\wechat-exporter.exe --key <64位Hex主通行码> --list-conversations
+.\wechat-exporter.exe list --key <64位Hex主通行码>
 
 # 3. 全文检索关键词
-.\wechat-exporter.exe --key <64位Hex主通行码> --search "合同" --ascending
+.\wechat-exporter.exe search "合同" --key <64位Hex主通行码> --ascending
 
 # 4. 导出指定会话（含图片自动解密为真实图片格式）：
-.\wechat-exporter.exe `
+.\wechat-exporter.exe export `
   --key <64位Hex主通行码> `
   --conversation-id "wxid_85da986onp4h22" `
   --format all `
@@ -107,57 +105,122 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
   --output-dir "C:\Users\14744\Downloads\uuMovies\test"
 
 # 5. 全自动模式（微信登录在线时，无需提供路径与 key）：
-.\wechat-exporter.exe `
+.\wechat-exporter.exe export `
   --conversation-id "wxid_85da986onp4h22" `
   --format all `
   --include-media `
   --output-dir "C:\Users\14744\Downloads\uuMovies\test"
 ```
 
-## 五、命令行参数速查
+## 五、子命令与参数
 
-`wechat-exporter --help` 按功能分组输出完整说明，`-h` 为精简版。密钥可来自
-`--key`、`--key-file` 或 stdin；从 stdin 读取可避免密钥进入 shell 历史。
+根命令只显示子命令；每个子命令只显示自己会用到的参数。例如
+`wechat-exporter export --help` 才会列出 `--conversation-id`/`--format`/`--output-dir`，
+`list --help` 不会出现这些导出参数。完整帮助优先级：
 
-### 数据库与密钥
+```bash
+wechat-exporter --help            # 子命令列表
+wechat-exporter export --help     # export 专属参数 + 通用参数
+```
+
+### init
+
+初始化本地配置，提取主密钥、图片 AES/XOR 密钥并写入配置文件，后续可免扫描运行。
+
+```bash
+wechat-exporter init --key <64位Hex密钥>
+wechat-exporter init --source-database /path/to/db_storage --image-key <32位Hex>
+```
 
 | 参数 | 说明 |
 |---|---|
-| `-s, --source-database <PATH>` | `db_storage` 目录或单个会话数据库；缺省时自动检索 |
-| `-D, --detect-databases` | 只检索并列出本机所有微信 4.x 数据库账号 |
-| `-i, --init` | 提取主密钥、图片 AES/XOR 密钥并保存到本地配置 |
+| `-s, --source-database <PATH>` | 指定 `db_storage` 或会话数据库 |
 | `-K, --key <HEX>` | 64 位 Hex 数据库密钥 |
-| `--key-file <PATH>` | 从文件读取 64 位 Hex 数据库密钥 |
-| `--image-key <HEX>` | V2 `.dat` 图片的 16 字节 AES 密钥（缺省自动从内存提取） |
-| `--self-username <WXID>` | 手动指定当前登录账号 wxid |
-| `--plaintext` | 将数据库按未加密 SQLite 打开 |
+| `--key-file <PATH>` | 从文件读取数据库密钥 |
+| `--image-key <HEX>` | V2 `.dat` 图片的 16 字节 AES 密钥 |
+| `--self-username <WXID>` | 指定当前登录账号 |
+| `--plaintext` | 按未加密 SQLite 打开 |
+| `--debug` | 详细调试输出 |
 
-### 查询
+### detect
+
+只检索微信 4.x 数据库位置与账号，不解密、不读取密钥。
+
+```bash
+wechat-exporter detect
+wechat-exporter detect --source-database /path/to/xwechat_files
+```
 
 | 参数 | 说明 |
 |---|---|
-| `-l, --list-conversations` | 列出会话 ID、昵称、备注、最后活跃时间、消息数 |
-| `-q, --search <TEXT>` | 跨会话全文检索（含 zstd 压缩文本） |
-| `--ascending` | 搜索结果按时间正序；缺省倒序 |
+| `-s, --source-database <PATH>` | 只扫描指定目录；缺省扫描系统标准路径 |
+| `--debug` | 详细调试输出 |
+
+### list
+
+列出会话 ID、昵称、备注、最后活跃时间与消息数。
+
+```bash
+wechat-exporter list --key <64位Hex密钥> --page-size 20
+wechat-exporter list --source-database /path/to/db_storage --cursor <BASE64>
+```
+
+| 参数 | 说明 |
+|---|---|
+| `-s, --source-database <PATH>` | 指定数据库路径；缺省自动检索 |
+| `-K, --key <HEX>` / `--key-file <PATH>` | 数据库密钥 |
+| `--self-username <WXID>` | 指定当前登录账号 |
+| `--plaintext` | 按未加密 SQLite 打开 |
 | `-p, --page-size <N>` | 单页数量 1..1000，缺省 50 |
 | `--cursor <BASE64>` | 上一页返回的 `next_cursor` |
+| `--debug` | 详细调试输出 |
 
-### 导出
+### search
+
+跨会话全文检索，支持 zstd 压缩文本。
+
+```bash
+wechat-exporter search "合同" --key <64位Hex密钥> --ascending
+wechat-exporter search "关键词" --source-database /path/to/db_storage --page-size 100
+```
 
 | 参数 | 说明 |
 |---|---|
+| `TEXT` | 检索词（位置参数，最多 512 字节） |
+| `-s, --source-database <PATH>` | 指定数据库路径；缺省自动检索 |
+| `-K, --key <HEX>` / `--key-file <PATH>` | 数据库密钥 |
+| `--ascending` | 按时间正序；缺省倒序 |
+| `-p, --page-size <N>` | 单页数量 1..1000，缺省 50 |
+| `--cursor <BASE64>` | 上一页返回的 `next_cursor` |
+| `--self-username <WXID>` | 指定当前登录账号 |
+| `--plaintext` | 按未加密 SQLite 打开 |
+| `--debug` | 详细调试输出 |
+
+### export
+
+导出指定会话；`--format all` 生成全部 10 种格式。
+
+```bash
+wechat-exporter export --key <64位Hex密钥> \
+  --conversation-id "123456789@chatroom" --format html --output-dir /path/to/out
+wechat-exporter export --source-database /path/to/db_storage \
+  --conversation-id wxid_xxx --format all --include-media --output-dir /path/to/out
+```
+
+| 参数 | 说明 |
+|---|---|
+| `-s, --source-database <PATH>` | 指定数据库路径；缺省自动检索 |
+| `-K, --key <HEX>` / `--key-file <PATH>` | 数据库密钥 |
+| `--self-username <WXID>` | 指定当前登录账号 |
+| `--plaintext` | 按未加密 SQLite 打开 |
+| `--image-key <HEX>` | V2 `.dat` 图片 AES 密钥；缺省自动提取 |
 | `-c, --conversation-id <ID>` | 会话 ID，可重复指定 |
 | `-f, --format <NAME>` | 格式或 `all`，可重复指定 |
-| `-m, --include-media` | 解密并提取图片、语音、视频、表情、文件到 `media/` |
-| `--start-time-ms <MS>` / `--end-time-ms <MS>` | 导出时间范围（Unix 毫秒） |
-| `-o, --output-dir <DIR>` | 输出目录，必须尚不存在 |
+| `-m, --include-media` | 提取媒体到 `media/` |
+| `--start-time-ms <MS>` / `--end-time-ms <MS>` | 时间范围（Unix 毫秒） |
+| `-o, --output-dir <DIR>` | 绝对路径输出目录，必须尚不存在 |
 | `-k, --keep-output` | 保留临时输出目录 |
-
-### 其他
-
-| 参数 | 说明 |
-|---|---|
-| `--debug` | 打印媒体寻址、解密和语音探测细节 |
+| `--debug` | 详细调试输出 |
 
 ## 六、HTML 界面与引用跳转
 

@@ -25,8 +25,8 @@ fn fixture() -> (TempDir, PathBuf) {
 
 fn run_with_key(args: &[&str]) -> (i32, String, String) {
     let mut output = Command::new(env!("CARGO_BIN_EXE_wechat-exporter"))
-        .args(["--key", KEY])
         .args(args)
+        .args(["--key", KEY])
         .output()
         .expect("run alpha-cli");
     if output.status.success() {
@@ -43,9 +43,9 @@ fn run_with_key(args: &[&str]) -> (i32, String, String) {
 fn lists_conversations() {
     let (_temp, source) = fixture();
     let (code, stdout, stderr) = run_with_key(&[
+        "list",
         "--source-database",
         source.to_str().unwrap(),
-        "--list-conversations",
         "--page-size",
         "10",
     ]);
@@ -63,6 +63,7 @@ fn exports_all_formats_and_media() {
     let (temp, source) = fixture();
     let output = temp.path().join("out");
     let (code, stdout, stderr) = run_with_key(&[
+        "export",
         "--source-database",
         source.to_str().unwrap(),
         "--conversation-id",
@@ -164,10 +165,10 @@ fn exports_all_formats_and_media() {
 fn searches_across_shards() {
     let (_temp, source) = fixture();
     let (code, stdout, stderr) = run_with_key(&[
+        "search",
+        "hello",
         "--source-database",
         source.to_str().unwrap(),
-        "--search",
-        "hello",
         "--ascending",
         "--page-size",
         "10",
@@ -180,17 +181,36 @@ fn searches_across_shards() {
 }
 
 #[test]
-fn rejects_conflicting_modes() {
-    let (_temp, source) = fixture();
-    let (code, _, stderr) = run_with_key(&[
-        "--source-database",
-        source.to_str().unwrap(),
-        "--list-conversations",
-        "--search",
-        "hello",
-    ]);
-    assert_ne!(code, 0);
-    assert!(stderr.contains("conflicts"));
+fn help_scopes_options_to_subcommands() {
+    let root = Command::new(env!("CARGO_BIN_EXE_wechat-exporter"))
+        .arg("--help")
+        .output()
+        .expect("root help");
+    let root = String::from_utf8_lossy(&root.stdout);
+    for command in ["init", "detect", "list", "search", "export"] {
+        assert!(root.contains(command), "missing subcommand {command}");
+    }
+    assert!(!root.contains("--conversation-id"));
+
+    let list = Command::new(env!("CARGO_BIN_EXE_wechat-exporter"))
+        .args(["list", "--help"])
+        .output()
+        .expect("list help");
+    let list = String::from_utf8_lossy(&list.stdout);
+    assert!(list.contains("--page-size"));
+    assert!(!list.contains("--conversation-id"));
+    assert!(!list.contains("--output-dir"));
+    assert!(!list.contains("--format"));
+
+    let export = Command::new(env!("CARGO_BIN_EXE_wechat-exporter"))
+        .args(["export", "--help"])
+        .output()
+        .expect("export help");
+    let export = String::from_utf8_lossy(&export.stdout);
+    assert!(export.contains("--conversation-id"));
+    assert!(export.contains("--format"));
+    assert!(!export.contains("--page-size"));
+    assert!(!export.contains("--ascending"));
 }
 
 #[test]
@@ -198,6 +218,7 @@ fn exported_chatlab_matches_spec_shape() {
     let (temp, source) = fixture();
     let output = temp.path().join("chatlab");
     let (code, _, stderr) = run_with_key(&[
+        "export",
         "--source-database",
         source.to_str().unwrap(),
         "--conversation-id",
@@ -230,7 +251,7 @@ fn auto_detects_database_and_lists() {
     let parent = source.parent().unwrap().parent().unwrap();
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wechat-exporter"));
     cmd.env("XWECHAT_FILES_DIR", parent)
-        .args(["--key", KEY, "--list-conversations", "--page-size", "10"]);
+        .args(["list", "--key", KEY, "--page-size", "10"]);
     let output = cmd.output().expect("run alpha-cli auto-detect");
     assert_eq!(output.status.code().unwrap_or(-1), 0);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -239,12 +260,11 @@ fn auto_detects_database_and_lists() {
 }
 
 #[test]
-fn detects_databases_flag() {
+fn detects_databases_subcommand() {
     let (_temp, source) = fixture();
     let parent = source.parent().unwrap().parent().unwrap();
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wechat-exporter"));
-    cmd.env("XWECHAT_FILES_DIR", parent)
-        .arg("--detect-databases");
+    cmd.env("XWECHAT_FILES_DIR", parent).arg("detect");
     let output = cmd.output().expect("run alpha-cli -D");
     assert_eq!(output.status.code().unwrap_or(-1), 0);
     let stdout = String::from_utf8_lossy(&output.stdout);

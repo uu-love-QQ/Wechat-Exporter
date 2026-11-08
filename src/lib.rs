@@ -61,18 +61,21 @@ fn print_welcome_help() {
 --------------------------------------------------------------------------------
 【快速使用指南】
 --------------------------------------------------------------------------------
-1. 列出会话列表（缺省 --source-database 时自动使用最新活跃账号）：
-   wechat-exporter --key <64位Hex密钥> --list-conversations --page-size 20
+1. 检索本机数据库：
+   wechat-exporter detect
 
-2. 全文关键词搜索（支持检索 zstd 压缩的聊天记录）：
-   wechat-exporter --key <64位Hex密钥> --search "合同" --ascending
+2. 列出会话列表（缺省 --source-database 时自动使用最新活跃账号）：
+   wechat-exporter list --key <64位Hex密钥> --page-size 20
 
-3. 导出指定聊天为全部 10 种格式并提取媒体图片/视频：
-   wechat-exporter --key <64位Hex密钥> --conversation-id "123456789@chatroom" \
+3. 全文关键词搜索（支持检索 zstd 压缩的聊天记录）：
+   wechat-exporter search "合同" --key <64位Hex密钥> --ascending
+
+4. 导出指定聊天为全部 10 种格式并提取媒体图片/视频：
+   wechat-exporter export --key <64位Hex密钥> --conversation-id "123456789@chatroom" \
      --format all --include-media --output-dir "/path/to/backup"
 
-4. 查看详细帮助与所有高级参数：
-   wechat-exporter --help
+5. 查看子命令帮助：
+   wechat-exporter export --help
 ================================================================================"
 "#
     );
@@ -98,7 +101,7 @@ fn run_detect_databases() -> Result<()> {
         println!("    数据库路径:     {}", c.db_storage.display());
         println!();
     }
-    println!("提示：在执行 --list-conversations 或导出时，直接运行即可自动使用最新账号，");
+    println!("提示：执行 list 或 export 时，直接运行即可自动使用最新账号，");
     println!("      亦可通过 --source-database <数据库路径> 手动指定具体账号。");
     Ok(())
 }
@@ -176,7 +179,7 @@ fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result
         println!("    • 图片 XOR 密钥: 0x{:02x} ({})", xor, xor);
     }
     println!("================================================================================");
-    println!("后续执行导出 (--conversation-id) 或查询 (--list-conversations) 时，");
+    println!("后续执行 export 或 list 子命令时，");
     println!("程序将自动读取 .wechat-exporter.json 配置文件，无需进行内存扫描，即使微信退出也能完整离线导出！");
     Ok(())
 }
