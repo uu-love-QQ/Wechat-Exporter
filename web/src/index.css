@@ -231,3 +231,14 @@
   --chart-4: #fbbf24;
   --chart-5: #f472b6;
 }
+
+/* Report hero: stays readable in both chat palette modes. */
+:root {
+  --report-hero: #2563eb;
+  --report-hero-fg: #ffffff;
+}
+
+.dark {
+  --report-hero: #1e3a8a;
+  --report-hero-fg: #eff6ff;
+}

@@ -420,6 +420,47 @@ fn tag_block<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
 
 /// Parse the structured quote block so the HTML exporter can link back to the
 /// original message and detect when it is outside the exported set.
+fn quoted_content(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with("<?xml")
+        || trimmed.contains("<msg")
+        || trimmed.contains("<appmsg")
+        || trimmed.starts_with('<')
+    {
+        if trimmed.contains("<img") || trimmed.contains("<videomsg") {
+            return if trimmed.contains("<img") { "[图片]".to_string() } else { "[视频]".to_string() };
+        }
+        if let Some(title) = xml_value(trimmed, "title").filter(|value| !value.trim().is_empty()) {
+            return strip_tags(&title).trim().to_string();
+        }
+        if let Some(des) = xml_value(trimmed, "des").filter(|value| !value.trim().is_empty()) {
+            return strip_tags(&des).trim().to_string();
+        }
+        if let Some(content) = xml_value(trimmed, "content").filter(|value| !value.trim().is_empty()) {
+            return strip_tags(&content).trim().to_string();
+        }
+        if let Some(kind) = xml_value(trimmed, "type").and_then(|value| value.trim().parse::<i64>().ok()) {
+            return match kind {
+                3 => "[图片]".to_string(),
+                34 => "[语音]".to_string(),
+                43 => "[视频]".to_string(),
+                47 => "[表情]".to_string(),
+                49 => "[消息]".to_string(),
+                _ => "[消息]".to_string(),
+            };
+        }
+        return "[消息]".to_string();
+    }
+    let text = strip_tags(trimmed);
+    if text.starts_with("wxid_") && text.contains(":6:0") {
+        return "[图片]".to_string();
+    }
+    text
+}
+
 fn quote_ref(xml: &str) -> Option<crate::wechat::model::QuoteRef> {
     let block = tag_block(xml, "refermsg")?;
     let number = |tag: &str| {
@@ -427,7 +468,7 @@ fn quote_ref(xml: &str) -> Option<crate::wechat::model::QuoteRef> {
             .and_then(|value| value.trim().parse::<i64>().ok())
     };
     let text = |tag: &str| xml_value(block, tag).unwrap_or_default().trim().to_string();
-    let content = strip_tags(&text("content")).trim().to_string();
+    let content = quoted_content(&text("content")).trim().to_string();
     let sender = text("displayname");
     let reply = xml_value(xml, "title").unwrap_or_default().trim().to_string();
     let quote = crate::wechat::model::QuoteRef {
@@ -491,25 +532,22 @@ fn chat_record(xml: &str) -> Option<crate::wechat::model::ChatRecord> {
 }
 
 fn quote_text(xml: &str) -> Option<String> {
-    let quoted_sender = xml_value(xml, "displayname").unwrap_or_default();
-    let quoted = xml_value(xml, "content").unwrap_or_default();
-    let quoted = strip_tags(&quoted);
-    let reply = xml_value(xml, "title").unwrap_or_default();
+    let quote = quote_ref(xml)?;
     let mut out = String::new();
-    if !quoted_sender.is_empty() || !quoted.is_empty() {
+    if !quote.sender.is_empty() || !quote.content.is_empty() {
         out.push_str("[引用");
-        if !quoted_sender.is_empty() {
+        if !quote.sender.is_empty() {
             out.push(' ');
-            out.push_str(&quoted_sender);
+            out.push_str(&quote.sender);
         }
         out.push_str("] ");
-        out.push_str(&quoted);
+        out.push_str(&quote.content);
     }
-    if !reply.is_empty() {
+    if !quote.reply.is_empty() {
         if !out.is_empty() {
             out.push('\n');
         }
-        out.push_str(&reply);
+        out.push_str(&quote.reply);
     }
     if out.is_empty() {
         None
@@ -851,6 +889,22 @@ mod tests {
         assert_eq!(quote.create_time, Some(1703001620));
         assert_eq!(quote.quoted_type, Some(1));
         assert_eq!(quote.reply, "reply");
+    }
+
+    #[test]
+    fn cleans_nested_quote_content() {
+        let nested = "&lt;?xml version=\"1.0\"?&gt;&lt;msg&gt;&lt;appmsg&gt;&lt;title&gt;面包板是即插即拔的元件&lt;/title&gt;&lt;type&gt;57&lt;/type&gt;&lt;/appmsg&gt;&lt;/msg&gt;";
+        let xml = format!("<msg><appmsg><title>reply</title><type>57</type><refermsg><type>49</type><svrid>9</svrid><displayname>Harry</displayname><content>{nested}</content><createtime>1703001620</createtime></refermsg></appmsg></msg>");
+        let parsed = parse_content(&xml, 49, 57, 244813135921);
+        let quote = parsed.quote.expect("quote");
+        assert_eq!(quote.content, "面包板是即插即拔的元件");
+        assert!(parsed.text.contains("[引用 Harry] 面包板是即插即拔的元件"));
+        assert!(!parsed.text.contains("svrid"));
+        assert!(!parsed.text.contains("displayname"));
+
+        let image = "<msg><appmsg><title>look</title><type>57</type><refermsg><type>49</type><displayname>Harry</displayname><content>wxid_85da986onp4h22:6:0</content></refermsg></appmsg></msg>";
+        let parsed = parse_content(image, 49, 57, 244813135921);
+        assert_eq!(parsed.quote.expect("image quote").content, "[图片]");
     }
 
     #[test]

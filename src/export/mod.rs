@@ -768,7 +768,7 @@ pub(crate) fn collect_words(text: &str, words: &mut BTreeMap<String, usize>) {
     let flush_ascii = |run: &mut String, words: &mut BTreeMap<String, usize>| {
         let value = run.to_ascii_lowercase();
         run.clear();
-        if value.len() >= 2 && !value.contains("http") {
+        if value.len() >= 2 && !value.contains("http") && !value.chars().all(|ch| ch.is_ascii_digit()) {
             *words.entry(value).or_default() += 1;
         }
     };

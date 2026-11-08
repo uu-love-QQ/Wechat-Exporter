@@ -440,9 +440,9 @@ export function ReportApp({ data }: { data: ReportData }) {
         </Button>
       </div>
 
-      <header className="relative overflow-hidden rounded-3xl bg-primary p-6 text-primary-foreground shadow-sm md:p-9">
-        <div className="pointer-events-none absolute -right-16 -top-20 size-64 rounded-full border border-primary-foreground/20 bg-primary-foreground/10" />
-        <div className="pointer-events-none absolute -bottom-24 right-24 size-56 rounded-full bg-primary-foreground/5" />
+      <header className="relative overflow-hidden rounded-3xl bg-[var(--report-hero)] p-6 text-[var(--report-hero-fg)] shadow-sm md:p-9">
+        <div className="pointer-events-none absolute -right-16 -top-20 size-64 rounded-full border border-[var(--report-hero-fg)]/20 bg-[var(--report-hero-fg)]/10" />
+        <div className="pointer-events-none absolute -bottom-24 right-24 size-56 rounded-full bg-[var(--report-hero-fg)]/5" />
         <div className="relative flex flex-col gap-2">
           <div className="flex items-center gap-2 text-xs font-medium tracking-[0.16em] uppercase opacity-75">
             <MessagesSquare data-icon="inline-start" aria-hidden="true" />
@@ -450,7 +450,7 @@ export function ReportApp({ data }: { data: ReportData }) {
           </div>
           <h1 className="max-w-3xl text-2xl font-semibold tracking-tight md:text-3xl">{data.heading}</h1>
           <p className="max-w-3xl text-sm opacity-85">{data.subtitle}</p>
-          <div className="mt-2 inline-flex w-fit rounded-full bg-primary-foreground/15 px-3 py-1 text-xs">
+          <div className="mt-2 inline-flex w-fit rounded-full bg-[var(--report-hero-fg)]/15 px-3 py-1 text-xs">
             {data.range}
           </div>
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs opacity-80">

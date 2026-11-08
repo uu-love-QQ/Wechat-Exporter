@@ -3,6 +3,7 @@ pub mod db;
 pub mod export;
 pub mod report;
 pub mod progress;
+pub mod upgrade;
 pub mod util;
 pub mod wechat;
 pub mod config;
@@ -196,6 +197,10 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let mut options = cli.validate()?;
 
+    if let Mode::Upgrade(version, prefix) = &options.mode {
+        return upgrade::run(version, prefix.as_deref());
+    }
+
     if let Mode::Report(kind) = &options.mode {
         if let Some(path) = &options.from_json {
             return report::run_from_json(*kind, &options, path);
@@ -276,7 +281,7 @@ pub fn run() -> Result<()> {
         });
 
     match &options.mode {
-        Mode::DetectDatabases | Mode::Init => unreachable!(),
+        Mode::DetectDatabases | Mode::Init | Mode::Upgrade(_, _) => unreachable!(),
         Mode::List => run_list(&options, &conversations, account_id.as_deref()),
         Mode::Search(query) => run_search(
             &options,

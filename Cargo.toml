@@ -1,6 +1,6 @@
 [package]
 name = "wechat-exporter"
-version = "0.12.1"
+version = "0.13.0"
 edition = "2021"
 description = "WeChat 4.x local database decryptor and multi-format chat exporter"
 license = "MIT"

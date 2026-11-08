@@ -287,6 +287,22 @@ wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json 
 `start_time` / `end_time`（Unix 秒）与 `start_time_text` / `end_time_text`，
 可直接用于确认导出范围，也可作为 `report --from-json` 的输入。
 
+### upgrade
+
+```bash
+# 下载并安装最新版
+wechat-exporter upgrade
+
+# 指定版本
+wechat-exporter upgrade --version v0.12.1
+
+# 国内网络前缀（拼接到 GitHub 下载地址前）
+wechat-exporter upgrade --prefix https://ghfast.top/
+```
+
+Windows 下会先下载新版，退出后由后台命令替换并重启；Linux 直接替换当前二进制。
+`--prefix` 只是 URL 前缀，不做域名固定；不检查 release 中是否存在其他附件。
+
 ## 六、HTML 界面与引用跳转
 
 HTML 导出由 `web/` 前端模板生成（Vite + React 19 + Tailwind v4 + shadcn/ui），

@@ -52,6 +52,56 @@ fn is_analyzable_conversation(conversation: &Conversation) -> bool {
         && !conversation.id.starts_with("fmessage")
 }
 
+fn analysis_text(message: &ExportMessage) -> &str {
+    if let Some(quote) = &message.quote {
+        if !quote.reply.trim().is_empty() {
+            return quote.reply.as_str();
+        }
+        return "";
+    }
+    if message.media.is_some() || message.record.is_some() {
+        return "";
+    }
+    if message.type_name.contains("系统") || message.type_name.contains("撤回") {
+        return "";
+    }
+    let content = message.content.trim_start();
+    if content.starts_with("[引用") || content.starts_with("[聊天记录]") {
+        return "";
+    }
+    message.content.as_str()
+}
+
+fn is_word_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.starts_with('[') {
+        return false;
+    }
+    if trimmed.contains("http://")
+        || trimmed.contains("https://")
+        || trimmed.contains("wxid_")
+        || trimmed.contains("@chatroom")
+        || trimmed.contains("eyJ")
+    {
+        return false;
+    }
+    if trimmed.contains('$')
+        || trimmed.contains('{')
+        || trimmed.contains('}')
+        || trimmed.contains('\\')
+        || trimmed.contains(';')
+        || trimmed.starts_with('#')
+    {
+        return false;
+    }
+    let total = trimmed.chars().count();
+    let ascii = trimmed.chars().filter(|ch| ch.is_ascii()).count();
+    if total > 40 && ascii * 100 / total > 55 {
+        return false;
+    }
+    true
+}
+
 fn year_bounds(year: i32) -> (Option<i64>, Option<i64>) {
     if year == 0 {
         return (None, None);
@@ -145,18 +195,19 @@ impl Aggregate {
         } else {
             self.received += 1;
         }
-        let message_chars = message.content.chars().count();
+        let text = analysis_text(message);
+        let message_chars = text.chars().count();
         self.chars += message_chars;
         if message.is_send {
             self.chars_me += message_chars;
         } else {
             self.chars_other += message_chars;
         }
-        if message.media.is_none() && message.record.is_none() && self.word_budget > 0 {
+        if self.word_budget > 0 && is_word_text(text) {
             if message.is_send {
-                export::collect_words(&message.content, &mut self.words_me);
+                export::collect_words(text, &mut self.words_me);
             } else {
-                export::collect_words(&message.content, &mut self.words_other);
+                export::collect_words(text, &mut self.words_other);
             }
             self.word_budget = self.word_budget.saturating_sub(message_chars.min(3000));
         }

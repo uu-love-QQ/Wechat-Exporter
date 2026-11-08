@@ -40,6 +40,7 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
   search  全文检索
   export  导出会话，可附带媒体
   report  生成私聊/群聊/双人/年度分析报告
+  upgrade 检查并安装新版本
 
   查看某个子命令的完整参数：
     wechat-exporter export --help
@@ -67,6 +68,8 @@ pub enum Command {
     Export(ExportArgs),
     /// 生成私聊/群聊/双人/年度分析报告
     Report(ReportArgs),
+    /// 检查并安装新版本
+    Upgrade(UpgradeArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -311,6 +314,17 @@ pub struct ReportArgs {
     pub silent: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct UpgradeArgs {
+    /// 目标版本号，缺省 latest
+    #[arg(long = "version", value_name = "VERSION", default_value = "latest")]
+    pub version: String,
+
+    /// 下载前缀，例如 https://ghfast.top/ 或 https://gh-proxy.com/
+    #[arg(long = "prefix", value_name = "URL")]
+    pub prefix: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Format {
     Json,
@@ -398,6 +412,7 @@ pub enum Mode {
     DetectDatabases,
     Init,
     Report(ReportKind),
+    Upgrade(String, Option<String>),
 }
 
 #[derive(Clone, Debug)]
@@ -714,6 +729,27 @@ impl Command {
                 options.image_key = image_key;
                 options.report = args.report;
                 options.silent = args.silent;
+                Ok(options)
+            }
+            Command::Upgrade(args) => {
+                let version = args.version.trim();
+                if version.is_empty() || version.len() > 64 || version.contains(char::is_whitespace) {
+                    bail!("upgrade version must be a nonempty tag without whitespace");
+                }
+                if let Some(prefix) = &args.prefix {
+                    if !(prefix.starts_with("http://") || prefix.starts_with("https://")) {
+                        bail!("--prefix must start with http:// or https://");
+                    }
+                }
+                let common = CommonValidated {
+                    source_database: PathBuf::from("."),
+                    key: None,
+                    self_username: None,
+                    plaintext: true,
+                    debug: false,
+                };
+                let mut options = validated(common, Mode::Upgrade(version.to_string(), args.prefix.clone()));
+                options.silent = false;
                 Ok(options)
             }
             Command::Report(args) => {
