@@ -211,8 +211,51 @@
   }
 }
 
+@keyframes quote-target-pulse {
+  0% {
+    background-color: color-mix(in oklab, var(--primary) 24%, transparent);
+    box-shadow: inset 3px 0 0 var(--primary);
+  }
+  55% {
+    background-color: color-mix(in oklab, var(--primary) 11%, transparent);
+    box-shadow: inset 3px 0 0 var(--primary);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 transparent;
+  }
+}
+
+@keyframes quote-bubble-pop {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--primary) 55%, transparent),
+      0 14px 34px -14px color-mix(in oklab, var(--primary) 60%, transparent);
+  }
+  45% {
+    transform: scale(1.018);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 42%, transparent),
+      0 16px 38px -14px color-mix(in oklab, var(--primary) 55%, transparent);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 transparent, 0 0 0 transparent;
+  }
+}
+
+.message-flash {
+  animation: quote-target-pulse 1.8s ease-out;
+}
+
 .message-flash .bubble-card {
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 14%, transparent);
+  animation: quote-bubble-pop 1.8s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-flash,
+  .message-flash .bubble-card {
+    animation: none;
+  }
 }
 
 /* Report chart palette: paired with the chat-blue shadcn tokens. */

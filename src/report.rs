@@ -77,6 +77,9 @@ fn is_word_text(text: &str) -> bool {
     if trimmed.is_empty() || trimmed.starts_with('[') {
         return false;
     }
+    if trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
     if trimmed.contains("http://")
         || trimmed.contains("https://")
         || trimmed.contains("wxid_")
@@ -1186,4 +1189,19 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod report_filter_tests {
+    use super::is_word_text;
+
+    #[test]
+    fn rejects_metadata_and_code_tokens() {
+        assert!(!is_word_text("wxid_85da986onp4h22:6:0"));
+        assert!(!is_word_text("https://example.com/a"));
+        assert!(!is_word_text("$ErrorActionPreference = 'Stop'"));
+        assert!(!is_word_text("123456"));
+        assert!(is_word_text("你手边有没有实物，让我看看"));
+        assert!(is_word_text("面包板不是pcb的替代吗"));
+    }
 }

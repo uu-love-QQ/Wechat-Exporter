@@ -21,6 +21,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { cn } from '@/lib/utils'
 
 export interface ReportKpi {
   label: string
@@ -378,19 +379,25 @@ function WordCloud({ words }: { words: Array<{ word: string; count: number }> })
   if (words.length === 0) return <ChartEmpty text="暂无高频词" />
   const max = Math.max(...words.map((item) => item.count), 1)
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {words.map((item, index) => (
-        <Badge
-          key={item.word}
-          variant={index < 4 ? 'default' : 'secondary'}
-          className="rounded-lg py-1"
-          style={{ fontSize: `${12 + (item.count / max) * 8}px` }}
-          title={`${item.word} · ${item.count} 次`}
-        >
-          {item.word}
-          <span className="opacity-60">{item.count}</span>
-        </Badge>
-      ))}
+    <div className="flex flex-wrap items-start gap-2">
+      {words.map((item, index) => {
+        const size = 12 + (item.count / max) * 6
+        return (
+          <Badge
+            key={item.word}
+            variant={index < 3 ? 'default' : index < 10 ? 'secondary' : 'outline'}
+            className={cn(
+              'h-auto max-w-full rounded-lg py-1 whitespace-nowrap shadow-none',
+              index < 3 && 'border-transparent',
+            )}
+            style={{ fontSize: `${size}px` }}
+            title={`${item.word} · ${item.count} 次`}
+          >
+            <span className="truncate">{item.word}</span>
+            <span className="text-[0.7em] opacity-60 tabular-nums">{item.count}</span>
+          </Badge>
+        )
+      })}
     </div>
   )
 }
@@ -461,7 +468,17 @@ export function ReportApp({ data }: { data: ReportData }) {
         </div>
       </header>
 
-      <section aria-label="核心指标" className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+      <section
+        aria-label="核心指标"
+        className={cn(
+          'grid grid-cols-2 gap-3 md:grid-cols-3',
+          data.kpis.length >= 6
+            ? 'xl:grid-cols-6'
+            : data.kpis.length === 5
+              ? 'lg:grid-cols-5'
+              : 'md:grid-cols-4',
+        )}
+      >
         {data.kpis.map((kpi) => (
           <KpiCard key={kpi.label} kpi={kpi} />
         ))}
@@ -592,7 +609,7 @@ export function ReportApp({ data }: { data: ReportData }) {
       {data.words && (
         <SectionCard
           title="我们的高频词"
-          description="基于文本消息样本"
+          description="基于文本消息样本 · 字号表示出现次数"
           action={
             <Badge variant="secondary">
               <Users data-icon="inline-start" aria-hidden="true" />

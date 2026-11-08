@@ -434,7 +434,7 @@ function MessageRow({
       id={`msg-${message.index}`}
       tabIndex={-1}
       className={cn(
-        'message-row flex scroll-mt-36 items-end gap-2 rounded-2xl outline-none sm:scroll-mt-24',
+        'message-row relative flex scroll-mt-36 items-end gap-2 rounded-2xl outline-none sm:scroll-mt-24',
         mine ? 'justify-end' : 'justify-start',
         flash && 'message-flash',
       )}
@@ -607,10 +607,10 @@ function App() {
     const run = () => {
       const target = document.getElementById(`msg-${index}`)
       if (!target) return
-      target.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' })
+      target.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' })
       target.focus({ preventScroll: true })
       setFlash(index)
-      window.setTimeout(() => setFlash((current) => (current === index ? null : current)), 1400)
+      window.setTimeout(() => setFlash((current) => (current === index ? null : current)), 1800)
     }
     if (query) {
       setQuery('')
