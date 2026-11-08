@@ -435,7 +435,25 @@ struct CommonValidated {
 
 impl CommonArgs {
     fn validate(self) -> Result<CommonValidated> {
-        let source_database = resolve_source_database(self.source_database)?;
+        let config_source = if self.source_database.is_none() {
+            crate::config::ExporterConfig::load(&[]).and_then(|config| {
+                let path = PathBuf::from(config.source_database);
+                if path.exists() {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+        if let Some(path) = &config_source {
+            eprintln!(
+                "[+] 从本地配置读取数据库路径: {} (跳过自动检索)",
+                path.display()
+            );
+        }
+        let source_database = resolve_source_database(self.source_database.or(config_source))?;
         let key = crate::util::read_key(self.key.as_deref(), self.key_file.as_deref())?;
         Ok(CommonValidated {
             source_database,
