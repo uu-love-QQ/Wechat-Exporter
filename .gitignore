@@ -1,1 +1,4 @@
 /target
+
+.wechat-exporter.json
+.wechat-exporter-backup.json

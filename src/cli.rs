@@ -40,6 +40,7 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
   search  全文检索
   export  导出会话，可附带媒体
   report  生成私聊/群聊/双人/年度分析报告
+  backup  配置 WebDAV 自动备份
   upgrade 检查并安装新版本
 
   查看某个子命令的完整参数：
@@ -70,6 +71,8 @@ pub enum Command {
     Report(ReportArgs),
     /// 检查并安装新版本
     Upgrade(UpgradeArgs),
+    /// 配置或测试备份提供商
+    Backup(BackupArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -261,6 +264,10 @@ pub struct ExportArgs {
     #[arg(long = "report", action = ArgAction::SetTrue, help_heading = "导出")]
     pub report: bool,
 
+    /// 导出完成后自动上传到已配置的 WebDAV 备份
+    #[arg(long = "backup", action = ArgAction::SetTrue, help_heading = "导出")]
+    pub backup: bool,
+
     /// 不打印进度条
     #[arg(long = "silent", action = ArgAction::SetTrue, help_heading = "其他")]
     pub silent: bool,
@@ -312,6 +319,40 @@ pub struct ReportArgs {
     /// 不打印进度条
     #[arg(long = "silent", action = ArgAction::SetTrue, help_heading = "其他")]
     pub silent: bool,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum BackupCommand {
+    /// 配置 WebDAV 备份
+    Webdav(WebdavArgs),
+    /// 显示当前备份配置（隐藏密码）
+    Show,
+    /// 测试 WebDAV 连接
+    Test,
+    /// 删除备份配置
+    Clear,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct WebdavArgs {
+    /// WebDAV 根地址
+    #[arg(long = "url", value_name = "URL")]
+    pub url: String,
+    /// WebDAV 用户名
+    #[arg(long = "username", value_name = "USER")]
+    pub username: String,
+    /// WebDAV 密码
+    #[arg(long = "password", value_name = "PASS")]
+    pub password: String,
+    /// 远端目录，缺省 wechat-exports
+    #[arg(long = "remote-path", value_name = "PATH", default_value = "wechat-exports")]
+    pub remote_path: String,
+}
+
+#[derive(Args, Debug)]
+pub struct BackupArgs {
+    #[command(subcommand)]
+    pub command: BackupCommand,
 }
 
 #[derive(Args, Debug)]
@@ -413,6 +454,7 @@ pub enum Mode {
     Init,
     Report(ReportKind),
     Upgrade(String, Option<String>),
+    Backup(BackupCommand),
 }
 
 #[derive(Clone, Debug)]
@@ -438,6 +480,7 @@ pub struct ValidatedCli {
     pub report_year: i32,
     pub from_json: Option<PathBuf>,
     pub silent: bool,
+    pub backup: bool,
 }
 
 struct CommonValidated {
@@ -503,6 +546,7 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         report_year: 0,
         from_json: None,
         silent: false,
+        backup: false,
     }
 }
 
@@ -623,6 +667,7 @@ impl Command {
                 report_year: 0,
                 from_json: None,
                 silent: false,
+                backup: false,
             }),
             Command::Init(args) => {
                 let common = args.common.validate()?;
@@ -729,6 +774,19 @@ impl Command {
                 options.image_key = image_key;
                 options.report = args.report;
                 options.silent = args.silent;
+                options.backup = args.backup;
+                Ok(options)
+            }
+            Command::Backup(args) => {
+                let common = CommonValidated {
+                    source_database: PathBuf::from("."),
+                    key: None,
+                    self_username: None,
+                    plaintext: true,
+                    debug: false,
+                };
+                let mut options = validated(common, Mode::Backup(args.command));
+                options.silent = false;
                 Ok(options)
             }
             Command::Upgrade(args) => {

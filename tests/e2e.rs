@@ -243,6 +243,48 @@ fn exports_visual_report() {
 }
 
 #[test]
+fn configures_and_clears_webdav_backup() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let binary = env!("CARGO_BIN_EXE_wechat-exporter");
+    let output = Command::new(binary)
+        .current_dir(temp.path())
+        .args([
+            "backup",
+            "webdav",
+            "--url",
+            "http://127.0.0.1:9/dav",
+            "--username",
+            "user",
+            "--password",
+            "secret",
+            "--remote-path",
+            "backups",
+        ])
+        .output()
+        .expect("configure backup");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(temp.path().join(".wechat-exporter-backup.json").exists());
+
+    let output = Command::new(binary)
+        .current_dir(temp.path())
+        .args(["backup", "show"])
+        .output()
+        .expect("show backup");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("http://127.0.0.1:9/dav"));
+    assert!(stdout.contains("backups"));
+    assert!(!stdout.contains("secret"));
+
+    let output = Command::new(binary)
+        .current_dir(temp.path())
+        .args(["backup", "clear"])
+        .output()
+        .expect("clear backup");
+    assert!(output.status.success());
+    assert!(!temp.path().join(".wechat-exporter-backup.json").exists());
+}
+
+#[test]
 fn generates_four_report_types() {
     let (temp, source) = fixture();
     let cases = [

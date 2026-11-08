@@ -4,6 +4,7 @@ pub mod export;
 pub mod report;
 pub mod progress;
 pub mod upgrade;
+pub mod backup;
 pub mod util;
 pub mod wechat;
 pub mod config;
@@ -201,6 +202,10 @@ pub fn run() -> Result<()> {
         return upgrade::run(version, prefix.as_deref());
     }
 
+    if let Mode::Backup(action) = &options.mode {
+        return backup::run(action);
+    }
+
     if let Mode::Report(kind) = &options.mode {
         if let Some(path) = &options.from_json {
             return report::run_from_json(*kind, &options, path);
@@ -281,7 +286,7 @@ pub fn run() -> Result<()> {
         });
 
     match &options.mode {
-        Mode::DetectDatabases | Mode::Init | Mode::Upgrade(_, _) => unreachable!(),
+        Mode::DetectDatabases | Mode::Init | Mode::Upgrade(_, _) | Mode::Backup(_) => unreachable!(),
         Mode::List => run_list(&options, &conversations, account_id.as_deref()),
         Mode::Search(query) => run_search(
             &options,
@@ -635,6 +640,19 @@ fn run_export(
         if overall_start == i64::MAX { 0 } else { overall_start },
         if overall_end == i64::MIN { 0 } else { overall_end },
     )?;
+    let backup_summary = if options.backup {
+        progress.set_phase("上传 WebDAV 备份");
+        Some(
+            backup::upload_directory(&output_dir, &mut progress)
+                .with_context(|| format!("export completed at {} but WebDAV backup failed", output_dir.display()))?,
+        )
+    } else {
+        None
+    };
+    progress.finish();
+    if let Some(summary) = &backup_summary {
+        println!("[+] WebDAV 备份完成: {} ({} 个文件)", summary.remote, summary.files);
+    }
     let result = serde_json::json!({
         "schema": util::SCHEMA,
         "generator": util::GENERATOR,
@@ -647,8 +665,11 @@ fn run_export(
         "end_time": if overall_end == i64::MIN { 0 } else { overall_end },
         "formats": options.formats.iter().map(|format| format.name()).collect::<Vec<_>>(),
         "keep_output": options.keep_output || options.output_dir.is_some(),
+        "backup": backup_summary.as_ref().map(|summary| serde_json::json!({
+            "remote": summary.remote,
+            "files": summary.files,
+        })),
     });
-    progress.finish();
     println!("WeChat chat records exported to {}", output_dir.display());
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())

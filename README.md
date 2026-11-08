@@ -232,6 +232,7 @@ wechat-exporter export --key <64位Hex密钥> \
 | `-o, --output-dir <DIR>` | 绝对路径输出目录，必须尚不存在 |
 | `-k, --keep-output` | 保留临时输出目录 |
 | `--report` | 生成可视化分析报告 `conversation.report.html` |
+| `--backup` | 导出完成后按配置自动上传到 WebDAV |
 | `--silent` | 不打印进度条，仅保留最终结果/错误 |
 | `--debug` | 详细调试输出 |
 
@@ -286,6 +287,30 @@ wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json 
 `export-report.json` 的顶层和每个 `conversations[]` 条目都包含
 `start_time` / `end_time`（Unix 秒）与 `start_time_text` / `end_time_text`，
 可直接用于确认导出范围，也可作为 `report --from-json` 的输入。
+
+### backup
+
+配置 WebDAV 后，`export --backup` 会把整个输出目录上传到
+`<url>/<remote_path>/<输出目录名>/`。
+
+```bash
+# 保存 WebDAV 配置（当前目录 .wechat-exporter-backup.json）
+wechat-exporter backup webdav \
+  --url https://dav.example.com/remote.php/dav/files/user \
+  --username <user> --password <pass> --remote-path wechat-exports
+
+wechat-exporter backup show    # 查看配置，密码隐藏
+wechat-exporter backup test    # PROPFIND 测试连接
+wechat-exporter backup clear   # 删除配置
+
+# 导出后自动备份
+wechat-exporter export --key <64位Hex> \
+  --conversation-id 123456789@chatroom --format all --include-media \
+  --output-dir /path/to/out --backup
+```
+
+上传包含 HTML、报告、JSON、媒体文件等全部输出；目录不存在时自动
+`MKCOL` 创建。密码保存在本地配置文件中（Unix 下权限 0600）。
 
 ### upgrade
 
