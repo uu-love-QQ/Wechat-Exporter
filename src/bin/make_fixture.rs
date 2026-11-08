@@ -308,7 +308,7 @@ fn build(out: &Path) -> Result<()> {
             4,
             None,
         )?;
-        let record_xml = "<msg><appmsg><title>草帽Wantu与Harry的聊天记录</title><des>Harry: 第一条</des><type>19</type><recorditem><![CDATA[<recordinfo><title>草帽Wantu与Harry的聊天记录</title><desc>Harry: 第一条</desc><datalist count=\"2\"><dataitem datatype=\"1\"><datadesc>第一条</datadesc><sourcename>Harry</sourcename><sourcetime>2026-11-03 07:51:59</sourcetime></dataitem><dataitem datatype=\"1\"><datadesc>第二条</datadesc><sourcename>草帽Wantu</sourcename><sourcetime>2026-11-03 07:52:10</sourcetime></dataitem></datalist></recordinfo>]]></recorditem></appmsg></msg>";
+        let record_xml = "<msg><appmsg><title>草帽Wantu与Harry的聊天记录</title><des>Harry:&#x20;第一条&#x0A;Wantu:&#x20;第二条</des><type>19</type><recorditem><![CDATA[<recordinfo><title>草帽Wantu与Harry的聊天记录</title><desc>Harry:&#x20;第一条&#x0A;Wantu:&#x20;第二条</desc><datalist count=\"2\"><dataitem datatype=\"1\"><datadesc>第一条</datadesc><sourcename>Harry</sourcename><sourcetime>2026-11-03 07:51:59</sourcetime></dataitem><dataitem datatype=\"1\"><datadesc>第二条</datadesc><sourcename>草帽Wantu</sourcename><sourcetime>2026-11-03 07:52:10</sourcetime></dataitem></datalist></recordinfo>]]></recorditem></appmsg></msg>";
         insert_message(
             &conn,
             &group_table,

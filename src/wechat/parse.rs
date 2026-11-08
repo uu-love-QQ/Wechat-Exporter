@@ -67,12 +67,24 @@ pub fn xml_attr(xml: &str, tag: &str, attr: &str) -> Option<String> {
 }
 
 pub fn unescape_xml(value: &str) -> String {
-    value
+    static NUMERIC: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"&#(?:[xX]([0-9A-Fa-f]+)|([0-9]+));").unwrap()
+    });
+    let decoded = NUMERIC.replace_all(value, |captures: &regex::Captures| {
+        let code = if let Some(hex) = captures.get(1) {
+            u32::from_str_radix(hex.as_str(), 16).ok()
+        } else {
+            captures.get(2).and_then(|dec| dec.as_str().parse::<u32>().ok())
+        };
+        code.and_then(char::from_u32)
+            .map(|ch| ch.to_string())
+            .unwrap_or_else(|| captures.get(0).unwrap().as_str().to_string())
+    });
+    decoded
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&apos;", "'")
-        .replace("&#39;", "'")
         .replace("&amp;", "&")
 }
 
@@ -809,11 +821,18 @@ mod tests {
     }
 
     #[test]
+    fn decodes_numeric_xml_entities() {
+        assert_eq!(unescape_xml("a&#x20;b&#x0A;c"), "a b\nc");
+        assert_eq!(unescape_xml("&#39;&#x4E2D;"), "'中");
+    }
+
+    #[test]
     fn parses_merged_chat_record() {
-        let xml = "<msg><appmsg><title>记录标题</title><des>摘要</des><type>19</type><recorditem><![CDATA[<recordinfo><title>记录标题</title><desc>摘要</desc><datalist count=\"2\"><dataitem datatype=\"1\"><datadesc>第一条</datadesc><sourcename>Harry</sourcename><sourcetime>2026-11-03 07:51:59</sourcetime></dataitem><dataitem datatype=\"3\"><datadesc></datadesc><sourcename>Wantu</sourcename></dataitem></datalist></recordinfo>]]></recorditem></appmsg></msg>";
+        let xml = "<msg><appmsg><title>记录标题</title><des>摘要</des><type>19</type><recorditem><![CDATA[<recordinfo><title>记录标题</title><desc>Harry:&#x20;第一行&#x0A;Wantu:&#x20;第二行</desc><datalist count=\"2\"><dataitem datatype=\"1\"><datadesc>第一条</datadesc><sourcename>Harry</sourcename><sourcetime>2026-11-03 07:51:59</sourcetime></dataitem><dataitem datatype=\"3\"><datadesc></datadesc><sourcename>Wantu</sourcename></dataitem></datalist></recordinfo>]]></recorditem></appmsg></msg>";
         let parsed = parse_content(xml, 49, 19, 81604378673);
         let record = parsed.record.expect("record");
         assert_eq!(record.title, "记录标题");
+        assert_eq!(record.desc, "Harry: 第一行\nWantu: 第二行");
         assert_eq!(record.items.len(), 2);
         assert_eq!(record.items[0].sender, "Harry");
         assert_eq!(record.items[0].text, "第一条");

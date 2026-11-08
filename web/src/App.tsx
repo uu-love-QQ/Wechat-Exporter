@@ -349,6 +349,12 @@ function recordText(item: { type: number | null; text: string }): string {
 }
 
 function ChatRecordCard({ record, mine }: { record: ChatRecord; mine: boolean }) {
+  const preview = record.desc
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join('\n')
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -368,9 +374,14 @@ function ChatRecordCard({ record, mine }: { record: ChatRecord; mine: boolean })
             </span>
             <Badge variant={mine ? 'secondary' : 'outline'}>{record.items.length} 条</Badge>
           </div>
-          {record.desc && (
-            <p className={cn('mt-1 line-clamp-2 text-xs', mine ? 'mine-muted' : 'text-muted-foreground')}>
-              {record.desc}
+          {preview && (
+            <p
+              className={cn(
+                'mt-1 line-clamp-2 whitespace-pre-line text-xs',
+                mine ? 'mine-muted' : 'text-muted-foreground',
+              )}
+            >
+              {preview}
             </p>
           )}
           <span className={cn('mt-2 inline-block text-xs', mine ? 'mine-muted' : 'text-primary')}>
@@ -381,13 +392,13 @@ function ChatRecordCard({ record, mine }: { record: ChatRecord; mine: boolean })
       <DialogContent className="max-h-[85vh] overflow-hidden sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{record.title || '聊天记录'}</DialogTitle>
-          <DialogDescription>
-            {record.items.length} 条消息{record.desc ? ` · ${record.desc}` : ''}
-          </DialogDescription>
+          <DialogDescription>{record.items.length} 条消息</DialogDescription>
         </DialogHeader>
         <div className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto pr-1">
           {record.items.length === 0 && (
-            <p className="text-sm text-muted-foreground">没有可展示的聊天记录明细。</p>
+            <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+              {record.desc || '没有可展示的聊天记录明细。'}
+            </p>
           )}
           {record.items.map((item, index) => (
             <div key={index} className="rounded-lg border bg-card p-3 text-sm text-card-foreground">
