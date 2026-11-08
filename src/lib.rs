@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod db;
 pub mod export;
+pub mod report;
 pub mod util;
 pub mod wechat;
 pub mod config;
@@ -284,6 +285,16 @@ pub fn run() -> Result<()> {
             &store,
             &contacts,
             &conversations,
+            self_username.as_deref(),
+            account_id.as_deref(),
+        ),
+        Mode::Report(kind) => report::run(
+            *kind,
+            &options,
+            &store,
+            &contacts,
+            &conversations,
+            layout.contact_db.as_deref(),
             self_username.as_deref(),
             account_id.as_deref(),
         ),

@@ -232,6 +232,34 @@ fn exports_visual_report() {
 }
 
 #[test]
+fn generates_four_report_types() {
+    let (temp, source) = fixture();
+    let cases = [
+        ("private", Vec::<&str>::new(), "private-report.html", "好友消息排行"),
+        ("group", vec!["--conversation-id", GROUP], "group-report.html", "群成员详细信息"),
+        ("annual", vec!["--year", "2023"], "annual-report.html", "2023 年度报告"),
+        ("dual", vec!["--conversation-id", ALICE], "dual-report.html", "我们的对话比例"),
+    ];
+    for (kind, extra, file, needle) in cases {
+        let dir = temp.path().join(format!("report-{kind}"));
+        let mut args = vec![
+            "report",
+            kind,
+            "--source-database",
+            source.to_str().unwrap(),
+            "--output-dir",
+            dir.to_str().unwrap(),
+        ];
+        args.extend(extra);
+        let (code, stdout, stderr) = run_with_key(&args);
+        assert_eq!(code, 0, "{kind} stderr={stderr} stdout={stdout}");
+        let html = fs::read_to_string(dir.join(file)).unwrap();
+        assert!(html.contains(needle), "{kind} missing {needle}");
+        assert!(!html.contains("{}"), "{kind} has template placeholder");
+    }
+}
+
+#[test]
 fn help_scopes_options_to_subcommands() {
     let root = Command::new(env!("CARGO_BIN_EXE_wechat-exporter"))
         .arg("--help")

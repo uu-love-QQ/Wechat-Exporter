@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -39,11 +39,13 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
   list    列出会话
   search  全文检索
   export  导出会话，可附带媒体
+  report  生成私聊/群聊/双人/年度分析报告
 
   查看某个子命令的完整参数：
     wechat-exporter export --help
 
   密钥可通过命令行参数、密钥文件或 stdin 传入；缺省数据库路径时自动检索。
+  分析报告示例：wechat-exporter report private --output-dir /path/to/report
 "#
 )]
 pub struct Cli {
@@ -63,6 +65,8 @@ pub enum Command {
     Search(SearchArgs),
     /// 导出指定会话为 JSON/Markdown/HTML 等格式，可同时提取媒体
     Export(ExportArgs),
+    /// 生成私聊/群聊/双人/年度分析报告
+    Report(ReportArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -255,6 +259,46 @@ pub struct ExportArgs {
     pub report: bool,
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportKind {
+    /// 私聊分析：好友消息排行、消息类型、发送比例、时段分布
+    Private,
+    /// 群聊分析：成员明细、发言排行、活跃时段、媒体内容
+    Group,
+    /// 双人报告：指定好友的双方聊天分析
+    Dual,
+    /// 年度报告：按年或跨年度长期统计
+    Annual,
+}
+
+#[derive(Args, Debug)]
+pub struct ReportArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// 报告类型
+    #[arg(value_name = "KIND", value_enum)]
+    pub kind: ReportKind,
+
+    /// 报告输出目录 (绝对路径)
+    #[arg(
+        long = "output-dir",
+        short = 'o',
+        value_name = "DIR",
+        required = true,
+        help_heading = "报告"
+    )]
+    pub output_dir: PathBuf,
+
+    /// group/dual 报告指定会话 ID
+    #[arg(long = "conversation-id", short = 'c', value_name = "ID", help_heading = "报告")]
+    pub conversation_id: Option<String>,
+
+    /// group/dual/annual 报告年份；缺省或 0 表示全部历史
+    #[arg(long = "year", value_name = "YYYY", help_heading = "报告")]
+    pub year: Option<i32>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Format {
     Json,
@@ -341,6 +385,7 @@ pub enum Mode {
     Search(String),
     DetectDatabases,
     Init,
+    Report(ReportKind),
 }
 
 #[derive(Clone, Debug)]
@@ -363,6 +408,7 @@ pub struct ValidatedCli {
     pub plaintext: bool,
     pub debug: bool,
     pub report: bool,
+    pub report_year: i32,
 }
 
 struct CommonValidated {
@@ -407,6 +453,7 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         plaintext: common.plaintext,
         debug: common.debug,
         report: false,
+        report_year: 0,
     }
 }
 
@@ -524,6 +571,7 @@ impl Command {
                 plaintext: true,
                 debug: args.debug,
                 report: false,
+                report_year: 0,
             }),
             Command::Init(args) => {
                 let common = args.common.validate()?;
@@ -629,6 +677,55 @@ impl Command {
                 options.output_dir = args.output_dir;
                 options.image_key = image_key;
                 options.report = args.report;
+                Ok(options)
+            }
+            Command::Report(args) => {
+                if !args.output_dir.is_absolute() {
+                    bail!("report output directory must be an absolute path");
+                }
+                if let Some(parent) = args.output_dir.parent() {
+                    if !parent.exists() {
+                        bail!("report output directory parent does not exist");
+                    }
+                }
+                if args.output_dir.is_file() {
+                    bail!("report output directory is an existing file, not a directory");
+                }
+                if let Some(id) = &args.conversation_id {
+                    if id.is_empty() || id.len() > 1024 || id.chars().any(char::is_control) {
+                        bail!("conversation ID must be nonempty, at most 1024 bytes, and contain no control characters");
+                    }
+                }
+                match args.kind {
+                    ReportKind::Private | ReportKind::Annual => {
+                        if args.conversation_id.is_some() {
+                            bail!("{} report does not accept --conversation-id", match args.kind {
+                                ReportKind::Private => "private",
+                                _ => "annual",
+                            });
+                        }
+                    }
+                    ReportKind::Group | ReportKind::Dual => {
+                        if args.conversation_id.is_none() {
+                            bail!("{} report requires --conversation-id", match args.kind {
+                                ReportKind::Group => "group",
+                                _ => "dual",
+                            });
+                        }
+                    }
+                }
+                if args.kind == ReportKind::Private && args.year.is_some() {
+                    bail!("private report does not accept --year");
+                }
+                let year = args.year.unwrap_or(0);
+                if year != 0 && !(1970..=2100).contains(&year) {
+                    bail!("report year must be 1970..2100, or 0 for all history");
+                }
+                let common = args.common.validate()?;
+                let mut options = validated(common, Mode::Report(args.kind));
+                options.output_dir = Some(args.output_dir);
+                options.conversation_ids = args.conversation_id.into_iter().collect();
+                options.report_year = year;
                 Ok(options)
             }
         }

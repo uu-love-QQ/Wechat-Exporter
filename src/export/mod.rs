@@ -727,7 +727,7 @@ fn write_xlsx(context: &ExportContext<'_>, path: &Path) -> Result<()> {
         .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", path.display()))
 }
 
-const REPORT_CSS: &str = r#"
+pub(crate) const REPORT_CSS: &str = r#"
 :root {
   --bg: #f6f8fc;
   --panel: #ffffff;
@@ -996,7 +996,7 @@ footer { margin-top: 22px; color: var(--muted); font-size: 10px; text-align: cen
 }
 "#;
 
-fn escape_html(value: &str) -> String {
+pub(crate) fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -1005,7 +1005,7 @@ fn escape_html(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-fn format_count(value: usize) -> String {
+pub(crate) fn format_count(value: usize) -> String {
     let text = value.to_string();
     let mut out = String::with_capacity(text.len() + text.len() / 3);
     for (index, ch) in text.chars().enumerate() {
@@ -1018,7 +1018,7 @@ fn format_count(value: usize) -> String {
     out
 }
 
-fn percent(part: usize, total: usize) -> String {
+pub(crate) fn percent(part: usize, total: usize) -> String {
     if total == 0 {
         "0%".to_string()
     } else {
@@ -1119,7 +1119,7 @@ fn word_cloud(words: &BTreeMap<String, usize>, mine: bool) -> String {
     html
 }
 
-fn bar_group(label: &str, me: usize, other: usize, max: usize, title: &str) -> String {
+pub(crate) fn bar_group(label: &str, me: usize, other: usize, max: usize, title: &str) -> String {
     let me_height = if me == 0 { 2.0 } else { (me as f64 * 100.0 / max.max(1) as f64).max(3.0) };
     let other_height = if other == 0 { 2.0 } else { (other as f64 * 100.0 / max.max(1) as f64).max(3.0) };
     format!(
@@ -1131,7 +1131,7 @@ fn bar_group(label: &str, me: usize, other: usize, max: usize, title: &str) -> S
     )
 }
 
-fn write_analytics_report(context: &ExportContext<'_>, path: &Path) -> Result<()> {
+pub(crate) fn write_analytics_report(context: &ExportContext<'_>, path: &Path) -> Result<()> {
     use std::fmt::Write as _;
 
     let mut hours_me = [0usize; 24];

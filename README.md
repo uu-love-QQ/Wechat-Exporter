@@ -234,6 +234,44 @@ wechat-exporter export --key <64位Hex密钥> \
 | `--report` | 生成可视化分析报告 `conversation.report.html` |
 | `--debug` | 详细调试输出 |
 
+### report
+
+生成独立分析报告（HTML，自包含、离线）。所有 report 子命令都需要绝对路径
+`--output-dir`；数据库与密钥参数与 export 相同。
+
+```bash
+# 私聊分析：扫描所有私聊，统计好友消息量、发送比例、类型、时段、月度趋势
+wechat-exporter report private --key <64位Hex> --output-dir /path/to/report
+
+# 群聊分析：群成员明细、发言排行、活跃时段、媒体内容
+wechat-exporter report group --key <64位Hex> \
+  --conversation-id "123456789@chatroom" --output-dir /path/to/report
+
+# 双人报告：指定好友的双方聊天分析，可限定年份
+wechat-exporter report dual --key <64位Hex> \
+  --conversation-id wxid_xxx --year 2024 --output-dir /path/to/report
+
+# 年度报告：指定年份；--year 0 生成跨年度长期报告
+wechat-exporter report annual --key <64位Hex> --year 2024 --output-dir /path/to/report
+```
+
+| 类型 | 输出 | 说明 |
+|---|---|---|
+| `private` | `private-report.html` | 好友消息排行、发送比例、消息类型、24 小时/月度趋势、媒体 |
+| `group` | `group-report.html` | 群成员名册/明细、发言排行、活跃时段、媒体 |
+| `dual` | `dual-report.html` | 双方对话比例、趋势、时段、类型、高频词 |
+| `annual` | `annual-report.html` | 年度/长期汇总、月度趋势、好友与群聊排行、最活跃日期 |
+
+| 参数 | 说明 |
+|---|---|
+| `-o, --output-dir <DIR>` | 报告输出目录（必填，绝对路径） |
+| `-c, --conversation-id <ID>` | `group` / `dual` 必填 |
+| `--year <YYYY>` | `group` / `dual` / `annual` 的年份；缺省或 `0` 为全部历史 |
+| `-s, --source-database` / `-K, --key` / `--key-file` | 与其他子命令相同 |
+
+`group` 报告优先从联系人库的 `chatroom_member` + `name2id` 读取完整群名册；
+表结构不兼容时回退为“消息中出现的成员”，并在报告中标注成员数。
+
 ## 六、HTML 界面与引用跳转
 
 HTML 导出由 `web/` 前端模板生成（Vite + React 19 + Tailwind v4 + shadcn/ui），
