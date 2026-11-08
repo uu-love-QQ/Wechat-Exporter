@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::{ReportKind, ValidatedCli};
 use crate::export::{self, ExportContext};
+use crate::progress::Progress;
 use crate::util::{format_timestamp, GENERATOR};
 use crate::wechat::model::{Contact, Conversation, ExportMessage, MediaKind, MediaRef, MessageSource};
 use crate::wechat::shards::Store;
@@ -228,10 +229,22 @@ fn private_report(
     contacts: &HashMap<String, Contact>,
     conversations: &[Conversation],
     self_username: Option<&str>,
+    progress: &mut Progress,
 ) -> Result<Aggregate> {
     let mut aggregate = Aggregate::new();
-    for conversation in conversations.iter().filter(|item| is_private_conversation(item)) {
+    let private: Vec<&Conversation> = conversations.iter().filter(|item| is_private_conversation(item)).collect();
+    let mut scanned = 0usize;
+    for (index, conversation) in private.iter().enumerate() {
+        progress.set_phase(format!(
+            "扫描私聊 {}/{} · {} · 已读取 {} 条",
+            index + 1,
+            private.len(),
+            conversation.name,
+            scanned
+        ));
+        progress.steps(index + 1, private.len(), "会话");
         let messages = load_messages(store, conversation, contacts, self_username, None, None)?;
+        scanned += messages.len();
         if messages.is_empty() {
             continue;
         }
@@ -320,11 +333,23 @@ fn annual_report(
     contacts: &HashMap<String, Contact>,
     conversations: &[Conversation],
     self_username: Option<&str>,
+    progress: &mut Progress,
 ) -> Result<Aggregate> {
     let (start, end) = year_bounds(year);
     let mut aggregate = Aggregate::new();
-    for conversation in conversations.iter().filter(|item| is_analyzable_conversation(item)) {
+    let analyzable: Vec<&Conversation> = conversations.iter().filter(|item| is_analyzable_conversation(item)).collect();
+    let mut scanned = 0usize;
+    for (index, conversation) in analyzable.iter().enumerate() {
+        progress.set_phase(format!(
+            "扫描年度会话 {}/{} · {} · 已读取 {} 条",
+            index + 1,
+            analyzable.len(),
+            conversation.name,
+            scanned
+        ));
+        progress.steps(index + 1, analyzable.len(), "会话");
         let messages = load_messages(store, conversation, contacts, self_username, start, end)?;
+        scanned += messages.len();
         if messages.is_empty() {
             continue;
         }
@@ -670,10 +695,11 @@ pub fn run(
         .context("report output directory is missing")?;
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let mut progress = Progress::new(options.silent);
     let year = options.report_year;
     let (payload, file_name, report_type, conversation_id) = match kind {
         ReportKind::Private => {
-            let aggregate = private_report(options, store, contacts, conversations, self_username)?;
+            let aggregate = private_report(options, store, contacts, conversations, self_username, &mut progress)?;
             (payload_private(&aggregate), "private-report.html", "private", None)
         }
         ReportKind::Group => {
@@ -685,11 +711,14 @@ pub fn run(
             if !conversation.is_group {
                 bail!("group report requires a group conversation");
             }
+            progress.set_phase(format!("读取群聊消息 · {}", conversation.name));
+            progress.steps(0, 1, "任务");
             let (start, end) = year_bounds(year);
             let messages = load_messages(store, conversation, contacts, self_username, start, end)?;
             if messages.is_empty() {
                 bail!("no messages available for group {}", id);
             }
+            progress.set_phase(format!("分析群聊 · {} 条消息", messages.len()));
             let member_ids = crate::wechat::contact::load_group_members(
                 contact_db,
                 &conversation.id,
@@ -700,7 +729,7 @@ pub fn run(
             (payload_group(conversation, &aggregate), "group-report.html", "group", Some(conversation.id.clone()))
         }
         ReportKind::Annual => {
-            let aggregate = annual_report(year, store, contacts, conversations, self_username)?;
+            let aggregate = annual_report(year, store, contacts, conversations, self_username, &mut progress)?;
             (payload_annual(year, &aggregate), "annual-report.html", "annual", None)
         }
         ReportKind::Dual => {
@@ -712,11 +741,14 @@ pub fn run(
             if conversation.is_group {
                 bail!("dual report requires a private conversation");
             }
+            progress.set_phase(format!("读取双人消息 · {}", conversation.name));
+            progress.steps(0, 1, "任务");
             let (start, end) = year_bounds(year);
             let messages = load_messages(store, conversation, contacts, self_username, start, end)?;
             if messages.is_empty() {
                 bail!("no messages available for conversation {}", id);
             }
+            progress.set_phase(format!("生成双人报告 · {} 条消息", messages.len()));
             let self_name = self_username
                 .and_then(|uid| contacts.get(uid))
                 .map(|contact| contact.display_name())
@@ -733,6 +765,7 @@ pub fn run(
             };
             let path = output_dir.join("dual-report.html");
             write_dual_report(&context, &path)?;
+            progress.finish();
             let result = serde_json::json!({
                 "type": "dual",
                 "conversation_id": conversation.id,
@@ -744,8 +777,10 @@ pub fn run(
             return Ok(());
         }
     };
+    progress.set_phase("生成报告");
     let path = output_dir.join(file_name);
     write_payload(&payload, &path)?;
+    progress.finish();
     let result = serde_json::json!({
         "type": report_type,
         "year": year,
@@ -1032,10 +1067,14 @@ fn select_loaded<'a>(
 pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> Result<()> {
     let output_dir = options.output_dir.as_ref().context("report output directory is missing")?;
     fs::create_dir_all(output_dir).with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let mut progress = Progress::new(options.silent);
+    progress.set_phase("读取导出 JSON");
+    progress.steps(0, 1, "任务");
     let loaded = filter_year(load_json_path(path)?, options.report_year);
     if loaded.is_empty() {
         bail!("no messages available in the selected JSON for year {}", options.report_year);
     }
+    progress.set_phase("生成报告");
     match kind {
         ReportKind::Private => {
             let aggregate = aggregate_loaded(&loaded, false, true);
@@ -1044,6 +1083,7 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
             }
             let path = output_dir.join("private-report.html");
             write_payload(&payload_private(&aggregate), &path)?;
+            progress.finish();
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"private","report":path}))?);
         }
         ReportKind::Group => {
@@ -1055,6 +1095,7 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
             let aggregate = group_report(&item.conversation, &item.messages, None, &[], &empty)?;
             let path = output_dir.join("group-report.html");
             write_payload(&payload_group(&item.conversation, &aggregate), &path)?;
+            progress.finish();
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"group","report":path,"conversation_id":item.conversation.id}))?);
         }
         ReportKind::Annual => {
@@ -1064,6 +1105,7 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
             }
             let path = output_dir.join("annual-report.html");
             write_payload(&payload_annual(options.report_year, &aggregate), &path)?;
+            progress.finish();
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"annual","year":options.report_year,"report":path}))?);
         }
         ReportKind::Dual => {
@@ -1088,6 +1130,7 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
             };
             let path = output_dir.join("dual-report.html");
             write_dual_report(&context, &path)?;
+            progress.finish();
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"dual","report":path,"conversation_id":item.conversation.id}))?);
         }
     }

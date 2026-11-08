@@ -903,19 +903,27 @@ pub fn export_media(
     debug: bool,
     conversation_id: &str,
     voice: Option<&super::voice::VoiceIndex>,
+    mut progress: Option<&mut dyn FnMut(usize, usize, usize, usize)>,
 ) -> MediaOutcome {
     let (image_key, image_xor_key, image_seed) = resolve_image_keys(index, account_id, image_key);
     let emoticon_key = image_seed.and_then(|seed| emoticon_key_from_seed(seed, account_id));
     let media_dir = output_dir.join("media");
+    let message_total = messages.len();
+    let attachment_total = messages.iter().filter(|message| message.media.is_some()).count();
+    let mut attachment_done = 0usize;
     let mut outcome = MediaOutcome {
         saved: 0,
         failed: 0,
         failures: Vec::new(),
     };
-    for message in messages.iter_mut() {
+    for (message_index, message) in messages.iter_mut().enumerate() {
+        if let Some(callback) = progress.as_deref_mut() {
+            callback(message_index, message_total, attachment_done, attachment_total);
+        }
         let Some(media) = message.media.clone() else {
             continue;
         };
+        attachment_done += 1;
         let folder = media.kind.as_str();
         let is_target_media = matches!(
             media.kind,

@@ -257,6 +257,10 @@ pub struct ExportArgs {
     /// 生成可视化聊天分析报告 conversation.report.html
     #[arg(long = "report", action = ArgAction::SetTrue, help_heading = "导出")]
     pub report: bool,
+
+    /// 不打印进度条
+    #[arg(long = "silent", action = ArgAction::SetTrue, help_heading = "其他")]
+    pub silent: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -301,6 +305,10 @@ pub struct ReportArgs {
     /// 从已导出的 conversation.json、export-report.json 或导出目录加载，跳过数据库
     #[arg(long = "from-json", value_name = "PATH", help_heading = "报告")]
     pub from_json: Option<PathBuf>,
+
+    /// 不打印进度条
+    #[arg(long = "silent", action = ArgAction::SetTrue, help_heading = "其他")]
+    pub silent: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -414,6 +422,7 @@ pub struct ValidatedCli {
     pub report: bool,
     pub report_year: i32,
     pub from_json: Option<PathBuf>,
+    pub silent: bool,
 }
 
 struct CommonValidated {
@@ -460,6 +469,7 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         report: false,
         report_year: 0,
         from_json: None,
+        silent: false,
     }
 }
 
@@ -579,6 +589,7 @@ impl Command {
                 report: false,
                 report_year: 0,
                 from_json: None,
+                silent: false,
             }),
             Command::Init(args) => {
                 let common = args.common.validate()?;
@@ -684,6 +695,7 @@ impl Command {
                 options.output_dir = args.output_dir;
                 options.image_key = image_key;
                 options.report = args.report;
+                options.silent = args.silent;
                 Ok(options)
             }
             Command::Report(args) => {
@@ -750,6 +762,7 @@ impl Command {
                 options.conversation_ids = args.conversation_id.into_iter().collect();
                 options.report_year = year;
                 options.from_json = args.from_json;
+                options.silent = args.silent;
                 Ok(options)
             }
         }

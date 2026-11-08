@@ -2,6 +2,7 @@ pub mod cli;
 pub mod db;
 pub mod export;
 pub mod report;
+pub mod progress;
 pub mod util;
 pub mod wechat;
 pub mod config;
@@ -13,6 +14,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cli::{Cli, Mode, ValidatedCli};
+use progress::Progress;
 use export::ExportContext;
 use wechat::conversations::{build_conversations, select_conversations};
 use wechat::discover::{auto_detect_candidates, discover, format_scanned_roots_message};
@@ -482,11 +484,12 @@ fn run_export(
     };
     let single_direct = selected.len() == 1 && !options.conversation_ids.is_empty();
 
+    let mut progress = Progress::new(options.silent);
     let mut report_conversations = Vec::new();
     let mut total_messages = 0usize;
     let mut overall_start = i64::MAX;
     let mut overall_end = i64::MIN;
-    for conversation in &selected {
+    for (conversation_index, conversation) in selected.iter().enumerate() {
         let mut messages = store.load_messages(
             &conversation.id,
             self_username,
@@ -497,6 +500,14 @@ fn run_export(
         if messages.is_empty() {
             continue;
         }
+        let attachment_total = messages.iter().filter(|message| message.media.is_some()).count();
+        progress.set_phase(format!(
+            "导出会话 {}/{} · {}",
+            conversation_index + 1,
+            selected.len(),
+            conversation.name
+        ));
+        progress.set_totals(messages.len(), attachment_total);
         let conversation_dir = if single_direct {
             output_dir.clone()
         } else {
@@ -505,7 +516,11 @@ fn run_export(
         std::fs::create_dir_all(&conversation_dir)
             .with_context(|| format!("failed to create {}", conversation_dir.display()))?;
         let media = if let (Some(index), true) = (media_index.as_ref(), options.include_media) {
-            Some(wechat::media::export_media(
+            let mut on_media = |done: usize, total: usize, attachment_done: usize, attachment_total: usize| {
+                progress.messages(done, total);
+                progress.attachments(attachment_done, attachment_total);
+            };
+            let outcome = wechat::media::export_media(
                 &mut messages,
                 index,
                 &conversation_dir,
@@ -514,7 +529,10 @@ fn run_export(
                 options.debug,
                 &conversation.id,
                 voice_index.as_ref(),
-            ))
+                Some(&mut on_media),
+            );
+            progress.attachments(attachment_total, attachment_total);
+            Some(outcome)
         } else {
             None
         };
@@ -547,12 +565,19 @@ fn run_export(
             include_media: options.include_media,
             avatar_path,
         };
+        progress.set_phase(format!(
+            "写入会话 {}/{} · {}",
+            conversation_index + 1,
+            selected.len(),
+            conversation.name
+        ));
         let written = export::write_conversation(
             &context,
             &conversation_dir,
             &options.formats,
             options.report,
         )?;
+        progress.messages(messages.len(), messages.len());
         total_messages += messages.len();
         let documents: serde_json::Map<String, serde_json::Value> = written
             .iter()
@@ -595,6 +620,7 @@ fn run_export(
     if report_conversations.is_empty() {
         bail!("no readable conversation returned");
     }
+    progress.set_phase("生成导出报告");
     let report_path = export::write_report(
         &output_dir,
         account_id,
@@ -617,6 +643,7 @@ fn run_export(
         "formats": options.formats.iter().map(|format| format.name()).collect::<Vec<_>>(),
         "keep_output": options.keep_output || options.output_dir.is_some(),
     });
+    progress.finish();
     println!("WeChat chat records exported to {}", output_dir.display());
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())

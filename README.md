@@ -232,6 +232,7 @@ wechat-exporter export --key <64位Hex密钥> \
 | `-o, --output-dir <DIR>` | 绝对路径输出目录，必须尚不存在 |
 | `-k, --keep-output` | 保留临时输出目录 |
 | `--report` | 生成可视化分析报告 `conversation.report.html` |
+| `--silent` | 不打印进度条，仅保留最终结果/错误 |
 | `--debug` | 详细调试输出 |
 
 ### report
@@ -273,10 +274,14 @@ wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json 
 | `-c, --conversation-id <ID>` | `group` / `dual` 必填 |
 | `--year <YYYY>` | `group` / `dual` / `annual` 的年份；缺省或 `0` 为全部历史 |
 | `--from-json <PATH>` | 从 `conversation.json`、`export-report.json` 或导出目录读取，跳过数据库 |
+| `--silent` | 不打印进度条 |
 | `-s, --source-database` / `-K, --key` / `--key-file` | 与其他子命令相同 |
 
 `group` 报告优先从联系人库的 `chatroom_member` + `name2id` 读取完整群名册；
 表结构不兼容时回退为“消息中出现的成员”，并在报告中标注成员数。
+
+导出与报告执行时会在终端显示进度条：消息 `已处理/总数`、附件 `已处理/总数`，
+报告还会显示当前扫描会话与阶段。`--silent` 可关闭进度条，保留最终 JSON/错误输出。
 
 `export-report.json` 的顶层和每个 `conversations[]` 条目都包含
 `start_time` / `end_time`（Unix 秒）与 `start_time_text` / `end_time_text`，
