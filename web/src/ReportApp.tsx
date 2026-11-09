@@ -84,10 +84,13 @@ export interface AnnualPerson {
 
 export interface AnnualCompanion {
   period: string
+  month: number
+  status: 'ok' | 'empty' | 'future'
   conversationId: string
   displayName: string
   messages: number
   periodMessages: number
+  share?: number
   avatar?: string | null
 }
 
@@ -768,9 +771,9 @@ function annualTypeRows(types: ReportCount[]): ReportCount[] {
     .sort((a, b) => b.count - a.count || order.indexOf(a.name) - order.indexOf(b.name))
 }
 
-function PersonAvatar({ person, size = 'sm' }: { person: { displayName: string; avatar?: string | null }; size?: 'sm' | 'default' | 'lg' }) {
+function PersonAvatar({ person, size = 'sm', className }: { person: { displayName: string; avatar?: string | null }; size?: 'sm' | 'default' | 'lg'; className?: string }) {
   return (
-    <Avatar size={size} className="annual-person-avatar" aria-hidden="true">
+    <Avatar size={size} className={cn('annual-person-avatar', className)} aria-hidden="true">
       {person.avatar && <AvatarImage src={person.avatar} alt="" />}
       <AvatarFallback>{(person.displayName || '?').slice(0, 1)}</AvatarFallback>
     </Avatar>
@@ -827,6 +830,20 @@ function AnnualReportView({
 
   const top = annual.topFriends[0]
   const topShare = top && messageTotalNumber > 0 ? Math.round((top.messages / messageTotalNumber) * 100) : 0
+  const activeMonths = annual.monthlyCompanions.filter((item) => item.status === 'ok')
+  const monthlyLeaders = new Map<string, { item: AnnualCompanion; months: number; messages: number }>()
+  for (const item of activeMonths) {
+    if (!item.conversationId) continue
+    const current = monthlyLeaders.get(item.conversationId)
+    if (current) {
+      current.months += 1
+      current.messages += item.messages
+    } else {
+      monthlyLeaders.set(item.conversationId, { item, months: 1, messages: item.messages })
+    }
+  }
+  const monthlyLeader = [...monthlyLeaders.values()].sort((a, b) => b.months - a.months || b.messages - a.messages)[0]
+  const otherMonthlyLeaders = Math.max(0, monthlyLeaders.size - (monthlyLeader ? 1 : 0))
   const podium = [annual.topFriends[1], annual.topFriends[0], annual.topFriends[2]].filter(Boolean) as AnnualPerson[]
   const runnersUp = annual.topFriends.slice(3, 10)
   const peak = annual.heatmap.peak
@@ -986,24 +1003,70 @@ function AnnualReportView({
           id="companions"
           index={3}
           title="每个月陪你最多的人"
-          question="每个阶段，陪你聊得最多的是谁？"
+          question="每个月陪你聊得最多的是谁？"
           hint="每个月里和你私聊消息最多的好友；占比是 TA 的消息数除以当月全部私聊消息数。"
           accent="people"
           ghost="月"
         >
           {annual.monthlyCompanions.length > 0 ? (
-            <div className="annual-companions">
-              {annual.monthlyCompanions.map((item) => (
-                <div className="annual-companion" key={item.period} data-empty={item.displayName ? undefined : 'true'}>
-                  <span className="period">{item.period}</span>
-                  <span className="person">
-                    {item.displayName && <PersonAvatar person={item} />}
-                    <span>{item.displayName || '—'}</span>
-                  </span>
-                  <span className="count">{item.periodMessages > 0 ? `${item.messages} / ${item.periodMessages} 条` : '无消息'}</span>
+            <>
+              {monthlyLeader && (
+                <div className="annual-month-hero">
+                  <PersonAvatar person={monthlyLeader.item} size="lg" className="annual-month-hero-avatar" />
+                  <div className="annual-month-hero-copy">
+                    <strong>{monthlyLeader.item.displayName}</strong>
+                    <span>{monthlyLeader.months} 个月排第一</span>
+                  </div>
                 </div>
-              ))}
-            </div>
+              )}
+              <div className="annual-lead">
+                <p>
+                  {monthlyLeader ? (
+                    <>
+                      在有私聊的 <strong>{activeMonths.length}</strong> 个月里，<strong>{monthlyLeader.item.displayName}</strong> 有{' '}
+                      <strong>{monthlyLeader.months}</strong> 个月是和你聊得最多的人
+                      {otherMonthlyLeaders > 0 ? <>；另有 <strong>{otherMonthlyLeaders}</strong> 位好友各在某些时候排第一。</> : '。'}
+                    </>
+                  ) : '这段时间还没有可统计的月度私聊。'}
+                </p>
+              </div>
+              <div className="annual-month-grid">
+                {annual.monthlyCompanions.map((item, index) => {
+                  const status = item.status ?? (item.periodMessages > 0 ? 'ok' : 'empty')
+                  const next = annual.monthlyCompanions[index + 1]
+                  const nextStatus = next?.status ?? (next && next.periodMessages > 0 ? 'ok' : 'empty')
+                  const linked = status === 'ok' && nextStatus === 'ok'
+                    && item.conversationId === next?.conversationId
+                    && (index + 1) % 6 !== 0
+                  const month = item.month ?? Number(item.period.slice(-2))
+                  return (
+                    <div
+                      className="annual-month"
+                      key={item.period}
+                      data-status={status}
+                      data-linked={linked ? 'true' : undefined}
+                    >
+                      <div className="annual-month-head"><span>{month}月</span></div>
+                      {status === 'future' ? (
+                        <span className="annual-month-empty">还没到</span>
+                      ) : status === 'empty' ? (
+                        <span className="annual-month-empty">没有私聊</span>
+                      ) : (
+                        <>
+                          <div className="annual-month-person">
+                            <PersonAvatar person={item} />
+                            <strong>{item.displayName}</strong>
+                          </div>
+                          <span className="annual-month-stats">
+                            {formatNumber(item.messages)} 条 · 占当月 {Math.round((item.share ?? (item.periodMessages > 0 ? item.messages / item.periodMessages : 0)) * 100)}%
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </>
           ) : <p className="annual-missing">这段时间没有私聊消息。</p>}
         </AnnualChapter>
 

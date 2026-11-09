@@ -580,25 +580,40 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<Strin
     friends.sort_by(|a, b| b.total.cmp(&a.total));
     let top_friends = top_friend_rows(&stats.friends);
     let mut periods = Vec::new();
-    if let (Some(start), Some(end)) = (
+    if year > 0 {
+        for month in 1..=12 {
+            periods.push(format!("{year}-{month:02}"));
+        }
+    } else if let (Some(start), Some(end)) = (
         Local.timestamp_opt(aggregate.first, 0).single(),
         Local.timestamp_opt(aggregate.last, 0).single(),
     ) {
-        let mut year = start.year();
+        let mut period_year = start.year();
         let mut month = start.month();
         let end_year = end.year();
         let end_month = end.month();
-        while year < end_year || (year == end_year && month <= end_month) {
-            periods.push(format!("{year}-{month:02}"));
+        while period_year < end_year || (period_year == end_year && month <= end_month) {
+            periods.push(format!("{period_year}-{month:02}"));
             month += 1;
             if month > 12 {
                 month = 1;
-                year += 1;
+                period_year += 1;
             }
         }
     }
+    let now = Local::now();
     let mut monthly_companions = Vec::new();
     for period in periods {
+        let month = period
+            .split_once('-')
+            .and_then(|(_, month)| month.parse::<u32>().ok())
+            .unwrap_or(0);
+        let period_year = period
+            .split_once('-')
+            .and_then(|(year, _)| year.parse::<i32>().ok())
+            .unwrap_or(0);
+        let future = year > 0
+            && (period_year > now.year() || (period_year == now.year() && month > now.month()));
         let period_messages = stats.monthly_total.get(&period).copied().unwrap_or(0);
         let top = stats.monthly_friend.get(&period).and_then(|counts| {
             counts
@@ -607,19 +622,25 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<Strin
                 .and_then(|(id, messages)| stats.friends.get(id).map(|friend| (friend, messages)))
         });
         monthly_companions.push(match top {
-            Some((friend, messages)) => serde_json::json!({
+            Some((friend, messages)) if !future => serde_json::json!({
                 "period": period,
+                "month": month,
+                "status": "ok",
                 "conversationId": friend.id,
                 "displayName": friend.name,
                 "messages": messages,
                 "periodMessages": period_messages,
+                "share": if period_messages == 0 { 0.0 } else { *messages as f64 / period_messages as f64 },
             }),
-            None => serde_json::json!({
+            _ => serde_json::json!({
                 "period": period,
+                "month": month,
+                "status": if future { "future" } else { "empty" },
                 "conversationId": serde_json::Value::Null,
                 "displayName": "",
                 "messages": 0,
-                "periodMessages": 0,
+                "periodMessages": period_messages,
+                "share": 0.0,
             }),
         });
     }
