@@ -225,6 +225,7 @@ pub fn upload_directory(
         });
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
+    let completed = std::sync::atomic::AtomicUsize::new(0);
     let failed = std::sync::atomic::AtomicBool::new(false);
     let errors = std::sync::Mutex::new(Vec::<String>::new());
     let progress = std::sync::Mutex::new(progress);
@@ -235,6 +236,7 @@ pub fn upload_directory(
     std::thread::scope(|scope| {
         for _ in 0..workers {
             let next = &next;
+            let completed = &completed;
             let failed = &failed;
             let errors = &errors;
             let progress = &progress;
@@ -260,8 +262,11 @@ pub fn upload_directory(
                         }
                         break;
                     }
+                    let done = completed
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
                     if let Ok(mut progress) = progress.lock() {
-                        progress.steps(index + 1, tasks.len(), "文件");
+                        progress.steps(done, tasks.len(), "文件");
                     }
                 }
             });

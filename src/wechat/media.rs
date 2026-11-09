@@ -962,10 +962,11 @@ pub fn export_media(
 
     let chunk_size = non_voice.len().div_ceil(workers);
     let chunks: Vec<Vec<usize>> = non_voice.chunks(chunk_size).map(|chunk| chunk.to_vec()).collect();
-    let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, usize, usize, usize)>();
+    let chunk_count = chunks.len();
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, usize, usize)>();
     let results = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(chunks.len());
-        for chunk in chunks {
+        for (chunk_index, chunk) in chunks.into_iter().enumerate() {
             let sender = progress_tx.clone();
             let messages_ref = &messages;
             let handle = scope.spawn(move || {
@@ -974,9 +975,9 @@ pub fn export_media(
                     .map(|&message_index| messages_ref[message_index].clone())
                     .collect();
                 let mut sender = Some(sender);
-                let mut callback = |done: usize, total: usize, attachment_done: usize, attachment_total: usize| {
+                let mut callback = |done: usize, _total: usize, attachment_done: usize, _attachment_total: usize| {
                     if let Some(sender) = sender.as_mut() {
-                        let _ = sender.send((done, total, attachment_done, attachment_total));
+                        let _ = sender.send((chunk_index, done, attachment_done));
                     }
                 };
                 let chunk_outcome = export_media_sequential(
@@ -996,8 +997,23 @@ pub fn export_media(
         }
         drop(progress_tx);
         if let Some(callback) = progress.as_deref_mut() {
-            for (done, total, attachment_done, attachment_total) in progress_rx {
-                callback(done, total, attachment_done, attachment_total);
+            let message_total = messages.len();
+            let attachment_total = messages.iter().filter(|message| message.media.is_some()).count();
+            let mut chunk_done = vec![0usize; chunk_count];
+            let mut chunk_attachments = vec![0usize; chunk_count];
+            for (chunk_index, done, attachment_done) in progress_rx {
+                if let Some(slot) = chunk_done.get_mut(chunk_index) {
+                    *slot = done;
+                }
+                if let Some(slot) = chunk_attachments.get_mut(chunk_index) {
+                    *slot = attachment_done;
+                }
+                callback(
+                    chunk_done.iter().sum(),
+                    message_total,
+                    chunk_attachments.iter().sum(),
+                    attachment_total,
+                );
             }
         }
         handles

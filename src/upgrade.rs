@@ -107,6 +107,7 @@ fn download(url: &str, target: &std::path::Path) -> Result<()> {
     let mut buffer = [0u8; 64 * 1024];
     let mut done = 0u64;
     let mut last = Instant::now() - Duration::from_secs(10);
+    let mut last_width = 0usize;
     loop {
         let read = reader.read(&mut buffer).context("failed to read upgrade download")?;
         if read == 0 {
@@ -121,15 +122,18 @@ fn download(url: &str, target: &std::path::Path) -> Result<()> {
             let percent = if total > 0 { (done * 100 / total).min(100) } else { 0 };
             let filled = if total > 0 { width * percent as usize / 100 } else { 0 };
             let bar = format!("{}{}", "#".repeat(filled), "-".repeat(width - filled));
-            if total > 0 {
-                eprint!(
-                    "\r下载 [{bar}] {percent:3}% · {}/{}",
+            let line = if total > 0 {
+                format!(
+                    "下载 [{bar}] {percent:3}% · {} / {}",
                     format_bytes(done),
                     format_bytes(total)
-                );
+                )
             } else {
-                eprint!("\r下载 {}{}", format_bytes(done), "...");
-            }
+                format!("下载 {}...", format_bytes(done))
+            };
+            let padding = " ".repeat(last_width.saturating_sub(line.chars().count()));
+            last_width = line.chars().count();
+            eprint!("\r{line}{padding}");
             let _ = std::io::stderr().flush();
         }
     }

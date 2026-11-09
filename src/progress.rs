@@ -74,6 +74,9 @@ impl Progress {
         if self.message_total > 0 {
             self.message_done = self.message_total;
         }
+        if self.attachment_total > 0 {
+            self.attachment_done = self.attachment_total;
+        }
         if self.step_total > 0 {
             self.step_done = self.step_total;
         }
@@ -120,9 +123,40 @@ impl Progress {
                 self.attachment_done, self.attachment_total
             ));
         }
-        let padding = " ".repeat(self.last_width.saturating_sub(line.chars().count()));
-        self.last_width = line.chars().count();
+        let width = display_width(&line);
+        let padding = " ".repeat(self.last_width.saturating_sub(width));
+        self.last_width = width;
         let _ = write!(io::stderr(), "\r{line}{padding}");
         let _ = io::stderr().flush();
+    }
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars().map(char_width).sum()
+}
+
+fn char_width(ch: char) -> usize {
+    let code = ch as u32;
+    if (0x0300..=0x036f).contains(&code)
+        || (0x1ab0..=0x1aff).contains(&code)
+        || (0x1dc0..=0x1dff).contains(&code)
+        || (0x20d0..=0x20ff).contains(&code)
+        || (0xfe20..=0xfe2f).contains(&code)
+    {
+        0
+    } else if (0x1100..=0x115f).contains(&code)
+        || (0x2e80..=0xa4cf).contains(&code)
+        || (0xac00..=0xd7a3).contains(&code)
+        || (0xf900..=0xfaff).contains(&code)
+        || (0xfe10..=0xfe19).contains(&code)
+        || (0xfe30..=0xfe6f).contains(&code)
+        || (0xff00..=0xff60).contains(&code)
+        || (0xffe0..=0xffe6).contains(&code)
+        || (0x1f300..=0x1faff).contains(&code)
+        || (0x20000..=0x3fffd).contains(&code)
+    {
+        2
+    } else {
+        1
     }
 }
