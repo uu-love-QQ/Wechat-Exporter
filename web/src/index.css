@@ -488,6 +488,10 @@
 .annual-list .name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .annual-list .value { color: var(--muted-foreground); font-size: 12px; font-variant-numeric: tabular-nums; }
 .annual-list .rank { width: 24px; color: var(--annual-accent); font-size: 11px; font-variant-numeric: tabular-nums; }
+.annual-runners-up li { align-items: center; }
+.annual-person { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
+.annual-person-avatar { flex: 0 0 auto; border: 1px solid color-mix(in oklab, var(--annual-accent) 35%, var(--border)); }
+.annual-person-avatar [data-slot='avatar-fallback'] { font-size: 10px; font-weight: 650; color: var(--annual-accent); background: var(--annual-accent-soft); }
 .annual-podium { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: clamp(6px, 2vw, 14px); max-width: 640px; margin: 26px auto 16px; padding: 0; list-style: none; }
 .annual-podium-place { display: flex; flex-direction: column; align-items: center; min-width: 0; gap: 6px; }
 .annual-podium-place.place-1 { --podium-color: var(--podium-gold); --podium-soft: var(--podium-gold-soft); }
@@ -511,7 +515,8 @@
 .annual-companions { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
 .annual-companion { padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); font-size: 11px; }
 .annual-companion .period { color: var(--annual-accent); font-size: 10px; font-variant-numeric: tabular-nums; }
-.annual-companion .person { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.annual-companion .person { display: flex; align-items: center; gap: 6px; margin-top: 2px; min-width: 0; font-weight: 600; }
+.annual-companion .person > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .annual-companion .count { display: block; margin-top: 2px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .annual-phrases { display: flex; flex-wrap: wrap; gap: 8px; }
 .annual-phrase { padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--muted); font-size: 12px; }

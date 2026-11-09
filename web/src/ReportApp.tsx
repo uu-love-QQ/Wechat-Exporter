@@ -82,34 +82,36 @@ export interface AnnualCompanion {
   displayName: string
   messages: number
   periodMessages: number
+  avatar?: string | null
 }
 
 export interface AnnualData {
   year: number
+  friendCount: number
   topFriends: AnnualPerson[]
   monthlyCompanions: AnnualCompanion[]
   heatmap: {
     weekdayHourCounts: number[][]
     peak: { weekday: number; hour: number; messages: number } | null
   }
-  nightCompanion: { conversationId: string; displayName: string; nightMessages: number; share: number } | null
+  nightCompanion: { conversationId: string; displayName: string; nightMessages: number; share: number; avatar?: string | null } | null
   nightShareOfAll: number | null
   initiative: {
     startsMine: number
     startsPeer: number
     rateMine: number | null
-    topInitiated: { conversationId: string; displayName: string; startsMine: number; startsPeer: number } | null
+    topInitiated: { conversationId: string; displayName: string; startsMine: number; startsPeer: number; avatar?: string | null } | null
   }
   response: {
     mine: { averageMs: number; count: number } | null
     peer: { averageMs: number; count: number } | null
-    fastestFriend: { conversationId: string; displayName: string; averageMs: number; replies: number } | null
+    fastestFriend: { conversationId: string; displayName: string; averageMs: number; replies: number; avatar?: string | null } | null
   }
-  balancedFriend: { conversationId: string; displayName: string; sent: number; received: number; balance: number } | null
-  streak: { conversationId: string; displayName: string; days: number; startDate: string; endDate: string } | null
+  balancedFriend: { conversationId: string; displayName: string; sent: number; received: number; balance: number; avatar?: string | null } | null
+  streak: { conversationId: string; displayName: string; days: number; startDate: string; endDate: string; avatar?: string | null } | null
   accountStreak: { days: number; startDate: string; endDate: string } | null
-  busiestDay: { date: string; messages: number; topFriend: { displayName: string; messages: number } | null } | null
-  fading: { conversationId: string; displayName: string; earlyMessages: number; lateMessages: number } | null
+  busiestDay: { date: string; messages: number; topFriend: { conversationId?: string; displayName: string; messages: number; avatar?: string | null } | null } | null
+  fading: { conversationId: string; displayName: string; earlyMessages: number; lateMessages: number; avatar?: string | null } | null
   phrases: Array<{ text: string; count: number }>
   summary: Array<{ label: string; value: string; person?: string }>
   moments: {
@@ -752,6 +754,15 @@ function annualTypeRows(types: ReportCount[]): ReportCount[] {
     .filter((item) => item.count > 0)
 }
 
+function PersonAvatar({ person, size = 'sm' }: { person: { displayName: string; avatar?: string | null }; size?: 'sm' | 'default' | 'lg' }) {
+  return (
+    <Avatar size={size} className="annual-person-avatar" aria-hidden="true">
+      {person.avatar && <AvatarImage src={person.avatar} alt="" />}
+      <AvatarFallback>{(person.displayName || '?').slice(0, 1)}</AvatarFallback>
+    </Avatar>
+  )
+}
+
 function AnnualReportView({
   data,
   annual,
@@ -844,7 +855,7 @@ function AnnualReportView({
           <div className="annual-lead">
             <p>
               <strong>{annual.year > 0 ? `${annual.year} 年` : data.heading.match(/\d{4}/)?.[0] ? `${data.heading.match(/\d{4}/)![0]} 年` : '这些年'}</strong>，你和{' '}
-              <strong>{annual.topFriends.length}</strong> 位好友在私聊里收发了{' '}
+              <strong>{annual.friendCount ?? annual.topFriends.length}</strong> 位好友在私聊里收发了{' '}
               <strong>{messageTotal}</strong> 条消息。
             </p>
             <p>
@@ -921,6 +932,7 @@ function AnnualReportView({
                   {runnersUp.map((friend, index) => (
                     <li key={friend.conversationId}>
                       <span className="rank">{String(index + 4).padStart(2, '0')}</span>
+                      <PersonAvatar person={friend} />
                       <span className="name">{friend.displayName}</span>
                       <span className="value">{formatNumber(friend.messages)} 条 · 我 {friend.sent ?? 0} / TA {friend.received ?? 0}</span>
                     </li>
@@ -945,7 +957,10 @@ function AnnualReportView({
               {annual.monthlyCompanions.map((item) => (
                 <div className="annual-companion" key={item.period} data-empty={item.displayName ? undefined : 'true'}>
                   <span className="period">{item.period}</span>
-                  <span className="person">{item.displayName || '—'}</span>
+                  <span className="person">
+                    {item.displayName && <PersonAvatar person={item} />}
+                    <span>{item.displayName || '—'}</span>
+                  </span>
                   <span className="count">{item.periodMessages > 0 ? `${item.messages} / ${item.periodMessages} 条` : '无消息'}</span>
                 </div>
               ))}
@@ -972,7 +987,7 @@ function AnnualReportView({
             <p>
               {peak ? `你最常在周${['一', '二', '三', '四', '五', '六', '日'][peak.weekday]} ${peak.hour}:00 聊天，这个时段累计 ${peak.messages} 条消息。` : '没有可以统计时段的消息。'}
             </p>
-            {night && <p>深夜陪你最多的是 <strong>{night.displayName}</strong>，{night.nightMessages} 条，占全部深夜私聊的 {numberPercent(night.share)}。</p>}
+            {night && <p>深夜陪你最多的是 <strong className="annual-person"><PersonAvatar person={night} />{night.displayName}</strong>，{night.nightMessages} 条，占全部深夜私聊的 {numberPercent(night.share)}。</p>}
           </div>
           <div className="annual-heat" role="img" aria-label="星期和小时热力图">
             <span />
@@ -1005,7 +1020,7 @@ function AnnualReportView({
             <p>
               你开启了 <strong>{annual.initiative.startsMine}</strong> 段对话，好友开启了{' '}
               <strong>{annual.initiative.startsPeer}</strong> 段。
-              {annual.initiative.topInitiated && `你最常主动找的是 ${annual.initiative.topInitiated.displayName}：你先开口 ${annual.initiative.topInitiated.startsMine} 次。`}
+              {annual.initiative.topInitiated && <span className="annual-person"><PersonAvatar person={annual.initiative.topInitiated} />你最常主动找的是 {annual.initiative.topInitiated.displayName}：你先开口 {annual.initiative.topInitiated.startsMine} 次。</span>}
             </p>
           </div>
           <AnnualSplit
@@ -1030,7 +1045,7 @@ function AnnualReportView({
               {annual.response.mine ? `你回好友平均用时 ${formatDuration(annual.response.mine.averageMs)}（${annual.response.mine.count} 次）。` : '没有你回复好友的记录。'}
               {annual.response.peer ? `好友回你平均用时 ${formatDuration(annual.response.peer.averageMs)}。` : ''}
             </p>
-            {annual.response.fastestFriend && <p>你回 <strong>{annual.response.fastestFriend.displayName}</strong> 最快：平均 {formatDuration(annual.response.fastestFriend.averageMs)}，共 {annual.response.fastestFriend.replies} 次。</p>}
+            {annual.response.fastestFriend && <p>你回 <strong className="annual-person"><PersonAvatar person={annual.response.fastestFriend} />{annual.response.fastestFriend.displayName}</strong> 最快：平均 {formatDuration(annual.response.fastestFriend.averageMs)}，共 {annual.response.fastestFriend.replies} 次。</p>}
           </div>
           <div className="annual-stats">
             <div className="annual-stat"><span>你回好友</span><strong>{annual.response.mine ? formatDuration(annual.response.mine.averageMs) : '-'}</strong><small>{annual.response.mine?.count ?? 0} 次</small></div>
@@ -1051,7 +1066,7 @@ function AnnualReportView({
           {balance ? (
             <>
               <AnnualFigure value={balance.displayName} label={`平衡度 ${Math.round(balance.balance * 100)}%`} />
-              <div className="annual-lead"><p>你给 {balance.displayName} 发了 {balance.sent} 条，TA 给你发了 {balance.received} 条，是收发最接近的一位。</p></div>
+              <div className="annual-lead"><p><span className="annual-person"><PersonAvatar person={balance} /></span>你给 {balance.displayName} 发了 {balance.sent} 条，TA 给你发了 {balance.received} 条，是收发最接近的一位。</p></div>
               <AnnualSplit first={{ label: '你发', value: balance.sent }} second={{ label: 'TA 发', value: balance.received }} title="收发对比" />
             </>
           ) : <p className="annual-missing">还没有双方都发过 50 条以上消息的好友。</p>}
@@ -1068,9 +1083,9 @@ function AnnualReportView({
         >
           {streak ? <AnnualFigure value={String(streak.days)} unit="天" label={`和 ${streak.displayName} 连续聊天`} /> : <AnnualFigure value="-" label="没有连续 2 天以上的好友" />}
           <div className="annual-lead">
-            {streak && <p>你和 {streak.displayName} 从 {streak.startDate} 到 {streak.endDate}，连续 {streak.days} 天每天都有聊天。</p>}
+            {streak && <p>你和 <strong className="annual-person"><PersonAvatar person={streak} />{streak.displayName}</strong> 从 {streak.startDate} 到 {streak.endDate}，连续 {streak.days} 天每天都有聊天。</p>}
             {annual.accountStreak && <p>你自己最长连续 {annual.accountStreak.days} 天，每天都至少和一位好友聊过。</p>}
-            {busiest && <p>{busiest.date} 是你私聊最多的一天，共 {busiest.messages} 条{busiest.topFriend ? `，聊得最多的是 ${busiest.topFriend.displayName}` : ''}。</p>}
+            {busiest && <p>{busiest.date} 是你私聊最多的一天，共 {busiest.messages} 条{busiest.topFriend ? <span className="annual-person">，聊得最多的是 <PersonAvatar person={busiest.topFriend} />{busiest.topFriend.displayName}</span> : ''}。</p>}
           </div>
         </AnnualChapter>
 
@@ -1086,6 +1101,7 @@ function AnnualReportView({
           {fading ? (
             <>
               <AnnualFigure value={fading.displayName} label="前段聊得最多，后段明显减少" />
+              <div className="annual-lead"><p><span className="annual-person"><PersonAvatar person={fading} />{fading.displayName}</span> 在前半段聊得最多，后半段明显减少。</p></div>
               <div className="annual-stats">
                 <div className="annual-stat"><span>前段</span><strong>{fading.earlyMessages}</strong><small>条消息</small></div>
                 <div className="annual-stat"><span>后段</span><strong>{fading.lateMessages}</strong><small>条消息</small></div>
@@ -1165,7 +1181,7 @@ function AnnualReportView({
           accent="quantity"
           ghost="终"
         >
-          <div className="annual-lead"><p>这些年，你和 {annual.topFriends.length} 位好友留下了 {data.kpis.find((item) => item.label === '消息总数')?.value ?? '0'} 条私聊消息。</p></div>
+          <div className="annual-lead"><p>这些年，你和 {annual.friendCount ?? annual.topFriends.length} 位好友留下了 {data.kpis.find((item) => item.label === '消息总数')?.value ?? '0'} 条私聊消息。</p></div>
           <ol className="annual-list">
             {annual.summary.map((item, index) => (
               <li key={`${item.label}-${index}`}>

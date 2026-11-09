@@ -469,7 +469,7 @@ fn fetch_avatar_data_uri(url: &str) -> Option<String> {
     let mut data = Vec::new();
     use std::io::Read;
     response.into_reader().read_to_end(&mut data).ok()?;
-    if data.is_empty() || data.len() > 2 * 1024 * 1024 {
+    if data.is_empty() || data.len() > 512 * 1024 {
         return None;
     }
     let mime = if data.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -487,25 +487,80 @@ fn fetch_avatar_data_uri(url: &str) -> Option<String> {
     ))
 }
 
-fn top_friend_rows(friends: &BTreeMap<String, FriendAnnual>, contacts: &HashMap<String, Contact>) -> Vec<serde_json::Value> {
+fn top_friend_rows(friends: &BTreeMap<String, FriendAnnual>) -> Vec<serde_json::Value> {
     let mut rows: Vec<&FriendAnnual> = friends.values().collect();
     rows.sort_by(|a, b| b.total.cmp(&a.total).then(a.name.cmp(&b.name)));
-    let avatar_urls: Vec<(String, String)> = rows
+    rows.into_iter()
+        .take(10)
+        .map(|friend| serde_json::json!({
+            "conversationId": friend.id,
+            "displayName": friend.name,
+            "messages": friend.total,
+            "sent": friend.sent,
+            "received": friend.received,
+        }))
+        .collect()
+}
+
+fn collect_conversation_ids(value: &serde_json::Value, ids: &mut std::collections::BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(id) = object.get("conversationId").and_then(|value| value.as_str()) {
+                if !id.is_empty() {
+                    ids.insert(id.to_string());
+                }
+            }
+            for child in object.values() {
+                collect_conversation_ids(child, ids);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                collect_conversation_ids(child, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn assign_avatars(value: &mut serde_json::Value, avatars: &HashMap<String, String>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(id) = object.get("conversationId").and_then(|value| value.as_str()) {
+                let avatar = avatars.get(id).cloned().map(serde_json::Value::String).unwrap_or(serde_json::Value::Null);
+                object.insert("avatar".to_string(), avatar);
+            }
+            for child in object.values_mut() {
+                assign_avatars(child, avatars);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                assign_avatars(child, avatars);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn attach_annual_avatars(value: &mut serde_json::Value, contacts: &HashMap<String, Contact>) {
+    let mut ids = std::collections::BTreeSet::new();
+    collect_conversation_ids(value, &mut ids);
+    let urls: Vec<(String, String)> = ids
         .iter()
-        .take(3)
-        .filter_map(|friend| {
+        .filter_map(|id| {
             contacts
-                .get(&friend.id)
+                .get(id)
                 .map(|contact| contact.avatar_url.trim())
                 .filter(|url| !url.is_empty())
-                .map(|url| (friend.id.clone(), url.to_string()))
+                .map(|url| (id.clone(), url.to_string()))
         })
         .collect();
-    let avatars = if avatar_urls.is_empty() {
+    let avatars = if urls.is_empty() {
         HashMap::new()
     } else {
         std::thread::scope(|scope| {
-            let handles = avatar_urls
+            let handles = urls
                 .into_iter()
                 .map(|(id, url)| scope.spawn(move || (id, fetch_avatar_data_uri(&url))))
                 .collect::<Vec<_>>();
@@ -516,23 +571,14 @@ fn top_friend_rows(friends: &BTreeMap<String, FriendAnnual>, contacts: &HashMap<
                 .collect::<HashMap<_, _>>()
         })
     };
-    rows.into_iter()
-        .map(|friend| serde_json::json!({
-            "conversationId": friend.id,
-            "displayName": friend.name,
-            "messages": friend.total,
-            "sent": friend.sent,
-            "received": friend.received,
-            "avatar": avatars.get(&friend.id),
-        }))
-        .collect()
+    assign_avatars(value, &avatars);
 }
 
 fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<String, Contact>) -> serde_json::Value {
     let aggregate = &stats.aggregate;
     let mut friends = stats.friends.values().collect::<Vec<_>>();
     friends.sort_by(|a, b| b.total.cmp(&a.total));
-    let top_friends = top_friend_rows(&stats.friends, contacts);
+    let top_friends = top_friend_rows(&stats.friends);
     let mut periods = Vec::new();
     if let (Some(start), Some(end)) = (
         Local.timestamp_opt(aggregate.first, 0).single(),
@@ -655,6 +701,7 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<Strin
         let top_friend = stats.day_friend.get(date).and_then(|counts| counts.iter().max_by_key(|(_, count)| **count)).map(|(friend_id, messages)| {
             let friend = stats.friends.get(friend_id);
             serde_json::json!({
+                "conversationId": friend_id,
                 "displayName": friend.map(|friend| friend.name.as_str()).unwrap_or(friend_id),
                 "messages": messages,
             })
@@ -718,8 +765,9 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<Strin
     if let Some(phrase) = phrases.first() {
         summary.push(serde_json::json!({"label":"口头禅","value":format!("「{}」 {} 次", phrase["text"].as_str().unwrap_or(""), phrase["count"])}));
     }
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         "year": year,
+        "friendCount": stats.friends.len(),
         "topFriends": top_friends,
         "monthlyCompanions": monthly_companions,
         "heatmap": {"weekdayHourCounts": stats.heatmap, "peak": heatmap_peak},
@@ -751,7 +799,9 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<Strin
                 "topLikedAuthors": liked.into_iter().map(|(username, count)| serde_json::json!({"username": username, "count": count})).collect::<Vec<_>>(),
             })
         }),
-    })
+    });
+    attach_annual_avatars(&mut payload, contacts);
+    payload
 }
 
 fn format_duration(ms: i64) -> String {
