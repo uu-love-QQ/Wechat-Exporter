@@ -442,7 +442,8 @@
 .annual-figure-value small { color: var(--annual-accent); font-size: 15px; font-weight: 550; }
 .annual-figure--time .annual-figure-value strong { font-size: clamp(24px, 3vw, 36px); font-weight: 350; letter-spacing: -.025em; white-space: nowrap; }
 .annual-figure > small { color: var(--muted-foreground); font-size: 12px; }
-.annual-lead { display: grid; max-width: 36em; gap: 8px; font-size: 15px; line-height: 1.85; }
+.annual-lead { display: grid; max-width: 44em; gap: 8px; font-size: 15px; line-height: 1.85; }
+.annual-lead p { text-wrap: pretty; }
 .annual-lead strong { color: var(--annual-accent); font-weight: 650; }
 .annual-times { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; max-width: 44em; margin-top: 4px; }
 .annual-times > div { display: grid; gap: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -504,7 +505,8 @@
 .annual-list .value { color: var(--muted-foreground); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .annual-list .rank { width: 24px; color: var(--annual-accent); font-size: 11px; font-variant-numeric: tabular-nums; }
 .annual-runners-up li { align-items: center; }
-.annual-person { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
+.annual-person { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; vertical-align: middle; white-space: nowrap; }
+.annual-person strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .annual-person-avatar { flex: 0 0 auto; border: 1px solid color-mix(in oklab, var(--annual-accent) 35%, var(--border)); border-radius: 7px; }
 .annual-person-avatar [data-slot='avatar-image'], .annual-person-avatar [data-slot='avatar-fallback'] { border-radius: 5px; }
 .annual-person-avatar [data-slot='avatar-fallback'] { font-size: 10px; font-weight: 650; color: var(--annual-accent); background: var(--annual-accent-soft); }

@@ -814,6 +814,15 @@ function PersonAvatar({ person, size = 'sm', className }: { person: { displayNam
   )
 }
 
+function PersonName({ person }: { person: { displayName: string; avatar?: string | null } }) {
+  return (
+    <span className="annual-person">
+      <PersonAvatar person={person} />
+      <strong>{person.displayName}</strong>
+    </span>
+  )
+}
+
 function AnnualReportView({
   data,
   annual,
@@ -1205,7 +1214,7 @@ function AnnualReportView({
             <p>
               你开启了 <strong>{annual.initiative.startsMine}</strong> 段对话，好友开启了{' '}
               <strong>{annual.initiative.startsPeer}</strong> 段。
-              {annual.initiative.topInitiated && <span className="annual-person"><PersonAvatar person={annual.initiative.topInitiated} />你最常主动找的是 <strong>{annual.initiative.topInitiated.displayName}</strong>：你先开口 {annual.initiative.topInitiated.startsMine} 次，TA 先开口 {annual.initiative.topInitiated.startsPeer} 次。</span>}
+              {annual.initiative.topInitiated && <>你最常主动找的是 <PersonName person={annual.initiative.topInitiated} />：你先开口 {annual.initiative.topInitiated.startsMine} 次，TA 先开口 {annual.initiative.topInitiated.startsPeer} 次。</>}
             </p>
           </div>
           <AnnualSplit
@@ -1230,7 +1239,7 @@ function AnnualReportView({
               {annual.response.mine ? `你回好友平均用时 ${formatDuration(annual.response.mine.averageMs)}（${annual.response.mine.count} 次）。` : '没有你回复好友的记录。'}
               {annual.response.peer ? `好友回你平均用时 ${formatDuration(annual.response.peer.averageMs)}。` : ''}
             </p>
-            {annual.response.fastestFriend && <p>你回 <strong className="annual-person"><PersonAvatar person={annual.response.fastestFriend} />{annual.response.fastestFriend.displayName}</strong> 最快：平均 {formatDuration(annual.response.fastestFriend.averageMs)}，共 {annual.response.fastestFriend.replies} 次。</p>}
+            {annual.response.fastestFriend && <p>你回 <PersonName person={annual.response.fastestFriend} /> 最快：平均 {formatDuration(annual.response.fastestFriend.averageMs)}，共 {annual.response.fastestFriend.replies} 次。</p>}
           </div>
           <div className="annual-stats">
             <div className="annual-stat"><span>你回好友</span><strong>{annual.response.mine ? formatDuration(annual.response.mine.averageMs) : '-'}</strong><small>{annual.response.mine?.count ?? 0} 次</small></div>
@@ -1251,7 +1260,7 @@ function AnnualReportView({
           {balance ? (
             <>
               <AnnualFigure value={balance.displayName} label={`平衡度 ${Math.round(balance.balance * 100)}%`} />
-              <div className="annual-lead"><p><span className="annual-person"><PersonAvatar person={balance} /></span>你给 {balance.displayName} 发了 {balance.sent} 条，TA 给你发了 {balance.received} 条，是收发最接近的一位。</p></div>
+              <div className="annual-lead"><p><PersonName person={balance} /> 你给 TA 发了 {balance.sent} 条，TA 给你发了 {balance.received} 条，是收发最接近的一位。</p></div>
               <AnnualSplit first={{ label: '你发', value: balance.sent }} second={{ label: 'TA 发', value: balance.received }} title="收发对比" />
             </>
           ) : <p className="annual-missing">还没有双方都发过 50 条以上消息的好友。</p>}
@@ -1268,9 +1277,9 @@ function AnnualReportView({
         >
           {streak ? <AnnualFigure value={String(streak.days)} unit="天" label={`和 ${streak.displayName} 连续聊天`} /> : <AnnualFigure value="-" label="没有连续 2 天以上的好友" />}
           <div className="annual-lead">
-            {streak && <p>你和 <strong className="annual-person"><PersonAvatar person={streak} />{streak.displayName}</strong> 从 {streak.startDate} 到 {streak.endDate}，连续 {streak.days} 天每天都有聊天。</p>}
+            {streak && <p>你和 <PersonName person={streak} /> 从 {streak.startDate} 到 {streak.endDate}，连续 {streak.days} 天每天都有聊天。</p>}
             {annual.accountStreak && <p>你自己最长连续 {annual.accountStreak.days} 天，每天都至少和一位好友聊过。</p>}
-            {busiest && <p>{busiest.date} 是你私聊最多的一天，共 {busiest.messages} 条{busiest.topFriend ? <span className="annual-person">，聊得最多的是 <PersonAvatar person={busiest.topFriend} />{busiest.topFriend.displayName}</span> : ''}。</p>}
+            {busiest && <p>{busiest.date} 是你私聊最多的一天，共 {busiest.messages} 条{busiest.topFriend ? <>，聊得最多的是 <PersonName person={busiest.topFriend} /></> : ''}。</p>}
           </div>
           {(streak || annual.accountStreak) && (
             <div className="annual-timeline" aria-label="连续聊天时间线">
@@ -1315,7 +1324,7 @@ function AnnualReportView({
           {fading ? (
             <>
               <AnnualFigure value={fading.displayName} label="前段聊得最多，后段明显减少" />
-              <div className="annual-lead"><p><span className="annual-person"><PersonAvatar person={fading} />{fading.displayName}</span> 在前半段聊得最多，后半段明显减少。</p></div>
+              <div className="annual-lead"><p><PersonName person={fading} /> 在前半段聊得最多，后半段明显减少。</p></div>
               <div className="annual-stats">
                 <div className="annual-stat"><span>前段</span><strong>{fading.earlyMessages}</strong><small>条消息</small></div>
                 <div className="annual-stat"><span>后段</span><strong>{fading.lateMessages}</strong><small>条消息</small></div>
