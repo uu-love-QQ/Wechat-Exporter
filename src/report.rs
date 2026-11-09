@@ -830,6 +830,7 @@ fn load_conversations_parallel(
         .map(|value| value.get())
         .unwrap_or(4)
         .min(conversations.len())
+        .min(4)
         .max(1);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let results: std::sync::Mutex<Vec<Option<(Conversation, Vec<ExportMessage>)>>> =

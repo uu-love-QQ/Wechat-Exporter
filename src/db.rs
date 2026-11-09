@@ -22,6 +22,7 @@ fn open_connection(path: &Path, read_only: bool) -> Result<Connection> {
 
 fn check_connection(conn: &Connection) -> Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    conn.execute_batch("PRAGMA cipher_memory_security = OFF;")?;
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
         row.get::<_, i64>(0)
     })?;
@@ -1228,8 +1229,10 @@ impl Db {
     fn try_open_with_hex(path: &Path, hex_key: &str) -> Result<Db> {
         let check = |conn: &Connection| -> Result<()> {
             conn.busy_timeout(std::time::Duration::from_secs(2))?;
-            conn.execute_batch(&format!("PRAGMA key = \"x'{hex_key}'\";"))
-                .context("failed to apply SQLCipher raw key")?;
+            conn.execute_batch(&format!(
+                "PRAGMA key = \"x'{hex_key}'\"; PRAGMA cipher_memory_security = OFF;"
+            ))
+            .context("failed to apply SQLCipher raw key")?;
             conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
                 row.get::<_, i64>(0)
             })
