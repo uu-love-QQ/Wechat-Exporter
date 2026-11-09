@@ -500,7 +500,7 @@
 .annual-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .annual-list li { display: flex; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px dotted color-mix(in oklab, var(--muted-foreground) 42%, transparent); }
 .annual-list .name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.annual-list .value { color: var(--muted-foreground); font-size: 12px; font-variant-numeric: tabular-nums; }
+.annual-list .value { color: var(--muted-foreground); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .annual-list .rank { width: 24px; color: var(--annual-accent); font-size: 11px; font-variant-numeric: tabular-nums; }
 .annual-runners-up li { align-items: center; }
 .annual-person { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
@@ -551,12 +551,12 @@
 .annual-month-hero-copy span { color: var(--muted-foreground); font-size: 12px; }
 .annual-month-grid { --month-gap: 10px; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px var(--month-gap); margin-top: 16px; }
 .annual-month { position: relative; min-width: 0; padding: 9px 9px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
-.annual-month-head { display: flex; align-items: center; justify-content: space-between; min-height: 18px; padding-bottom: 5px; border-bottom: 1px solid var(--border); color: var(--muted-foreground); font-size: 10px; font-variant-numeric: tabular-nums; }
+.annual-month-head { display: flex; align-items: center; justify-content: space-between; min-height: 20px; padding-bottom: 5px; border-bottom: 1px solid var(--border); color: var(--muted-foreground); font-size: 13px; font-variant-numeric: tabular-nums; }
 .annual-month[data-status='future'] .annual-month-head { border-bottom-style: dashed; }
 .annual-month-person { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 8px; }
-.annual-month-person strong { min-width: 0; overflow: hidden; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.annual-month-stats { display: block; margin-top: 6px; overflow: hidden; color: var(--muted-foreground); font-size: 9px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
-.annual-month-empty { display: block; margin-top: 13px; color: var(--muted-foreground); font-size: 10px; }
+.annual-month-person strong { min-width: 0; overflow: hidden; font-size: 13.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.annual-month-stats { display: block; margin-top: 6px; color: var(--muted-foreground); font-size: 11.5px; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.annual-month-empty { display: block; margin-top: 13px; color: var(--muted-foreground); font-size: 12px; }
 .annual-month[data-linked='true']::after { content: ''; position: absolute; z-index: 2; top: 55px; right: calc(-1 * var(--month-gap)); width: var(--month-gap); height: 2px; background: var(--podium-gold); }
 .annual-companions { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
 .annual-companion { padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); font-size: 11px; }
