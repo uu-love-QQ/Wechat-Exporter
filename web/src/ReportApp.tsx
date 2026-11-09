@@ -826,6 +826,7 @@ function AnnualReportView({
   }
 
   const top = annual.topFriends[0]
+  const topShare = top && messageTotalNumber > 0 ? Math.round((top.messages / messageTotalNumber) * 100) : 0
   const podium = [annual.topFriends[1], annual.topFriends[0], annual.topFriends[2]].filter(Boolean) as AnnualPerson[]
   const runnersUp = annual.topFriends.slice(3, 10)
   const peak = annual.heatmap.peak
@@ -909,19 +910,31 @@ function AnnualReportView({
           id="top-friends"
           index={2}
           title="聊得最多的人"
-          question="这段时间，你和谁聊得最多？"
+          question="这一年，你和谁聊得最多？"
           hint="按你和每位好友的私聊消息总数排序，你发的和 TA 发的都算。"
           accent="people"
           ghost="01"
         >
           {top ? (
             <>
-              <AnnualFigure value={formatNumber(top.messages)} unit="条" label={`和 ${top.displayName} 的消息`} />
+              <div className="annual-top-hero">
+                <div className="annual-top-avatar">
+                  <Avatar className="size-full">
+                    {top.avatar && <AvatarImage src={top.avatar} alt="" />}
+                    <AvatarFallback>{top.displayName.slice(0, 1)}</AvatarFallback>
+                  </Avatar>
+                </div>
+                <div className="annual-top-copy">
+                  <span>这一年和你聊得最多</span>
+                  <strong>{top.displayName}</strong>
+                  <small>{formatNumber(top.messages)} 条消息</small>
+                </div>
+              </div>
               <div className="annual-lead">
                 <p>
                   你和 <strong>{top.displayName}</strong> 聊得最多：一共{' '}
                   <strong>{formatNumber(top.messages)}</strong> 条，其中你发了 {formatNumber(top.sent ?? 0)} 条，TA 发了{' '}
-                  {formatNumber(top.received ?? 0)} 条。
+                  {formatNumber(top.received ?? 0)} 条，占你全部私聊消息的 {topShare}%。
                 </p>
               </div>
               <ol className="annual-podium" aria-label="聊天最多的前三名">
@@ -937,6 +950,15 @@ function AnnualReportView({
                       </div>
                       <span className="annual-podium-name">{friend.displayName}</span>
                       <span className="annual-podium-messages">{formatNumber(friend.messages)} 条</span>
+                      <div
+                        className="annual-podium-bar"
+                        role="img"
+                        aria-label={`我发 ${friend.sent ?? 0} 条，TA 发 ${friend.received ?? 0} 条`}
+                      >
+                        <span className="me" style={{ width: `${(friend.sent ?? 0) / Math.max((friend.sent ?? 0) + (friend.received ?? 0), 1) * 100}%` }} />
+                        <span className="ta" style={{ width: `${(friend.received ?? 0) / Math.max((friend.sent ?? 0) + (friend.received ?? 0), 1) * 100}%` }} />
+                      </div>
+                      <span className="annual-podium-caption">我发 {formatNumber(friend.sent ?? 0)} · TA 发 {formatNumber(friend.received ?? 0)}</span>
                       <div className="annual-podium-stand" aria-label={`第 ${place} 名`}>
                         <span>{place}</span>
                       </div>

@@ -300,6 +300,8 @@
   --podium-silver-soft: #f1f3f6;
   --podium-bronze: #a15c2f;
   --podium-bronze-soft: #f8e8dc;
+  --annual-me-fill: #4f7cff;
+  --annual-ta-fill: #d8b48a;
 }
 
 .dark {
@@ -315,6 +317,8 @@
   --podium-silver-soft: #27303d;
   --podium-bronze: #e09b6a;
   --podium-bronze-soft: #3a2519;
+  --annual-me-fill: #60a5fa;
+  --annual-ta-fill: #c9a273;
 }
 
 .annual-report {
@@ -502,6 +506,14 @@
 .annual-person { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
 .annual-person-avatar { flex: 0 0 auto; border: 1px solid color-mix(in oklab, var(--annual-accent) 35%, var(--border)); }
 .annual-person-avatar [data-slot='avatar-fallback'] { font-size: 10px; font-weight: 650; color: var(--annual-accent); background: var(--annual-accent-soft); }
+.annual-top-hero { display: flex; align-items: center; gap: 14px; max-width: 640px; padding: 14px 16px; border: 1px solid color-mix(in oklab, var(--podium-gold) 34%, var(--border)); border-radius: 14px; background: linear-gradient(110deg, var(--podium-gold-soft), color-mix(in oklab, var(--card) 82%, var(--podium-gold-soft))); }
+.annual-top-avatar { flex: 0 0 auto; width: 64px; height: 64px; padding: 3px; border: 2px solid var(--podium-gold); border-radius: 16px; background: var(--card); }
+.annual-top-avatar [data-slot='avatar'] { border: 0; border-radius: 12px; }
+.annual-top-avatar [data-slot='avatar-fallback'] { color: var(--podium-gold); background: var(--podium-gold-soft); font-size: 20px; font-weight: 650; }
+.annual-top-copy { display: grid; min-width: 0; gap: 1px; }
+.annual-top-copy > span { color: var(--muted-foreground); font-size: 11px; }
+.annual-top-copy > strong { overflow: hidden; color: var(--card-foreground); font-size: 20px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.annual-top-copy > small { color: var(--annual-people); font-size: 12px; font-variant-numeric: tabular-nums; }
 .annual-podium { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: clamp(6px, 2vw, 14px); max-width: 640px; margin: 26px auto 16px; padding: 0; list-style: none; }
 .annual-podium-place { display: flex; flex-direction: column; align-items: center; min-width: 0; gap: 6px; }
 .annual-podium-place.place-1 { --podium-color: var(--podium-gold); --podium-soft: var(--podium-gold-soft); }
@@ -512,7 +524,11 @@
 .annual-podium-avatar [data-slot='avatar'] { border: 0; }
 .annual-podium-avatar [data-slot='avatar-fallback'] { background: var(--podium-soft); color: var(--podium-color); font-size: 20px; font-weight: 650; }
 .annual-podium-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
-.annual-podium-messages { color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
+.annual-podium-messages { color: var(--card-foreground); font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.annual-podium-bar { display: flex; width: 100%; height: 6px; margin-top: 2px; overflow: hidden; border-radius: 999px; background: var(--muted); }
+.annual-podium-bar .me { background: var(--annual-me-fill); }
+.annual-podium-bar .ta { background: var(--annual-ta-fill); }
+.annual-podium-caption { max-width: 100%; overflow: hidden; color: var(--muted-foreground); font-size: 9px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .annual-podium-stand { display: flex; align-items: flex-start; justify-content: center; width: 100%; min-height: 46px; padding: 8px 4px 6px; border: 1px solid color-mix(in oklab, var(--podium-color) 42%, var(--border)); border-radius: 12px 12px 4px 4px; background: linear-gradient(180deg, var(--podium-soft), color-mix(in oklab, var(--podium-soft) 55%, var(--card))); color: var(--podium-color); font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .annual-podium-place.place-1 .annual-podium-stand { min-height: 86px; }
 .annual-podium-place.place-2 .annual-podium-stand { min-height: 64px; }
