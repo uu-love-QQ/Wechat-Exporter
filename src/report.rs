@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use base64::Engine as _;
 use chrono::{Datelike, Local, NaiveDate, TimeZone, Timelike};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -455,9 +456,66 @@ fn longest_streak(days: &std::collections::BTreeSet<String>) -> Option<(usize, S
     (best >= 2).then_some((best, best_start, best_end))
 }
 
-fn top_friend_rows(friends: &BTreeMap<String, FriendAnnual>) -> Vec<serde_json::Value> {
+fn fetch_avatar_data_uri(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let response = ureq::get(url)
+        .set("User-Agent", "MicroMessenger Client")
+        .timeout(std::time::Duration::from_secs(8))
+        .call()
+        .ok()?;
+    let mut data = Vec::new();
+    use std::io::Read;
+    response.into_reader().read_to_end(&mut data).ok()?;
+    if data.is_empty() || data.len() > 2 * 1024 * 1024 {
+        return None;
+    }
+    let mime = if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if data.starts_with(b"GIF8") {
+        "image/gif"
+    } else if data.starts_with(b"RIFF") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    };
+    Some(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(data)
+    ))
+}
+
+fn top_friend_rows(friends: &BTreeMap<String, FriendAnnual>, contacts: &HashMap<String, Contact>) -> Vec<serde_json::Value> {
     let mut rows: Vec<&FriendAnnual> = friends.values().collect();
     rows.sort_by(|a, b| b.total.cmp(&a.total).then(a.name.cmp(&b.name)));
+    let avatar_urls: Vec<(String, String)> = rows
+        .iter()
+        .take(3)
+        .filter_map(|friend| {
+            contacts
+                .get(&friend.id)
+                .map(|contact| contact.avatar_url.trim())
+                .filter(|url| !url.is_empty())
+                .map(|url| (friend.id.clone(), url.to_string()))
+        })
+        .collect();
+    let avatars = if avatar_urls.is_empty() {
+        HashMap::new()
+    } else {
+        std::thread::scope(|scope| {
+            let handles = avatar_urls
+                .into_iter()
+                .map(|(id, url)| scope.spawn(move || (id, fetch_avatar_data_uri(&url))))
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().ok())
+                .filter_map(|(id, avatar)| avatar.map(|avatar| (id, avatar)))
+                .collect::<HashMap<_, _>>()
+        })
+    };
     rows.into_iter()
         .map(|friend| serde_json::json!({
             "conversationId": friend.id,
@@ -465,15 +523,16 @@ fn top_friend_rows(friends: &BTreeMap<String, FriendAnnual>) -> Vec<serde_json::
             "messages": friend.total,
             "sent": friend.sent,
             "received": friend.received,
+            "avatar": avatars.get(&friend.id),
         }))
         .collect()
 }
 
-fn payload_annual_stats(stats: &AnnualStats, year: i32) -> serde_json::Value {
+fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<String, Contact>) -> serde_json::Value {
     let aggregate = &stats.aggregate;
     let mut friends = stats.friends.values().collect::<Vec<_>>();
     friends.sort_by(|a, b| b.total.cmp(&a.total));
-    let top_friends = top_friend_rows(&stats.friends);
+    let top_friends = top_friend_rows(&stats.friends, contacts);
     let mut periods = Vec::new();
     if let (Some(start), Some(end)) = (
         Local.timestamp_opt(aggregate.first, 0).single(),
@@ -1275,7 +1334,7 @@ fn payload_group(conversation: &Conversation, aggregate: &Aggregate) -> serde_js
     )
 }
 
-fn payload_annual(year: i32, stats: &AnnualStats) -> serde_json::Value {
+fn payload_annual(year: i32, stats: &AnnualStats, contacts: &HashMap<String, Contact>) -> serde_json::Value {
     let aggregate = &stats.aggregate;
     let peak = aggregate.peak();
     let title = if year == 0 { "长期历史报告" } else { &format!("{year} 年度报告") };
@@ -1295,7 +1354,7 @@ fn payload_annual(year: i32, stats: &AnnualStats) -> serde_json::Value {
         "其他人",
     );
     if let Some(object) = payload.as_object_mut() {
-        object.insert("annual".to_string(), payload_annual_stats(stats, year));
+        object.insert("annual".to_string(), payload_annual_stats(stats, year, contacts));
     }
     payload
 }
@@ -1443,7 +1502,7 @@ pub fn run(
                 options.plaintext,
                 &mut progress,
             )?;
-            (payload_annual(year, &stats), "annual-report.html", "annual", None)
+            (payload_annual(year, &stats, contacts), "annual-report.html", "annual", None)
         }
         ReportKind::Dual => {
             let id = options.conversation_ids.first().context("dual report requires --conversation-id")?;
@@ -1823,7 +1882,7 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
                 bail!("no private messages found in JSON");
             }
             let path = output_dir.join("annual-report.html");
-            write_payload(&payload_annual(options.report_year, &stats), &path)?;
+            write_payload(&payload_annual(options.report_year, &stats, &HashMap::new()), &path)?;
             progress.finish();
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"annual","year":options.report_year,"report":path}))?);
         }

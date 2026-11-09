@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CalendarDays, MessagesSquare, Moon, Sun, Users } from 'lucide-react'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -72,6 +73,7 @@ export interface AnnualPerson {
   messages: number
   sent?: number
   received?: number
+  avatar?: string | null
 }
 
 export interface AnnualCompanion {
@@ -799,6 +801,8 @@ function AnnualReportView({
   }
 
   const top = annual.topFriends[0]
+  const podium = [annual.topFriends[1], annual.topFriends[0], annual.topFriends[2]].filter(Boolean) as AnnualPerson[]
+  const runnersUp = annual.topFriends.slice(3, 10)
   const peak = annual.heatmap.peak
   const night = annual.nightCompanion
   const balance = annual.balancedFriend
@@ -892,15 +896,37 @@ function AnnualReportView({
                   {formatNumber(top.received ?? 0)} 条。
                 </p>
               </div>
-              <ol className="annual-list">
-                {annual.topFriends.slice(0, 10).map((friend, index) => (
-                  <li key={friend.conversationId}>
-                    <span className="rank">{String(index + 1).padStart(2, '0')}</span>
-                    <span className="name">{friend.displayName}</span>
-                    <span className="value">{formatNumber(friend.messages)} 条 · 我 {friend.sent ?? 0} / TA {friend.received ?? 0}</span>
-                  </li>
-                ))}
+              <ol className="annual-podium" aria-label="聊天最多的前三名">
+                {podium.map((friend) => {
+                  const place = annual.topFriends.indexOf(friend) + 1
+                  return (
+                    <li className={`annual-podium-place place-${place}`} key={friend.conversationId}>
+                      <div className="annual-podium-avatar">
+                        <Avatar className="size-full">
+                          {friend.avatar && <AvatarImage src={friend.avatar} alt="" />}
+                          <AvatarFallback>{friend.displayName.slice(0, 1)}</AvatarFallback>
+                        </Avatar>
+                      </div>
+                      <span className="annual-podium-name">{friend.displayName}</span>
+                      <span className="annual-podium-messages">{formatNumber(friend.messages)} 条</span>
+                      <div className="annual-podium-stand" aria-label={`第 ${place} 名`}>
+                        <span>{place}</span>
+                      </div>
+                    </li>
+                  )
+                })}
               </ol>
+              {runnersUp.length > 0 && (
+                <ol className="annual-list annual-runners-up">
+                  {runnersUp.map((friend, index) => (
+                    <li key={friend.conversationId}>
+                      <span className="rank">{String(index + 4).padStart(2, '0')}</span>
+                      <span className="name">{friend.displayName}</span>
+                      <span className="value">{formatNumber(friend.messages)} 条 · 我 {friend.sent ?? 0} / TA {friend.received ?? 0}</span>
+                    </li>
+                  ))}
+                </ol>
+              )}
             </>
           ) : <p className="annual-missing">这段时间没有和好友的私聊消息。</p>}
         </AnnualChapter>

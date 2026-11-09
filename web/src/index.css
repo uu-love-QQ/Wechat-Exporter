@@ -294,6 +294,12 @@
   --annual-people: #8a5a00;
   --annual-people-fill: #b97f00;
   --annual-people-soft: #fbf2dd;
+  --podium-gold: #b8860b;
+  --podium-gold-soft: #fbf1d4;
+  --podium-silver: #6b7280;
+  --podium-silver-soft: #f1f3f6;
+  --podium-bronze: #a15c2f;
+  --podium-bronze-soft: #f8e8dc;
 }
 
 .dark {
@@ -303,6 +309,12 @@
   --annual-people: #f2c66d;
   --annual-people-fill: #e0a93a;
   --annual-people-soft: #3a2d14;
+  --podium-gold: #f5c451;
+  --podium-gold-soft: #3a2d14;
+  --podium-silver: #cbd5e1;
+  --podium-silver-soft: #27303d;
+  --podium-bronze: #e09b6a;
+  --podium-bronze-soft: #3a2519;
 }
 
 .annual-report {
@@ -476,6 +488,22 @@
 .annual-list .name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .annual-list .value { color: var(--muted-foreground); font-size: 12px; font-variant-numeric: tabular-nums; }
 .annual-list .rank { width: 24px; color: var(--annual-accent); font-size: 11px; font-variant-numeric: tabular-nums; }
+.annual-podium { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: clamp(6px, 2vw, 14px); max-width: 640px; margin: 26px auto 16px; padding: 0; list-style: none; }
+.annual-podium-place { display: flex; flex-direction: column; align-items: center; min-width: 0; gap: 6px; }
+.annual-podium-place.place-1 { --podium-color: var(--podium-gold); --podium-soft: var(--podium-gold-soft); }
+.annual-podium-place.place-2 { --podium-color: var(--podium-silver); --podium-soft: var(--podium-silver-soft); }
+.annual-podium-place.place-3 { --podium-color: var(--podium-bronze); --podium-soft: var(--podium-bronze-soft); }
+.annual-podium-avatar { width: clamp(58px, 14vw, 84px); aspect-ratio: 1; padding: 3px; border: 2px solid var(--podium-color); border-radius: 50%; background: var(--podium-soft); box-shadow: 0 0 0 4px color-mix(in oklab, var(--podium-color) 12%, transparent); }
+.annual-podium-place.place-1 .annual-podium-avatar { width: clamp(74px, 18vw, 108px); box-shadow: 0 0 0 5px color-mix(in oklab, var(--podium-color) 18%, transparent); }
+.annual-podium-avatar [data-slot='avatar'] { border: 0; }
+.annual-podium-avatar [data-slot='avatar-fallback'] { background: var(--podium-soft); color: var(--podium-color); font-size: 20px; font-weight: 650; }
+.annual-podium-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.annual-podium-messages { color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
+.annual-podium-stand { display: flex; align-items: flex-start; justify-content: center; width: 100%; min-height: 46px; padding: 8px 4px 6px; border: 1px solid color-mix(in oklab, var(--podium-color) 42%, var(--border)); border-radius: 12px 12px 4px 4px; background: linear-gradient(180deg, var(--podium-soft), color-mix(in oklab, var(--podium-soft) 55%, var(--card))); color: var(--podium-color); font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.annual-podium-place.place-1 .annual-podium-stand { min-height: 86px; }
+.annual-podium-place.place-2 .annual-podium-stand { min-height: 64px; }
+.annual-podium-place.place-3 .annual-podium-stand { min-height: 50px; }
+.annual-runners-up { margin-top: 12px; }
 .annual-heat { display: grid; gap: 3px; grid-template-columns: auto repeat(24, minmax(0, 1fr)); align-items: center; }
 .annual-heat span.cell { aspect-ratio: 1; border-radius: 2px; background: var(--annual-time-fill); }
 .annual-heat span.hour { color: var(--muted-foreground); font-size: 7px; text-align: center; }
