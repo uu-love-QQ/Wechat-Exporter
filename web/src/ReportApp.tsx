@@ -776,6 +776,35 @@ function hourRange(hour: number): string {
   return `${String(hour).padStart(2, '0')}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`
 }
 
+function dateFraction(value: string | undefined, endOfDay = false): number | null {
+  if (!value) return null
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value)
+  if (!match) return null
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  if (!year || !month || !day) return null
+  const daysInMonth = new Date(year, month, 0).getDate()
+  const offset = endOfDay ? day / daysInMonth : (day - 1) / daysInMonth
+  return (month - 1 + offset) / 12
+}
+
+function timelineStyle(start: string | undefined, end: string | undefined): React.CSSProperties {
+  const left = dateFraction(start) ?? 0
+  const right = dateFraction(end, true) ?? left
+  return {
+    left: `${Math.max(0, Math.min(1, left)) * 100}%`,
+    width: `${Math.max(0.6, (Math.min(1, right) - Math.max(0, left)) * 100)}%`,
+  }
+}
+
+function monthDay(value: string | undefined): string {
+  if (!value) return ''
+  const match = /^\d{4}-(\d{2})-(\d{2})/.exec(value)
+  if (!match) return value
+  return `${Number(match[1])}月${Number(match[2])}日`
+}
+
 function PersonAvatar({ person, size = 'sm', className }: { person: { displayName: string; avatar?: string | null }; size?: 'sm' | 'default' | 'lg'; className?: string }) {
   return (
     <Avatar size={size} className={cn('annual-person-avatar', className)} aria-hidden="true">
@@ -935,7 +964,7 @@ function AnnualReportView({
           question="这一年，你和谁聊得最多？"
           hint="按你和每位好友的私聊消息总数排序，你发的和 TA 发的都算。"
           accent="people"
-          ghost="挚友"
+          ghost=""
         >
           {top ? (
             <>
@@ -1011,7 +1040,7 @@ function AnnualReportView({
           question="每个月陪你聊得最多的是谁？"
           hint="每个月里和你私聊消息最多的好友；占比是 TA 的消息数除以当月全部私聊消息数。"
           accent="people"
-          ghost="月"
+          ghost=""
         >
           {annual.monthlyCompanions.length > 0 ? (
             <>
@@ -1082,7 +1111,7 @@ function AnnualReportView({
           question="你通常在什么时候聊天？"
           hint="按消息时间所在的星期和小时累计，你发的和收到的都算；深夜指 00:00–05:59。"
           accent="time"
-          ghost="时"
+          ghost=""
         >
           {peak ? (
             <AnnualFigure
@@ -1169,14 +1198,14 @@ function AnnualReportView({
           question="聊天通常是谁先开口？"
           hint="隔了 1 小时以上的第一条消息，算作一段对话的开始；这条消息是谁发的，就算谁先开口。"
           accent="people"
-          ghost="先"
+          ghost=""
         >
           <AnnualFigure value={numberPercent(annual.initiative.rateMine)} label="的对话由你开启" />
           <div className="annual-lead">
             <p>
               你开启了 <strong>{annual.initiative.startsMine}</strong> 段对话，好友开启了{' '}
               <strong>{annual.initiative.startsPeer}</strong> 段。
-              {annual.initiative.topInitiated && <span className="annual-person"><PersonAvatar person={annual.initiative.topInitiated} />你最常主动找的是 {annual.initiative.topInitiated.displayName}：你先开口 {annual.initiative.topInitiated.startsMine} 次，TA 先开口 {annual.initiative.topInitiated.startsPeer} 次。</span>}
+              {annual.initiative.topInitiated && <span className="annual-person"><PersonAvatar person={annual.initiative.topInitiated} />你最常主动找的是 <strong>{annual.initiative.topInitiated.displayName}</strong>：你先开口 {annual.initiative.topInitiated.startsMine} 次，TA 先开口 {annual.initiative.topInitiated.startsPeer} 次。</span>}
             </p>
           </div>
           <AnnualSplit
@@ -1193,7 +1222,7 @@ function AnnualReportView({
           question="你回消息有多快？"
           hint="对方发来消息后，你紧接着发的下一条算一次回复，间隔不超过 24 小时；最快的好友只看你回复过至少 10 次的人。"
           accent="time"
-          ghost="快"
+          ghost=""
         >
           <AnnualFigure value={annual.response.mine ? formatDuration(annual.response.mine.averageMs) : '-'} label="你的平均回复用时" />
           <div className="annual-lead">
@@ -1217,7 +1246,7 @@ function AnnualReportView({
           question="和谁聊得最有来有往？"
           hint="只看双方都发过 50 条以上的好友，取收发最接近的一位：较少一方 ÷ 较多一方，越接近 100% 越平衡。"
           accent="people"
-          ghost="衡"
+          ghost=""
         >
           {balance ? (
             <>
@@ -1235,7 +1264,7 @@ function AnnualReportView({
           question="最长连续聊了多少天？"
           hint="每天至少有一条消息，谁发的都算，至少 2 天才算。"
           accent="time"
-          ghost="连"
+          ghost=""
         >
           {streak ? <AnnualFigure value={String(streak.days)} unit="天" label={`和 ${streak.displayName} 连续聊天`} /> : <AnnualFigure value="-" label="没有连续 2 天以上的好友" />}
           <div className="annual-lead">
@@ -1243,6 +1272,35 @@ function AnnualReportView({
             {annual.accountStreak && <p>你自己最长连续 {annual.accountStreak.days} 天，每天都至少和一位好友聊过。</p>}
             {busiest && <p>{busiest.date} 是你私聊最多的一天，共 {busiest.messages} 条{busiest.topFriend ? <span className="annual-person">，聊得最多的是 <PersonAvatar person={busiest.topFriend} />{busiest.topFriend.displayName}</span> : ''}。</p>}
           </div>
+          {(streak || annual.accountStreak) && (
+            <div className="annual-timeline" aria-label="连续聊天时间线">
+              <div className="annual-timeline-months" aria-hidden="true">
+                {Array.from({ length: 12 }, (_, index) => <span key={index}>{index + 1}月</span>)}
+              </div>
+              {streak && (
+                <div className="annual-timeline-row">
+                  <div className="annual-timeline-label">和 <strong>{streak.displayName}</strong> 连续 {streak.days} 天</div>
+                  <div className="annual-timeline-track">
+                    <span className="annual-timeline-bar is-streak" style={timelineStyle(streak.startDate, streak.endDate)} />
+                  </div>
+                </div>
+              )}
+              {annual.accountStreak && (
+                <div className="annual-timeline-row">
+                  <div className="annual-timeline-label">每天都和好友聊过 <strong>{annual.accountStreak.days}</strong> 天</div>
+                  <div className="annual-timeline-track">
+                    <span className="annual-timeline-bar is-account" style={timelineStyle(annual.accountStreak.startDate, annual.accountStreak.endDate)} />
+                  </div>
+                </div>
+              )}
+              {busiest && (
+                <div className="annual-timeline-foot">
+                  <span>{monthDay(busiest.date)} · {formatNumber(busiest.messages)} 条</span>
+                  <i aria-hidden="true" />
+                </div>
+              )}
+            </div>
+          )}
         </AnnualChapter>
 
         <AnnualChapter
@@ -1252,7 +1310,7 @@ function AnnualReportView({
           question="有没有渐渐少聊的人？"
           hint="把这段时间从中间分成前后两段（不足 60 天时不比较）；前段至少 80/100 条，并且超过后段 5 倍。"
           accent="people"
-          ghost="渐"
+          ghost=""
         >
           {fading ? (
             <>
@@ -1273,7 +1331,7 @@ function AnnualReportView({
           question={phrase ? `你最常说的话是「${phrase.text}」？` : '你最常说的话是什么？'}
           hint="只看你发出的文字消息，整条消息完全相同才算同一句；2–20 个字，至少出现 2 次。"
           accent="quantity"
-          ghost="语"
+          ghost=""
         >
           {phrase ? (
             <>

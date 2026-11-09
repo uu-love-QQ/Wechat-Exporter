@@ -547,6 +547,20 @@
 .annual-heat-legend { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; color: var(--muted-foreground); font-size: 10px; }
 .annual-heat-swatches { display: inline-flex; gap: 3px; }
 .annual-heat-swatches i { display: block; width: 10px; height: 10px; border-radius: 2px; background: var(--annual-time-fill); }
+.annual-timeline { margin-top: 18px; }
+.annual-timeline-months { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--muted); }
+.annual-timeline-months span { padding: 4px 2px; border-right: 1px solid var(--border); color: var(--muted-foreground); font-size: 10px; text-align: center; font-variant-numeric: tabular-nums; }
+.annual-timeline-months span:last-child { border-right: 0; }
+.annual-timeline-row { margin-top: 13px; }
+.annual-timeline-label { margin-bottom: 6px; color: var(--card-foreground); font-size: 12px; text-align: right; }
+.annual-timeline-label strong { color: var(--annual-people); font-weight: 700; }
+.annual-timeline-track { position: relative; height: 14px; }
+.annual-timeline-track::before { content: ''; position: absolute; top: 7px; right: 0; left: 0; border-top: 1px solid color-mix(in oklab, var(--muted-foreground) 22%, transparent); }
+.annual-timeline-bar { position: absolute; top: 3px; height: 8px; border-radius: 999px; }
+.annual-timeline-bar.is-streak { background: var(--annual-people-fill); }
+.annual-timeline-bar.is-account { background: var(--annual-time-fill); }
+.annual-timeline-foot { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 9px; color: var(--muted-foreground); font-size: 10px; font-variant-numeric: tabular-nums; }
+.annual-timeline-foot i { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--annual-time-fill); }
 .annual-night-card { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; padding: 12px 14px; border: 1px solid color-mix(in oklab, var(--annual-time-fill) 20%, var(--border)); border-left: 3px solid var(--annual-time-fill); border-radius: 12px; background: color-mix(in oklab, var(--annual-time-soft) 52%, var(--card)); }
 .annual-night-icon { flex: 0 0 auto; width: 18px; height: 18px; color: var(--annual-time); }
 .annual-night-avatar { width: 32px; height: 32px; border-color: var(--annual-time-fill); border-radius: 8px; }
