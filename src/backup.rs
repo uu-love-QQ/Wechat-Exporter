@@ -95,10 +95,6 @@ impl DavClient {
                 if let Some(ureq::Error::Status(405, _)) = error.downcast_ref::<ureq::Error>() {
                     return Ok(());
                 }
-                // Some servers return 409 for an existing collection.
-                if let Some(ureq::Error::Status(409, _)) = error.downcast_ref::<ureq::Error>() {
-                    return Ok(());
-                }
                 Err(error)
             }
         }
@@ -188,13 +184,13 @@ pub fn upload_directory(
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .unwrap_or("export");
-    let remote_collection = config.endpoint();
-    let mut path_parts: Vec<&str> = vec![folder];
-    let collection = client.ensure_collection(
-        &remote_collection,
-        &path_parts,
-    )?;
-    path_parts.clear();
+    let mut path_parts: Vec<&str> = config
+        .remote_path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    path_parts.push(folder);
+    let collection = client.ensure_collection(&config.url, &path_parts)?;
     let files = collect_files(output_dir)?;
     progress.set_phase(format!("WebDAV 备份 · {} 个文件", files.len()));
     progress.steps(0, files.len(), "文件");
@@ -265,8 +261,9 @@ pub fn run(action: &BackupCommand) -> Result<()> {
                 username: config.username.clone(),
                 password: config.password.clone(),
             };
-            client.test(&format!("{}/", config.url.trim_end_matches('/')))?;
-            println!("[+] WebDAV 连接正常: {}", config.endpoint());
+            let test_url = format!("{}/", config.url.trim_end_matches('/'));
+            client.test(&test_url)?;
+            println!("[+] WebDAV 连接正常: {test_url}");
             Ok(())
         }
         BackupCommand::Clear => {
