@@ -283,6 +283,9 @@ wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json 
 导出与报告执行时会在终端显示进度条：消息 `已处理/总数`、附件 `已处理/总数`，
 报告还会显示当前扫描会话与阶段。`--silent` 可关闭进度条，保留最终 JSON/错误输出。
 
+导出格式、媒体附件、报告会话读取和 WebDAV 文件上传使用并行任务；
+SQLite 读取按 worker 独立打开只读连接，媒体落盘使用内容寻址并加写锁。
+
 `list` / `search` 返回的 `next_cursor` 是分页游标（Base64 编码的偏移量），
 不是密钥或错误码；把上一页返回的值原样传给 `--cursor` 即可继续下一页。
 

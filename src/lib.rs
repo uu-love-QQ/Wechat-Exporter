@@ -312,6 +312,7 @@ pub fn run() -> Result<()> {
             &store,
             &contacts,
             &conversations,
+            &layout.message_dbs,
             layout.contact_db.as_deref(),
             layout.account_root.as_deref(),
             layout.db_storage.as_deref(),

@@ -905,6 +905,133 @@ pub fn export_media(
     voice: Option<&super::voice::VoiceIndex>,
     mut progress: Option<&mut dyn FnMut(usize, usize, usize, usize)>,
 ) -> MediaOutcome {
+    let non_voice: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| {
+            message.media.as_ref().is_some_and(|media| media.kind != MediaKind::Voice)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let voice_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| {
+            message.media.as_ref().is_some_and(|media| media.kind == MediaKind::Voice)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let workers = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4)
+        .min(8);
+    if non_voice.len() < 4 || workers <= 1 || (voice_indices.is_empty() && non_voice.len() < 8) {
+        return export_media_sequential(
+            messages, index, output_dir, image_key, account_id, debug, conversation_id, voice, progress,
+        );
+    }
+
+    let mut outcome = MediaOutcome {
+        saved: 0,
+        failed: 0,
+        failures: Vec::new(),
+    };
+    if !voice_indices.is_empty() {
+        let mut voice_messages: Vec<ExportMessage> = voice_indices
+            .iter()
+            .map(|&message_index| messages[message_index].clone())
+            .collect();
+        let voice_outcome = export_media_sequential(
+            &mut voice_messages,
+            index,
+            output_dir,
+            image_key,
+            account_id,
+            debug,
+            conversation_id,
+            voice,
+            None,
+        );
+        for (source_index, message) in voice_indices.iter().zip(voice_messages) {
+            messages[*source_index].media_path = message.media_path;
+        }
+        outcome.saved += voice_outcome.saved;
+        outcome.failed += voice_outcome.failed;
+        outcome.failures.extend(voice_outcome.failures);
+    }
+
+    let chunk_size = non_voice.len().div_ceil(workers);
+    let chunks: Vec<Vec<usize>> = non_voice.chunks(chunk_size).map(|chunk| chunk.to_vec()).collect();
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, usize, usize, usize)>();
+    let results = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            let sender = progress_tx.clone();
+            let messages_ref = &messages;
+            let handle = scope.spawn(move || {
+                let mut chunk_messages: Vec<ExportMessage> = chunk
+                    .iter()
+                    .map(|&message_index| messages_ref[message_index].clone())
+                    .collect();
+                let mut sender = Some(sender);
+                let mut callback = |done: usize, total: usize, attachment_done: usize, attachment_total: usize| {
+                    if let Some(sender) = sender.as_mut() {
+                        let _ = sender.send((done, total, attachment_done, attachment_total));
+                    }
+                };
+                let chunk_outcome = export_media_sequential(
+                    &mut chunk_messages,
+                    index,
+                    output_dir,
+                    image_key,
+                    account_id,
+                    debug,
+                    conversation_id,
+                    None,
+                    Some(&mut callback),
+                );
+                (chunk, chunk_messages, chunk_outcome)
+            });
+            handles.push(handle);
+        }
+        drop(progress_tx);
+        if let Some(callback) = progress.as_deref_mut() {
+            for (done, total, attachment_done, attachment_total) in progress_rx {
+                callback(done, total, attachment_done, attachment_total);
+            }
+        }
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_else(|_| panic!("media worker panicked")))
+            .collect::<Vec<_>>()
+    });
+    for (chunk, chunk_messages, chunk_outcome) in results {
+        for (source_index, message) in chunk.iter().zip(chunk_messages) {
+            messages[*source_index].media_path = message.media_path;
+        }
+        outcome.saved += chunk_outcome.saved;
+        outcome.failed += chunk_outcome.failed;
+        outcome.failures.extend(chunk_outcome.failures);
+    }
+    if let Some(callback) = progress.as_deref_mut() {
+        let total = messages.len();
+        let attachments = messages.iter().filter(|message| message.media.is_some()).count();
+        callback(total, total, attachments, attachments);
+    }
+    outcome
+}
+
+fn export_media_sequential(
+    messages: &mut [ExportMessage],
+    index: &MediaIndex,
+    output_dir: &Path,
+    image_key: Option<[u8; 16]>,
+    account_id: &str,
+    debug: bool,
+    conversation_id: &str,
+    voice: Option<&super::voice::VoiceIndex>,
+    mut progress: Option<&mut dyn FnMut(usize, usize, usize, usize)>,
+) -> MediaOutcome {
     let (image_key, image_xor_key, image_seed) = resolve_image_keys(index, account_id, image_key);
     let emoticon_key = image_seed.and_then(|seed| emoticon_key_from_seed(seed, account_id));
     let media_dir = output_dir.join("media");
@@ -1380,7 +1507,10 @@ pub fn export_media(
     outcome
 }
 
+static MEDIA_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+    let _guard = MEDIA_WRITE_LOCK.lock().ok();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }

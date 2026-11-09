@@ -811,34 +811,108 @@ fn load_moments(
     Some(stats)
 }
 
-fn private_report(
-    options: &ValidatedCli,
-    store: &Store,
-    contacts: &HashMap<String, Contact>,
+fn load_conversations_parallel(
     conversations: &[Conversation],
+    message_dbs: &[PathBuf],
+    key: Option<&[u8; 32]>,
+    plaintext: bool,
+    contacts: &HashMap<String, Contact>,
     self_username: Option<&str>,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
     progress: &mut Progress,
-) -> Result<Aggregate> {
+) -> Result<Vec<(Conversation, Vec<ExportMessage>)>> {
+    if conversations.is_empty() {
+        return Ok(Vec::new());
+    }
+    progress.set_phase(format!("并行读取 {} 个会话", conversations.len()));
+    let workers = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4)
+        .min(conversations.len())
+        .max(1);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: std::sync::Mutex<Vec<Option<(Conversation, Vec<ExportMessage>)>>> =
+        std::sync::Mutex::new((0..conversations.len()).map(|_| None).collect());
+    let errors = std::sync::Mutex::new(Vec::<String>::new());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let next = &next;
+            let results = &results;
+            let errors = &errors;
+            scope.spawn(move || {
+                let store = match Store::open(message_dbs, key, plaintext) {
+                    Ok(store) => store,
+                    Err(error) => {
+                        if let Ok(mut errors) = errors.lock() {
+                            errors.push(format!("failed to open message stores: {error}"));
+                        }
+                        return;
+                    }
+                };
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if index >= conversations.len() {
+                        break;
+                    }
+                    let conversation = &conversations[index];
+                    match store.load_messages(
+                        &conversation.id,
+                        self_username,
+                        contacts,
+                        start_ms,
+                        end_ms,
+                    ) {
+                        Ok(messages) => {
+                            if let Ok(mut results) = results.lock() {
+                                results[index] = Some((conversation.clone(), messages));
+                            }
+                        }
+                        Err(error) => {
+                            if let Ok(mut errors) = errors.lock() {
+                                errors.push(format!("failed to load {}: {error}", conversation.id));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    if let Ok(errors) = errors.lock() {
+        if let Some(error) = errors.first() {
+            bail!("{error}");
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(mut results) = results.lock() {
+        for item in results.iter_mut() {
+            if let Some(item) = item.take() {
+                out.push(item);
+            }
+        }
+    }
+    progress.steps(out.len(), conversations.len(), "会话");
+    Ok(out)
+}
+
+fn private_report(loaded: &[(Conversation, Vec<ExportMessage>)], progress: &mut Progress) -> Result<Aggregate> {
     let mut aggregate = Aggregate::new();
-    let private: Vec<&Conversation> = conversations.iter().filter(|item| is_private_conversation(item)).collect();
     let mut scanned = 0usize;
-    for (index, conversation) in private.iter().enumerate() {
+    for (index, (conversation, messages)) in loaded.iter().enumerate() {
+        scanned += messages.len();
         progress.set_phase(format!(
-            "扫描私聊 {}/{} · {} · 已读取 {} 条",
+            "分析私聊 {}/{} · {} · 已读取 {} 条",
             index + 1,
-            private.len(),
+            loaded.len(),
             conversation.name,
             scanned
         ));
-        progress.steps(index + 1, private.len(), "会话");
-        let messages = load_messages(store, conversation, contacts, self_username, None, None)?;
-        scanned += messages.len();
         if messages.is_empty() {
             continue;
         }
         let sent = messages.iter().filter(|message| message.is_send).count();
         let last = messages.iter().map(|message| message.create_time).max().unwrap_or(0);
-        for message in &messages {
+        for message in messages {
             aggregate.observe(message);
         }
         let entry = aggregate
@@ -858,7 +932,6 @@ fn private_report(
     if aggregate.total == 0 {
         bail!("no readable private conversation messages");
     }
-    let _ = options;
     Ok(aggregate)
 }
 
@@ -917,9 +990,8 @@ fn group_report(
 
 fn annual_report(
     year: i32,
-    store: &Store,
+    loaded: &[(Conversation, Vec<ExportMessage>)],
     contacts: &HashMap<String, Contact>,
-    conversations: &[Conversation],
     self_username: Option<&str>,
     account_root: Option<&Path>,
     db_storage: Option<&Path>,
@@ -927,25 +999,19 @@ fn annual_report(
     plaintext: bool,
     progress: &mut Progress,
 ) -> Result<AnnualStats> {
-    let (start, end) = year_bounds(year);
     let mut stats = AnnualStats::new();
-    let analyzable: Vec<&Conversation> = conversations.iter().filter(|item| is_private_conversation(item)).collect();
     let mut scanned = 0usize;
-    for (index, conversation) in analyzable.iter().enumerate() {
+    for (conversation, messages) in loaded {
+        scanned += messages.len();
         progress.set_phase(format!(
-            "扫描年度会话 {}/{} · {} · 已读取 {} 条",
-            index + 1,
-            analyzable.len(),
+            "分析年度会话 · {} · 已读取 {} 条",
             conversation.name,
             scanned
         ));
-        progress.steps(index + 1, analyzable.len(), "会话");
-        let messages = load_messages(store, conversation, contacts, self_username, start, end)?;
-        scanned += messages.len();
         if messages.is_empty() {
             continue;
         }
-        stats.observe_conversation(conversation, &messages);
+        stats.observe_conversation(conversation, messages);
     }
     stats.sync_aggregate_friends();
     progress.set_phase("分析朋友圈");
@@ -1284,6 +1350,7 @@ pub fn run(
     store: &Store,
     contacts: &HashMap<String, Contact>,
     conversations: &[Conversation],
+    message_dbs: &[PathBuf],
     contact_db: Option<&Path>,
     account_root: Option<&Path>,
     db_storage: Option<&Path>,
@@ -1300,7 +1367,23 @@ pub fn run(
     let year = options.report_year;
     let (payload, file_name, report_type, conversation_id) = match kind {
         ReportKind::Private => {
-            let aggregate = private_report(options, store, contacts, conversations, self_username, &mut progress)?;
+            let private: Vec<Conversation> = conversations
+                .iter()
+                .filter(|item| is_private_conversation(item))
+                .cloned()
+                .collect();
+            let loaded = load_conversations_parallel(
+                &private,
+                message_dbs,
+                options.key.as_ref(),
+                options.plaintext,
+                contacts,
+                self_username,
+                None,
+                None,
+                &mut progress,
+            )?;
+            let aggregate = private_report(&loaded, &mut progress)?;
             (payload_private(&aggregate), "private-report.html", "private", None)
         }
         ReportKind::Group => {
@@ -1330,11 +1413,27 @@ pub fn run(
             (payload_group(conversation, &aggregate), "group-report.html", "group", Some(conversation.id.clone()))
         }
         ReportKind::Annual => {
+            let private: Vec<Conversation> = conversations
+                .iter()
+                .filter(|item| is_private_conversation(item))
+                .cloned()
+                .collect();
+            let (start, end) = year_bounds(year);
+            let loaded = load_conversations_parallel(
+                &private,
+                message_dbs,
+                options.key.as_ref(),
+                options.plaintext,
+                contacts,
+                self_username,
+                start,
+                end,
+                &mut progress,
+            )?;
             let stats = annual_report(
                 year,
-                store,
+                &loaded,
                 contacts,
-                conversations,
                 self_username,
                 account_root,
                 db_storage,
