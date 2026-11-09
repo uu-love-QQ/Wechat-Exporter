@@ -676,9 +676,9 @@ function numberPercent(value: number | null): string {
   return value === null ? '-' : `${Math.round(value * 100)}%`
 }
 
-function AnnualFigure({ value, unit, label }: { value: string; unit?: string; label?: string }) {
+function AnnualFigure({ value, unit, label, className }: { value: string; unit?: string; label?: string; className?: string }) {
   return (
-    <p className="annual-figure">
+    <p className={cn('annual-figure', className)}>
       <span className="annual-figure-value">
         <strong>{value}</strong>
         {unit && <small>{unit}</small>}
@@ -1086,6 +1086,7 @@ function AnnualReportView({
         >
           {peak ? (
             <AnnualFigure
+              className="annual-figure--time"
               value={`周${['一', '二', '三', '四', '五', '六', '日'][peak.weekday]} ${hourRange(peak.hour)}`}
               label={`最常聊天的时段 · ${peak.messages} 条`}
             />
@@ -1175,7 +1176,7 @@ function AnnualReportView({
             <p>
               你开启了 <strong>{annual.initiative.startsMine}</strong> 段对话，好友开启了{' '}
               <strong>{annual.initiative.startsPeer}</strong> 段。
-              {annual.initiative.topInitiated && <span className="annual-person"><PersonAvatar person={annual.initiative.topInitiated} />你最常主动找的是 {annual.initiative.topInitiated.displayName}：你先开口 {annual.initiative.topInitiated.startsMine} 次。</span>}
+              {annual.initiative.topInitiated && <span className="annual-person"><PersonAvatar person={annual.initiative.topInitiated} />你最常主动找的是 {annual.initiative.topInitiated.displayName}：你先开口 {annual.initiative.topInitiated.startsMine} 次，TA 先开口 {annual.initiative.topInitiated.startsPeer} 次。</span>}
             </p>
           </div>
           <AnnualSplit

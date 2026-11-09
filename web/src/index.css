@@ -440,6 +440,7 @@
   overflow-wrap: anywhere;
 }
 .annual-figure-value small { color: var(--annual-accent); font-size: 15px; font-weight: 550; }
+.annual-figure--time .annual-figure-value strong { font-size: clamp(24px, 3vw, 36px); font-weight: 350; letter-spacing: -.025em; white-space: nowrap; }
 .annual-figure > small { color: var(--muted-foreground); font-size: 12px; }
 .annual-lead { display: grid; max-width: 36em; gap: 8px; font-size: 15px; line-height: 1.85; }
 .annual-lead strong { color: var(--annual-accent); font-weight: 650; }
