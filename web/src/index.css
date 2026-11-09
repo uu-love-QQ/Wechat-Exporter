@@ -408,9 +408,13 @@
   text-transform: uppercase;
 }
 .annual-kicker-index { color: var(--annual-accent); font-size: 13px; letter-spacing: 0; font-variant-numeric: tabular-nums; }
-.annual-hint { margin-left: auto; letter-spacing: 0; text-transform: none; }
-.annual-hint summary { cursor: pointer; color: var(--muted-foreground); font-size: 11px; }
-.annual-hint p { max-width: 32em; margin: 6px 0 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; letter-spacing: 0; text-transform: none; }
+.annual-hint { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 22px; height: 22px; margin-left: auto; padding: 0; border: 1px solid color-mix(in oklab, var(--annual-accent) 35%, var(--border)); border-radius: 999px; background: transparent; color: var(--annual-accent); cursor: help; transition: background-color .15s ease, border-color .15s ease; }
+.annual-hint:hover, .annual-hint:focus-visible { outline: none; border-color: var(--annual-accent); background: var(--annual-accent-soft); }
+.annual-hint svg { width: 13px; height: 13px; }
+.annual-help-content { display: flex; width: 20rem; max-width: min(20rem, calc(100vw - 32px)); flex-direction: column; align-items: flex-start; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); color: var(--card-foreground); box-shadow: 0 16px 40px color-mix(in oklab, var(--foreground) 16%, transparent); }
+.annual-help-content svg { fill: var(--card); background: var(--card); }
+.annual-help-label { display: inline-flex; padding: 4px 8px; border-radius: 6px; background: var(--muted); color: var(--card-foreground); font-size: 11px; font-weight: 700; line-height: 1.2; letter-spacing: 0; }
+.annual-help-content p { max-width: none; margin: 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.65; letter-spacing: 0; text-transform: none; white-space: normal; }
 .annual-chapter h2 {
   max-width: 22em;
   margin: 6px 0 0;

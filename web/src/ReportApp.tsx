@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarDays, MessagesSquare, Moon, Sun, Users } from 'lucide-react'
+import { CalendarDays, Info, MessagesSquare, Moon, Sun, Users } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -22,6 +22,12 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 export interface ReportKpi {
@@ -703,10 +709,17 @@ function AnnualChapter({
       <div className="annual-kicker">
         <span className="annual-kicker-index">{String(index).padStart(2, '0')}</span>
         <span>{title}</span>
-        <details className="annual-hint">
-          <summary>怎么算的</summary>
-          <p>{hint}</p>
-        </details>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button type="button" className="annual-hint" aria-label="怎么算的">
+              <Info aria-hidden="true" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={8} className="annual-help-content">
+            <span className="annual-help-label">怎么算的</span>
+            <p>{hint}</p>
+          </TooltipContent>
+        </Tooltip>
       </div>
       <h2 id={`annual-${id}-question`} tabIndex={-1}>{question}</h2>
       {children}
@@ -1240,7 +1253,11 @@ export function ReportApp({ data }: { data: ReportData }) {
   }, [dark])
 
   if (data.kind === 'annual' && data.annual) {
-    return <AnnualReportView data={data} annual={data.annual} dark={dark} setDark={setDark} />
+    return (
+      <TooltipProvider>
+        <AnnualReportView data={data} annual={data.annual} dark={dark} setDark={setDark} />
+      </TooltipProvider>
+    )
   }
 
   const ratioMe = data.ratio ? pct(data.ratio.me, total) : 0
