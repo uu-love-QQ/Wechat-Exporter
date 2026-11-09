@@ -885,7 +885,8 @@ fn load_conversations_parallel(
     if conversations.is_empty() {
         return Ok(Vec::new());
     }
-    progress.set_phase(format!("并行读取 {} 个会话", conversations.len()));
+    progress.set_phase(format!("打开数据库并读取 {} 个会话", conversations.len()));
+    progress.steps(0, conversations.len(), "会话");
     let workers = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(4)
@@ -893,14 +894,18 @@ fn load_conversations_parallel(
         .min(4)
         .max(1);
     let next = std::sync::atomic::AtomicUsize::new(0);
+    let completed = std::sync::atomic::AtomicUsize::new(0);
     let results: std::sync::Mutex<Vec<Option<(Conversation, Vec<ExportMessage>)>>> =
         std::sync::Mutex::new((0..conversations.len()).map(|_| None).collect());
     let errors = std::sync::Mutex::new(Vec::<String>::new());
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, String)>();
     std::thread::scope(|scope| {
         for _ in 0..workers {
             let next = &next;
+            let completed = &completed;
             let results = &results;
             let errors = &errors;
+            let progress_tx = progress_tx.clone();
             scope.spawn(move || {
                 let store = match Store::open(message_dbs, key, plaintext) {
                     Ok(store) => store,
@@ -917,13 +922,14 @@ fn load_conversations_parallel(
                         break;
                     }
                     let conversation = &conversations[index];
-                    match store.load_messages(
+                    let loaded = store.load_messages(
                         &conversation.id,
                         self_username,
                         contacts,
                         start_ms,
                         end_ms,
-                    ) {
+                    );
+                    match loaded {
                         Ok(messages) => {
                             if let Ok(mut results) = results.lock() {
                                 results[index] = Some((conversation.clone(), messages));
@@ -935,8 +941,17 @@ fn load_conversations_parallel(
                             }
                         }
                     }
+                    let done = completed
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
+                    let _ = progress_tx.send((done, conversation.name.clone()));
                 }
             });
+        }
+        drop(progress_tx);
+        for (done, name) in progress_rx {
+            progress.set_phase(format!("读取会话 {done}/{} · {name}", conversations.len()));
+            progress.steps(done, conversations.len(), "会话");
         }
     });
     if let Ok(errors) = errors.lock() {
