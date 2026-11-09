@@ -1230,7 +1230,7 @@ impl Db {
         let check = |conn: &Connection| -> Result<()> {
             conn.busy_timeout(std::time::Duration::from_secs(2))?;
             conn.execute_batch(&format!(
-                "PRAGMA key = \"x'{hex_key}'\"; PRAGMA cipher_memory_security = OFF;"
+                "PRAGMA cipher_memory_security = OFF; PRAGMA key = \"x'{hex_key}'\"; PRAGMA cipher_memory_security = OFF;"
             ))
             .context("failed to apply SQLCipher raw key")?;
             conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
