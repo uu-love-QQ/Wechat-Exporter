@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use chrono::{Datelike, Local, TimeZone, Timelike};
+use chrono::{Datelike, Local, NaiveDate, TimeZone, Timelike};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,13 +43,6 @@ fn is_private_conversation(conversation: &Conversation) -> bool {
         return false;
     }
     !PRIVATE_ID_EXCLUDES.iter().any(|excluded| id == *excluded)
-}
-
-fn is_analyzable_conversation(conversation: &Conversation) -> bool {
-    !conversation.id.starts_with("gh_")
-        && conversation.id != "filehelper"
-        && !conversation.id.starts_with("qqmail")
-        && !conversation.id.starts_with("fmessage")
 }
 
 fn analysis_text(message: &ExportMessage) -> &str {
@@ -277,6 +270,381 @@ impl Aggregate {
     }
 }
 
+#[derive(Default)]
+struct FriendAnnual {
+    id: String,
+    name: String,
+    total: usize,
+    sent: usize,
+    received: usize,
+    days: std::collections::BTreeSet<String>,
+    daily_messages: BTreeMap<String, usize>,
+    months: BTreeMap<String, usize>,
+    night: usize,
+    last: i64,
+    replies: usize,
+    reply_sum_ms: i64,
+    initiated_mine: usize,
+    initiated_peer: usize,
+}
+
+#[derive(Default)]
+struct AnnualStats {
+    aggregate: Aggregate,
+    friends: BTreeMap<String, FriendAnnual>,
+    heatmap: [[usize; 24]; 7],
+    starts_mine: usize,
+    starts_peer: usize,
+    reply_mine_sum_ms: i64,
+    reply_mine_count: usize,
+    reply_peer_sum_ms: i64,
+    reply_peer_count: usize,
+    monthly_friend: BTreeMap<String, BTreeMap<String, usize>>,
+    monthly_total: BTreeMap<String, usize>,
+    day_total: BTreeMap<String, usize>,
+    day_friend: BTreeMap<String, BTreeMap<String, usize>>,
+    phrases: BTreeMap<String, usize>,
+}
+
+impl AnnualStats {
+    fn new() -> Self {
+        Self {
+            aggregate: Aggregate::new(),
+            ..Self::default()
+        }
+    }
+
+    fn sync_aggregate_friends(&mut self) {
+        for (id, friend) in &self.friends {
+            self.aggregate.friends.insert(
+                id.clone(),
+                FriendAgg {
+                    id: id.clone(),
+                    name: friend.name.clone(),
+                    total: friend.total,
+                    sent: friend.sent,
+                    received: friend.received,
+                    last: friend.last,
+                },
+            );
+        }
+    }
+
+    fn observe_conversation(&mut self, conversation: &Conversation, messages: &[ExportMessage]) {
+        let mut ordered: Vec<&ExportMessage> = messages.iter().collect();
+        ordered.sort_by_key(|message| message.create_time);
+        let mut previous: Option<&ExportMessage> = None;
+        let mut segment_last = 0i64;
+        for message in ordered {
+            self.aggregate.observe(message);
+            let Some(date) = Local.timestamp_opt(message.create_time, 0).single() else {
+                previous = Some(message);
+                continue;
+            };
+            let day = date.format("%Y-%m-%d").to_string();
+            let month = date.format("%Y-%m").to_string();
+            let hour = date.hour() as usize;
+            let weekday = date.weekday().num_days_from_monday() as usize;
+            self.heatmap[weekday][hour] += 1;
+            *self.monthly_total.entry(month.clone()).or_default() += 1;
+            *self
+                .monthly_friend
+                .entry(month.clone())
+                .or_default()
+                .entry(conversation.id.clone())
+                .or_default() += 1;
+            *self.day_total.entry(day.clone()).or_default() += 1;
+            *self
+                .day_friend
+                .entry(day.clone())
+                .or_default()
+                .entry(conversation.id.clone())
+                .or_default() += 1;
+            let entry = self.friends.entry(conversation.id.clone()).or_insert_with(|| FriendAnnual {
+                id: conversation.id.clone(),
+                name: conversation.name.clone(),
+                ..FriendAnnual::default()
+            });
+            entry.name = conversation.name.clone();
+            entry.total += 1;
+            entry.last = entry.last.max(message.create_time);
+            entry.days.insert(day.clone());
+            *entry.daily_messages.entry(day).or_default() += 1;
+            *entry.months.entry(month.clone()).or_default() += 1;
+            if message.is_send {
+                entry.sent += 1;
+            } else {
+                entry.received += 1;
+            }
+            if hour < 6 {
+                entry.night += 1;
+            }
+            let segment_start = message.is_send;
+            if segment_last == 0 || message.create_time - segment_last > 3600 {
+                if segment_start {
+                    self.starts_mine += 1;
+                    entry.initiated_mine += 1;
+                } else {
+                    self.starts_peer += 1;
+                    entry.initiated_peer += 1;
+                }
+            }
+            if let Some(previous) = previous {
+                let gap_ms = (message.create_time - previous.create_time).max(0) * 1000;
+                if previous.is_send != message.is_send && gap_ms <= 86_400_000 {
+                    if message.is_send {
+                        self.reply_mine_sum_ms += gap_ms;
+                        self.reply_mine_count += 1;
+                    } else {
+                        self.reply_peer_sum_ms += gap_ms;
+                        self.reply_peer_count += 1;
+                    }
+                    entry.replies += 1;
+                    entry.reply_sum_ms += gap_ms;
+                }
+            }
+            if message.is_send && message.media.is_none() && message.record.is_none() {
+                let text = analysis_text(message).trim();
+                let len = text.chars().count();
+                if (2..=20).contains(&len) && is_word_text(text) {
+                    *self.phrases.entry(text.to_string()).or_default() += 1;
+                }
+            }
+            segment_last = message.create_time;
+            previous = Some(message);
+        }
+    }
+}
+
+fn longest_streak(days: &std::collections::BTreeSet<String>) -> Option<(usize, String, String)> {
+    let mut best = 0usize;
+    let mut best_start = String::new();
+    let mut best_end = String::new();
+    let mut run = 0usize;
+    let mut previous: Option<NaiveDate> = None;
+    let mut run_start = String::new();
+    for day in days {
+        let Ok(date) = NaiveDate::parse_from_str(day, "%Y-%m-%d") else {
+            continue;
+        };
+        if previous.and_then(|value| value.succ_opt()) == Some(date) {
+            run += 1;
+        } else {
+            run = 1;
+            run_start = day.clone();
+        }
+        if run > best {
+            best = run;
+            best_start = run_start.clone();
+            best_end = day.clone();
+        }
+        previous = Some(date);
+    }
+    (best >= 2).then_some((best, best_start, best_end))
+}
+
+fn top_friend_rows(friends: &BTreeMap<String, FriendAnnual>) -> Vec<serde_json::Value> {
+    let mut rows: Vec<&FriendAnnual> = friends.values().collect();
+    rows.sort_by(|a, b| b.total.cmp(&a.total).then(a.name.cmp(&b.name)));
+    rows.into_iter()
+        .map(|friend| serde_json::json!({
+            "conversationId": friend.id,
+            "displayName": friend.name,
+            "messages": friend.total,
+            "sent": friend.sent,
+            "received": friend.received,
+        }))
+        .collect()
+}
+
+fn payload_annual_stats(stats: &AnnualStats, year: i32) -> serde_json::Value {
+    let aggregate = &stats.aggregate;
+    let mut friends = stats.friends.values().collect::<Vec<_>>();
+    friends.sort_by(|a, b| b.total.cmp(&a.total));
+    let top_friends = top_friend_rows(&stats.friends);
+    let mut monthly_companions = Vec::new();
+    for (period, counts) in &stats.monthly_friend {
+        let Some((friend_id, messages)) = counts.iter().max_by_key(|(_, count)| **count) else {
+            continue;
+        };
+        let Some(friend) = stats.friends.get(friend_id) else {
+            continue;
+        };
+        monthly_companions.push(serde_json::json!({
+            "period": period,
+            "conversationId": friend.id,
+            "displayName": friend.name,
+            "messages": messages,
+            "periodMessages": stats.monthly_total.get(period).copied().unwrap_or(0),
+        }));
+    }
+    let mut heatmap_peak = serde_json::Value::Null;
+    let mut peak_value = 0;
+    for weekday in 0..7 {
+        for hour in 0..24 {
+            if stats.heatmap[weekday][hour] > peak_value {
+                peak_value = stats.heatmap[weekday][hour];
+                heatmap_peak = serde_json::json!({"weekday": weekday, "hour": hour, "messages": peak_value});
+            }
+        }
+    }
+    let night_total: usize = stats.friends.values().map(|friend| friend.night).sum();
+    let night = stats.friends.values().max_by_key(|friend| friend.night).filter(|friend| friend.night > 0);
+    let night_companion = night.map(|friend| serde_json::json!({
+        "conversationId": friend.id,
+        "displayName": friend.name,
+        "nightMessages": friend.night,
+        "share": if night_total == 0 { 0.0 } else { friend.night as f64 / night_total as f64 },
+    }));
+    let rate_mine = if stats.starts_mine + stats.starts_peer == 0 {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(stats.starts_mine as f64 / (stats.starts_mine + stats.starts_peer) as f64)
+    };
+    let top_initiated = stats.friends.values().max_by_key(|friend| friend.initiated_mine).map(|friend| serde_json::json!({
+        "conversationId": friend.id,
+        "displayName": friend.name,
+        "startsMine": friend.initiated_mine,
+        "startsPeer": friend.initiated_peer,
+    }));
+    let mine = (stats.reply_mine_count > 0).then(|| serde_json::json!({
+        "averageMs": stats.reply_mine_sum_ms / stats.reply_mine_count as i64,
+        "count": stats.reply_mine_count,
+    }));
+    let peer = (stats.reply_peer_count > 0).then(|| serde_json::json!({
+        "averageMs": stats.reply_peer_sum_ms / stats.reply_peer_count as i64,
+        "count": stats.reply_peer_count,
+    }));
+    let fastest = stats.friends.values().filter(|friend| friend.replies >= 10)
+        .min_by_key(|friend| if friend.replies == 0 { i64::MAX } else { friend.reply_sum_ms / friend.replies as i64 })
+        .map(|friend| serde_json::json!({
+            "conversationId": friend.id,
+            "displayName": friend.name,
+            "averageMs": if friend.replies == 0 { 0 } else { friend.reply_sum_ms / friend.replies as i64 },
+            "replies": friend.replies,
+        }));
+    let balanced = stats.friends.values()
+        .filter(|friend| friend.sent >= 50 && friend.received >= 50)
+        .map(|friend| {
+            let high = friend.sent.max(friend.received) as f64;
+            (friend, if high == 0.0 { 0.0 } else { friend.sent.min(friend.received) as f64 / high })
+        })
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(friend, balance)| serde_json::json!({
+            "conversationId": friend.id,
+            "displayName": friend.name,
+            "sent": friend.sent,
+            "received": friend.received,
+            "balance": balance,
+        }));
+    let streak = friends.iter().filter_map(|friend| {
+        longest_streak(&friend.days).map(|(days, start, end)| (friend, days, start, end))
+    }).max_by_key(|(_, days, _, _)| *days).map(|(friend, days, start, end)| serde_json::json!({
+        "conversationId": friend.id,
+        "displayName": friend.name,
+        "days": days,
+        "startDate": start,
+        "endDate": end,
+    }));
+    let all_days: std::collections::BTreeSet<String> = aggregate.days.keys().cloned().collect();
+    let account_streak = longest_streak(&all_days).map(|(days, start, end)| serde_json::json!({
+        "days": days,
+        "startDate": start,
+        "endDate": end,
+    }));
+    let busiest = stats.day_total.iter().max_by_key(|(_, count)| **count).map(|(date, count)| {
+        let top_friend = stats.day_friend.get(date).and_then(|counts| counts.iter().max_by_key(|(_, count)| **count)).map(|(friend_id, messages)| {
+            let friend = stats.friends.get(friend_id);
+            serde_json::json!({
+                "displayName": friend.map(|friend| friend.name.as_str()).unwrap_or(friend_id),
+                "messages": messages,
+            })
+        });
+        serde_json::json!({"date": date, "messages": count, "topFriend": top_friend})
+    });
+    let mut phrase_rows: Vec<(&String, &usize)> = stats.phrases.iter().filter(|(_, count)| **count >= 2).collect();
+    phrase_rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    phrase_rows.truncate(10);
+    let phrases = phrase_rows.into_iter().map(|(text, count)| serde_json::json!({"text": text, "count": count})).collect::<Vec<_>>();
+    let fading = if let (Some(first), Some(last)) = (
+        aggregate.days.keys().next().and_then(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()),
+        aggregate.days.keys().next_back().and_then(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()),
+    ) {
+        let span = (last - first).num_days();
+        if span >= 60 {
+            let mid = first + chrono::Duration::days(span / 2);
+            let threshold = if year == 0 { 100 } else { 80 };
+            friends.iter().filter_map(|friend| {
+                let mut early = 0usize;
+                let mut late = 0usize;
+                for (day, count) in &friend.daily_messages {
+                    if let Ok(date) = NaiveDate::parse_from_str(day, "%Y-%m-%d") {
+                        if date <= mid { early += *count; } else { late += *count; }
+                    }
+                }
+                (early >= threshold && early > late.saturating_mul(5)).then_some((friend, early, late))
+            }).max_by_key(|(_, early, _)| *early).map(|(friend, early, late)| serde_json::json!({
+                "conversationId": friend.id,
+                "displayName": friend.name,
+                "earlyMessages": early,
+                "lateMessages": late,
+                "earlyStart": first.to_string(),
+                "earlyEnd": mid.to_string(),
+                "lateStart": mid.succ_opt().unwrap_or(mid).to_string(),
+                "lateEnd": last.to_string(),
+            }))
+        } else { None }
+    } else { None };
+    let mut summary = Vec::new();
+    summary.push(serde_json::json!({"label":"私聊消息","value":format!("{} 条", export::format_count(aggregate.total))}));
+    summary.push(serde_json::json!({"label":"聊过的好友","value":format!("{} 位", stats.friends.len())}));
+    if let Some(top) = top_friends.first() {
+        summary.push(serde_json::json!({"label":"聊得最多","value":format!("{} 条", top["messages"]), "person": top["displayName"]}));
+    }
+    if peak_value > 0 {
+        summary.push(serde_json::json!({"label":"最常聊天","value":format!("周{} {:02}:00", ["一","二","三","四","五","六","日"][heatmap_peak["weekday"].as_u64().unwrap_or(0) as usize], heatmap_peak["hour"].as_u64().unwrap_or(0))}));
+    }
+    if !rate_mine.is_null() {
+        summary.push(serde_json::json!({"label":"你先开口","value":format!("{:.0}%", rate_mine.as_f64().unwrap_or(0.0) * 100.0)}));
+    }
+    if let Some(mine) = &mine {
+        summary.push(serde_json::json!({"label":"你的平均回复","value":format_duration(mine["averageMs"].as_i64().unwrap_or(0))}));
+    }
+    if let Some(streak) = &streak {
+        summary.push(serde_json::json!({"label":"最长连续","value":format!("{} 天", streak["days"]), "person": streak["displayName"]}));
+    }
+    if let Some(busiest) = &busiest {
+        summary.push(serde_json::json!({"label":"私聊最多的一天","value":format!("{} · {} 条", busiest["date"].as_str().unwrap_or(""), busiest["messages"])}));
+    }
+    if let Some(phrase) = phrases.first() {
+        summary.push(serde_json::json!({"label":"口头禅","value":format!("「{}」 {} 次", phrase["text"].as_str().unwrap_or(""), phrase["count"])}));
+    }
+    serde_json::json!({
+        "topFriends": top_friends,
+        "monthlyCompanions": monthly_companions,
+        "heatmap": {"weekdayHourCounts": stats.heatmap, "peak": heatmap_peak},
+        "nightCompanion": night_companion,
+        "nightShareOfAll": if aggregate.total == 0 { serde_json::Value::Null } else { serde_json::json!(night_total as f64 / aggregate.total as f64) },
+        "initiative": {"startsMine": stats.starts_mine, "startsPeer": stats.starts_peer, "rateMine": rate_mine, "topInitiated": top_initiated},
+        "response": {"mine": mine, "peer": peer, "fastestFriend": fastest},
+        "balancedFriend": balanced,
+        "streak": streak,
+        "accountStreak": account_streak,
+        "busiestDay": busiest,
+        "fading": fading,
+        "phrases": phrases,
+        "summary": summary,
+        "moments": serde_json::Value::Null,
+    })
+}
+
+fn format_duration(ms: i64) -> String {
+    if ms < 1000 { format!("{ms} 毫秒") }
+    else if ms < 60_000 { format!("{:.1} 秒", ms as f64 / 1000.0) }
+    else if ms < 3_600_000 { format!("{:.1} 分钟", ms as f64 / 60_000.0) }
+    else { format!("{:.1} 小时", ms as f64 / 3_600_000.0) }
+}
+
 fn private_report(
     options: &ValidatedCli,
     store: &Store,
@@ -388,10 +756,10 @@ fn annual_report(
     conversations: &[Conversation],
     self_username: Option<&str>,
     progress: &mut Progress,
-) -> Result<Aggregate> {
+) -> Result<AnnualStats> {
     let (start, end) = year_bounds(year);
-    let mut aggregate = Aggregate::new();
-    let analyzable: Vec<&Conversation> = conversations.iter().filter(|item| is_analyzable_conversation(item)).collect();
+    let mut stats = AnnualStats::new();
+    let analyzable: Vec<&Conversation> = conversations.iter().filter(|item| is_private_conversation(item)).collect();
     let mut scanned = 0usize;
     for (index, conversation) in analyzable.iter().enumerate() {
         progress.set_phase(format!(
@@ -407,31 +775,13 @@ fn annual_report(
         if messages.is_empty() {
             continue;
         }
-        let sent = messages.iter().filter(|message| message.is_send).count();
-        let last = messages.iter().map(|message| message.create_time).max().unwrap_or(0);
-        for message in &messages {
-            aggregate.observe(message);
-        }
-        let map = if conversation.is_group {
-            &mut aggregate.groups
-        } else {
-            &mut aggregate.friends
-        };
-        let entry = map.entry(conversation.id.clone()).or_insert_with(|| FriendAgg {
-            id: conversation.id.clone(),
-            name: conversation.name.clone(),
-            ..FriendAgg::default()
-        });
-        entry.name = conversation.name.clone();
-        entry.total += messages.len();
-        entry.sent += sent;
-        entry.received += messages.len() - sent;
-        entry.last = entry.last.max(last);
+        stats.observe_conversation(conversation, &messages);
     }
-    if aggregate.total == 0 {
+    stats.sync_aggregate_friends();
+    if stats.aggregate.total == 0 {
         bail!("no messages available for the selected year");
     }
-    Ok(aggregate)
+    Ok(stats)
 }
 
 fn kpis_for(aggregate: &Aggregate, kind: &str) -> Vec<(String, String, String)> {
@@ -451,7 +801,6 @@ fn kpis_for(aggregate: &Aggregate, kind: &str) -> Vec<(String, String, String)> 
         }
         "annual" => {
             metrics.push(("好友数".into(), export::format_count(aggregate.friends.len()), "有消息记录".into()));
-            metrics.push(("群聊数".into(), export::format_count(aggregate.groups.len()), "有消息记录".into()));
         }
         _ => {}
     }
@@ -667,14 +1016,15 @@ fn payload_group(conversation: &Conversation, aggregate: &Aggregate) -> serde_js
     )
 }
 
-fn payload_annual(year: i32, aggregate: &Aggregate) -> serde_json::Value {
+fn payload_annual(year: i32, stats: &AnnualStats) -> serde_json::Value {
+    let aggregate = &stats.aggregate;
     let peak = aggregate.peak();
     let title = if year == 0 { "长期历史报告" } else { &format!("{year} 年度报告") };
-    payload_common(
+    let mut payload = payload_common(
         "annual",
         &format!("年度分析报告 - {}", if year == 0 { "全部历史".to_string() } else { year.to_string() }),
         title,
-        &format!("共 {} 位好友 · {} 个群聊 · {} 条消息", aggregate.friends.len(), aggregate.groups.len(), export::format_count(aggregate.total)),
+        &format!("共 {} 位好友 · {} 条私聊消息", aggregate.friends.len(), export::format_count(aggregate.total)),
         &format!("{} → {}", format_timestamp(aggregate.first), format_timestamp(aggregate.last)),
         vec![
             format!("跨度 {} 天 · 活跃 {} 天", aggregate.span_days(), aggregate.active_days()),
@@ -684,7 +1034,11 @@ fn payload_annual(year: i32, aggregate: &Aggregate) -> serde_json::Value {
         aggregate,
         "我",
         "其他人",
-    )
+    );
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("annual".to_string(), payload_annual_stats(stats, year));
+    }
+    payload
 }
 
 fn payload_dual(context: &ExportContext<'_>) -> serde_json::Value {
@@ -783,8 +1137,8 @@ pub fn run(
             (payload_group(conversation, &aggregate), "group-report.html", "group", Some(conversation.id.clone()))
         }
         ReportKind::Annual => {
-            let aggregate = annual_report(year, store, contacts, conversations, self_username, &mut progress)?;
-            (payload_annual(year, &aggregate), "annual-report.html", "annual", None)
+            let stats = annual_report(year, store, contacts, conversations, self_username, &mut progress)?;
+            (payload_annual(year, &stats), "annual-report.html", "annual", None)
         }
         ReportKind::Dual => {
             let id = options.conversation_ids.first().context("dual report requires --conversation-id")?;
@@ -1153,12 +1507,18 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"group","report":path,"conversation_id":item.conversation.id}))?);
         }
         ReportKind::Annual => {
-            let aggregate = aggregate_loaded(&loaded, true, false);
-            if aggregate.total == 0 {
-                bail!("no messages found in JSON");
+            let mut stats = AnnualStats::new();
+            for item in &loaded {
+                if is_private_conversation(&item.conversation) {
+                    stats.observe_conversation(&item.conversation, &item.messages);
+                }
+            }
+            stats.sync_aggregate_friends();
+            if stats.aggregate.total == 0 {
+                bail!("no private messages found in JSON");
             }
             let path = output_dir.join("annual-report.html");
-            write_payload(&payload_annual(options.report_year, &aggregate), &path)?;
+            write_payload(&payload_annual(options.report_year, &stats), &path)?;
             progress.finish();
             println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"annual","year":options.report_year,"report":path}))?);
         }

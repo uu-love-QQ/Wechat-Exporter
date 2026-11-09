@@ -265,7 +265,7 @@ pub fn run(action: &BackupCommand) -> Result<()> {
                 username: config.username.clone(),
                 password: config.password.clone(),
             };
-            client.test(config.url.trim_end_matches('/'))?;
+            client.test(&format!("{}/", config.url.trim_end_matches('/')))?;
             println!("[+] WebDAV 连接正常: {}", config.endpoint());
             Ok(())
         }
