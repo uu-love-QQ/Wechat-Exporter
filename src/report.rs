@@ -793,6 +793,7 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<Strin
         "monthlyCompanions": monthly_companions,
         "heatmap": {"weekdayHourCounts": stats.heatmap, "peak": heatmap_peak},
         "nightCompanion": night_companion,
+        "nightTotal": night_total,
         "nightShareOfAll": if aggregate.total == 0 { serde_json::Value::Null } else { serde_json::json!(night_total as f64 / aggregate.total as f64) },
         "initiative": {"startsMine": stats.starts_mine, "startsPeer": stats.starts_peer, "rateMine": rate_mine, "topInitiated": top_initiated},
         "response": {"mine": mine, "peer": peer, "fastestFriend": fastest},

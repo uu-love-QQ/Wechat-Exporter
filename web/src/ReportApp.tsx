@@ -104,6 +104,7 @@ export interface AnnualData {
     peak: { weekday: number; hour: number; messages: number } | null
   }
   nightCompanion: { conversationId: string; displayName: string; nightMessages: number; share: number; avatar?: string | null } | null
+  nightTotal: number
   nightShareOfAll: number | null
   initiative: {
     startsMine: number
@@ -771,6 +772,10 @@ function annualTypeRows(types: ReportCount[]): ReportCount[] {
     .sort((a, b) => b.count - a.count || order.indexOf(a.name) - order.indexOf(b.name))
 }
 
+function hourRange(hour: number): string {
+  return `${String(hour).padStart(2, '0')}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`
+}
+
 function PersonAvatar({ person, size = 'sm', className }: { person: { displayName: string; avatar?: string | null }; size?: 'sm' | 'default' | 'lg'; className?: string }) {
   return (
     <Avatar size={size} className={cn('annual-person-avatar', className)} aria-hidden="true">
@@ -1081,15 +1086,14 @@ function AnnualReportView({
         >
           {peak ? (
             <AnnualFigure
-              value={`周${['一', '二', '三', '四', '五', '六', '日'][peak.weekday]} ${String(peak.hour).padStart(2, '0')}:00`}
+              value={`周${['一', '二', '三', '四', '五', '六', '日'][peak.weekday]} ${hourRange(peak.hour)}`}
               label={`最常聊天的时段 · ${peak.messages} 条`}
             />
           ) : null}
           <div className="annual-lead">
             <p>
-              {peak ? `你最常在周${['一', '二', '三', '四', '五', '六', '日'][peak.weekday]} ${peak.hour}:00 聊天，这个时段累计 ${peak.messages} 条消息。` : '没有可以统计时段的消息。'}
+              {peak ? `你最常在周${['一', '二', '三', '四', '五', '六', '日'][peak.weekday]} ${hourRange(peak.hour)} 聊天，这个时段累计 ${peak.messages} 条消息。` : '没有可以统计时段的消息。'}
             </p>
-            {night && <p>深夜陪你最多的是 <strong className="annual-person"><PersonAvatar person={night} />{night.displayName}</strong>，{night.nightMessages} 条，占全部深夜私聊的 {numberPercent(night.share)}。</p>}
           </div>
           <div className="annual-heat" aria-label="星期和小时热力图">
             <span />
@@ -1142,6 +1146,19 @@ function AnnualReportView({
             </span>
             <span>多</span>
           </div>
+          {night && (
+            <div className="annual-night-card">
+              <Moon className="annual-night-icon" aria-hidden="true" />
+              <PersonAvatar person={night} className="annual-night-avatar" />
+              <strong className="annual-night-name">{night.displayName}</strong>
+              <p>
+                深夜（00:00–05:59）陪你聊天最多的是 <strong>{night.displayName}</strong>：
+                <strong>{formatNumber(night.nightMessages)}</strong> 条，占所有深夜私聊的{' '}
+                <strong>{Math.round(night.share * 100)}%</strong>。你的私聊里，深夜消息一共{' '}
+                <strong>{formatNumber(annual.nightTotal ?? (night.share > 0 ? Math.round(night.nightMessages / night.share) : 0))}</strong> 条，占全部的 <strong>{numberPercent(annual.nightShareOfAll)}</strong>。
+              </p>
+            </div>
+          )}
         </AnnualChapter>
 
         <AnnualChapter

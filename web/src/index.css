@@ -546,6 +546,14 @@
 .annual-heat-legend { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; color: var(--muted-foreground); font-size: 10px; }
 .annual-heat-swatches { display: inline-flex; gap: 3px; }
 .annual-heat-swatches i { display: block; width: 10px; height: 10px; border-radius: 2px; background: var(--annual-time-fill); }
+.annual-night-card { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; padding: 12px 14px; border: 1px solid color-mix(in oklab, var(--annual-time-fill) 20%, var(--border)); border-left: 3px solid var(--annual-time-fill); border-radius: 12px; background: color-mix(in oklab, var(--annual-time-soft) 52%, var(--card)); }
+.annual-night-icon { flex: 0 0 auto; width: 18px; height: 18px; color: var(--annual-time); }
+.annual-night-avatar { width: 32px; height: 32px; border-color: var(--annual-time-fill); border-radius: 8px; }
+.annual-night-avatar [data-slot='avatar-image'], .annual-night-avatar [data-slot='avatar-fallback'] { border-radius: 6px; }
+.annual-night-avatar [data-slot='avatar-fallback'] { color: var(--annual-time); background: var(--annual-time-soft); font-size: 12px; font-weight: 650; }
+.annual-night-name { flex: 0 0 auto; max-width: 14em; overflow: hidden; color: var(--card-foreground); font-size: 14px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.annual-night-card p { flex: 1 1 360px; min-width: 220px; margin: 0; color: var(--card-foreground); font-size: 12.5px; line-height: 1.65; }
+.annual-night-card p strong { color: var(--card-foreground); font-weight: 700; font-variant-numeric: tabular-nums; }
 .annual-heat-tooltip { display: flex; width: 208px; max-width: min(208px, calc(100vw - 32px)); flex-direction: column; align-items: stretch; gap: 7px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); color: var(--card-foreground); box-shadow: 0 12px 28px color-mix(in oklab, var(--foreground) 16%, transparent); }
 .annual-heat-tooltip svg { fill: var(--card); background: var(--card); }
 .annual-heat-tooltip-head { align-self: flex-start; padding: 3px 6px; border-radius: 5px; background: var(--muted); color: var(--card-foreground); font-size: 11px; font-weight: 650; white-space: nowrap; }
