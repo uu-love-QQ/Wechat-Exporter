@@ -787,8 +787,8 @@ function AnnualReportView({
     <div className="annual-report">
       <div className="annual-toolbar">
         <div className="annual-toolbar-title">
-          <strong>{data.heading}</strong>
-          <span>{data.subtitle}</span>
+          <strong>年度报告</strong>
+          <span>{data.heading} · {data.subtitle}</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="hidden text-xs text-muted-foreground sm:inline">{data.range}</span>
@@ -804,16 +804,6 @@ function AnnualReportView({
       </div>
 
       <div className="annual-wrap">
-        <header className="annual-cover">
-          <div className="annual-cover-kicker">ANNUAL REPORT · 年度报告</div>
-          <h1>{data.heading}</h1>
-          <p className="annual-cover-lead">{data.subtitle}</p>
-          <div className="annual-cover-meta">
-            <span>{data.range}</span>
-            {data.meta.map((item) => <span key={item}>{item}</span>)}
-          </div>
-        </header>
-
         <AnnualChapter
           id="overview"
           index={1}
@@ -885,11 +875,11 @@ function AnnualReportView({
         >
           {annual.monthlyCompanions.length > 0 ? (
             <div className="annual-companions">
-              {annual.monthlyCompanions.slice(-24).map((item) => (
-                <div className="annual-companion" key={item.period}>
+              {annual.monthlyCompanions.map((item) => (
+                <div className="annual-companion" key={item.period} data-empty={item.displayName ? undefined : 'true'}>
                   <span className="period">{item.period}</span>
-                  <span className="person">{item.displayName}</span>
-                  <span className="count">{item.messages} / {item.periodMessages} 条</span>
+                  <span className="person">{item.displayName || '—'}</span>
+                  <span className="count">{item.periodMessages > 0 ? `${item.messages} / ${item.periodMessages} 条` : '无消息'}</span>
                 </div>
               ))}
             </div>

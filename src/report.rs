@@ -474,21 +474,49 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32) -> serde_json::Value {
     let mut friends = stats.friends.values().collect::<Vec<_>>();
     friends.sort_by(|a, b| b.total.cmp(&a.total));
     let top_friends = top_friend_rows(&stats.friends);
+    let mut periods = Vec::new();
+    if let (Some(start), Some(end)) = (
+        Local.timestamp_opt(aggregate.first, 0).single(),
+        Local.timestamp_opt(aggregate.last, 0).single(),
+    ) {
+        let mut year = start.year();
+        let mut month = start.month();
+        let end_year = end.year();
+        let end_month = end.month();
+        while year < end_year || (year == end_year && month <= end_month) {
+            periods.push(format!("{year}-{month:02}"));
+            month += 1;
+            if month > 12 {
+                month = 1;
+                year += 1;
+            }
+        }
+    }
     let mut monthly_companions = Vec::new();
-    for (period, counts) in &stats.monthly_friend {
-        let Some((friend_id, messages)) = counts.iter().max_by_key(|(_, count)| **count) else {
-            continue;
-        };
-        let Some(friend) = stats.friends.get(friend_id) else {
-            continue;
-        };
-        monthly_companions.push(serde_json::json!({
-            "period": period,
-            "conversationId": friend.id,
-            "displayName": friend.name,
-            "messages": messages,
-            "periodMessages": stats.monthly_total.get(period).copied().unwrap_or(0),
-        }));
+    for period in periods {
+        let period_messages = stats.monthly_total.get(&period).copied().unwrap_or(0);
+        let top = stats.monthly_friend.get(&period).and_then(|counts| {
+            counts
+                .iter()
+                .max_by_key(|(_, count)| **count)
+                .and_then(|(id, messages)| stats.friends.get(id).map(|friend| (friend, messages)))
+        });
+        monthly_companions.push(match top {
+            Some((friend, messages)) => serde_json::json!({
+                "period": period,
+                "conversationId": friend.id,
+                "displayName": friend.name,
+                "messages": messages,
+                "periodMessages": period_messages,
+            }),
+            None => serde_json::json!({
+                "period": period,
+                "conversationId": serde_json::Value::Null,
+                "displayName": "",
+                "messages": 0,
+                "periodMessages": 0,
+            }),
+        });
     }
     let mut heatmap_peak = serde_json::Value::Null;
     let mut peak_value = 0;
@@ -719,10 +747,22 @@ fn load_moments(
     let self_id = self_username.unwrap_or("").to_lowercase();
     let mut stats = MomentsStats::default();
     while let Ok(Some(row)) = rows.next() {
-        let poster = row.get::<_, Option<String>>(0).ok().flatten().unwrap_or_default();
-        let content = row.get::<_, Option<String>>(1).ok().flatten().unwrap_or_default();
+        let poster = match row.get::<_, Option<rusqlite::types::Value>>(0).ok().flatten() {
+            Some(rusqlite::types::Value::Text(value)) => value,
+            Some(rusqlite::types::Value::Blob(bytes)) => String::from_utf8_lossy(&bytes).to_string(),
+            _ => String::new(),
+        };
+        let content = match row.get::<_, Option<rusqlite::types::Value>>(1).ok().flatten() {
+            Some(rusqlite::types::Value::Text(value)) => value,
+            Some(rusqlite::types::Value::Blob(bytes)) => String::from_utf8_lossy(&bytes).to_string(),
+            _ => String::new(),
+        };
         let table_time = if time_col.is_some() {
-            row.get::<_, Option<i64>>(2).ok().flatten().unwrap_or(0)
+            match row.get::<_, Option<rusqlite::types::Value>>(2).ok().flatten() {
+                Some(rusqlite::types::Value::Integer(value)) => value,
+                Some(rusqlite::types::Value::Text(value)) => value.trim().parse::<i64>().unwrap_or(0),
+                _ => 0,
+            }
         } else {
             0
         };

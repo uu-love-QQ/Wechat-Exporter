@@ -327,7 +327,7 @@
 .annual-toolbar-title { display: flex; flex-direction: column; gap: 1px; }
 .annual-toolbar-title strong { font-size: 14px; font-weight: 650; }
 .annual-toolbar-title span { color: var(--muted-foreground); font-size: 11px; }
-.annual-wrap { max-width: 980px; margin: 0 auto; }
+.annual-wrap { max-width: 880px; margin: 0 auto; }
 .annual-cover {
   position: relative;
   padding: clamp(48px, 8vw, 96px) clamp(24px, 7vw, 64px) clamp(48px, 7vw, 80px);
@@ -362,7 +362,7 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
-  padding: clamp(36px, 5vw, 56px) clamp(20px, 6vw, 64px) clamp(48px, 7vw, 72px);
+  padding: 56px 64px 72px;
   overflow: hidden;
   border-bottom: 1px solid var(--border);
   scroll-margin-top: 56px;

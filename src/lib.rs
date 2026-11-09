@@ -686,7 +686,8 @@ fn run_export(
         "start_time": if overall_start == i64::MAX { 0 } else { overall_start },
         "end_time": if overall_end == i64::MIN { 0 } else { overall_end },
         "formats": options.formats.iter().map(|format| format.name()).collect::<Vec<_>>(),
-        "keep_output": options.keep_output || options.output_dir.is_some(),
+        "keep_output": options.keep_output,
+        "output_dir_explicit": options.output_dir.is_some(),
         "backup": backup_summary.as_ref().map(|summary| serde_json::json!({
             "remote": summary.remote,
             "files": summary.files,
