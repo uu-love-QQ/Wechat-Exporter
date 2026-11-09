@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::fs;
-use std::io::Read;
+use std::io::{IsTerminal, Read, Write};
+use std::time::Instant;
 use std::path::PathBuf;
 use std::time::Duration;
 #[cfg(windows)]
@@ -79,21 +80,67 @@ fn resolve_latest(prefix: Option<&str>) -> Option<String> {
     None
 }
 
-fn download(url: &str) -> Result<Vec<u8>> {
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn download(url: &str, target: &std::path::Path) -> Result<()> {
     let response = ureq::get(url)
         .set("User-Agent", "wechat-exporter-updater")
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(600))
         .call()
         .with_context(|| format!("download failed: {url}"))?;
-    let mut data = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut data)
-        .context("failed to read upgrade download")?;
-    if data.is_empty() {
+    let total = response
+        .header("Content-Length")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let interactive = std::io::stderr().is_terminal();
+    let mut reader = response.into_reader();
+    let mut file = fs::File::create(target)
+        .with_context(|| format!("failed to create {}", target.display()))?;
+    let mut buffer = [0u8; 64 * 1024];
+    let mut done = 0u64;
+    let mut last = Instant::now() - Duration::from_secs(10);
+    loop {
+        let read = reader.read(&mut buffer).context("failed to read upgrade download")?;
+        if read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..read])
+            .with_context(|| format!("failed to write {}", target.display()))?;
+        done += read as u64;
+        if interactive && last.elapsed() >= Duration::from_millis(100) {
+            last = Instant::now();
+            let width = 24usize;
+            let percent = if total > 0 { (done * 100 / total).min(100) } else { 0 };
+            let filled = if total > 0 { width * percent as usize / 100 } else { 0 };
+            let bar = format!("{}{}", "#".repeat(filled), "-".repeat(width - filled));
+            if total > 0 {
+                eprint!(
+                    "\r下载 [{bar}] {percent:3}% · {}/{}",
+                    format_bytes(done),
+                    format_bytes(total)
+                );
+            } else {
+                eprint!("\r下载 {}{}", format_bytes(done), "...");
+            }
+            let _ = std::io::stderr().flush();
+        }
+    }
+    file.flush().ok();
+    if interactive {
+        eprintln!();
+    }
+    if done == 0 {
         bail!("downloaded upgrade is empty");
     }
-    Ok(data)
+    Ok(())
 }
 
 pub fn run(version: &str, prefix: Option<&str>) -> Result<()> {
@@ -109,10 +156,8 @@ pub fn run(version: &str, prefix: Option<&str>) -> Result<()> {
         eprintln!("[i] 目标版本: {requested}");
     }
     eprintln!("[i] 正在下载: {url}");
-    let data = download(&url)?;
     let new_path = PathBuf::from(format!("{}.new", current.display()));
-    fs::write(&new_path, &data)
-        .with_context(|| format!("failed to write {}", new_path.display()))?;
+    download(&url, &new_path)?;
 
     #[cfg(unix)]
     {
