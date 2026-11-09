@@ -765,6 +765,7 @@ function annualTypeRows(types: ReportCount[]): ReportCount[] {
   return order
     .map((name) => ({ name, count: counts.get(name) ?? 0 }))
     .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count || order.indexOf(a.name) - order.indexOf(b.name))
 }
 
 function PersonAvatar({ person, size = 'sm' }: { person: { displayName: string; avatar?: string | null }; size?: 'sm' | 'default' | 'lg' }) {
@@ -865,6 +866,7 @@ function AnnualReportView({
           accent="quantity"
           ghost={data.range.slice(0, 4)}
         >
+          <AnnualFigure value={messageTotal} unit="条" label={`私聊消息`} />
           <div className="annual-lead">
             <p>
               <strong>{annual.year > 0 ? `${annual.year} 年` : data.heading.match(/\d{4}/)?.[0] ? `${data.heading.match(/\d{4}/)![0]} 年` : '这些年'}</strong>，你和{' '}
@@ -876,20 +878,6 @@ function AnnualReportView({
               <strong>{formatNumber(data.ratio?.other ?? 0)}</strong> 条。
             </p>
           </div>
-          <div className="annual-times">
-            <div>
-              <span>第一条消息</span>
-              <strong>{firstMessageTime || '-'}</strong>
-            </div>
-            <div>
-              <span>最后一条消息</span>
-              <strong>{lastMessageTime || '-'}</strong>
-            </div>
-          </div>
-          <div className="annual-types">
-            <h3>消息类型</h3>
-            <TypeList types={typeRows} total={messageTotalNumber} showPercent={false} />
-          </div>
           <div className="annual-stats">
             {data.kpis.slice(0, 5).map((kpi) => (
               <div className="annual-stat" key={kpi.label}>
@@ -898,6 +886,22 @@ function AnnualReportView({
                 <small>{kpi.note}</small>
               </div>
             ))}
+          </div>
+          <div className="annual-overview-details">
+            <div className="annual-times">
+              <div>
+                <span>第一条消息</span>
+                <strong>{firstMessageTime || '-'}</strong>
+              </div>
+              <div>
+                <span>最后一条消息</span>
+                <strong>{lastMessageTime || '-'}</strong>
+              </div>
+            </div>
+            <div className="annual-types">
+              <h3>消息类型</h3>
+              <TypeList types={typeRows} total={messageTotalNumber} showPercent={false} />
+            </div>
           </div>
         </AnnualChapter>
 
