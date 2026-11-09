@@ -504,11 +504,13 @@
 .annual-list .rank { width: 24px; color: var(--annual-accent); font-size: 11px; font-variant-numeric: tabular-nums; }
 .annual-runners-up li { align-items: center; }
 .annual-person { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
-.annual-person-avatar { flex: 0 0 auto; border: 1px solid color-mix(in oklab, var(--annual-accent) 35%, var(--border)); }
+.annual-person-avatar { flex: 0 0 auto; border: 1px solid color-mix(in oklab, var(--annual-accent) 35%, var(--border)); border-radius: 7px; }
+.annual-person-avatar [data-slot='avatar-image'], .annual-person-avatar [data-slot='avatar-fallback'] { border-radius: 5px; }
 .annual-person-avatar [data-slot='avatar-fallback'] { font-size: 10px; font-weight: 650; color: var(--annual-accent); background: var(--annual-accent-soft); }
 .annual-top-hero { display: flex; align-items: center; gap: 14px; max-width: 640px; padding: 14px 16px 14px 14px; border: 1px solid color-mix(in oklab, var(--podium-gold) 24%, var(--border)); border-left: 3px solid var(--podium-gold); border-radius: 14px; background: var(--card); box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 6%, transparent); }
 .annual-top-avatar { flex: 0 0 auto; width: 64px; height: 64px; padding: 3px; border: 2px solid var(--podium-gold); border-radius: 16px; background: var(--card); }
 .annual-top-avatar [data-slot='avatar'] { border: 0; border-radius: 12px; }
+.annual-top-avatar [data-slot='avatar-image'], .annual-top-avatar [data-slot='avatar-fallback'] { border-radius: 10px; }
 .annual-top-avatar [data-slot='avatar-fallback'] { color: var(--podium-gold); background: var(--podium-gold-soft); font-size: 20px; font-weight: 650; }
 .annual-top-copy { display: grid; min-width: 0; gap: 1px; }
 .annual-top-copy > span { color: var(--muted-foreground); font-size: 11px; }
@@ -519,9 +521,11 @@
 .annual-podium-place.place-1 { --podium-color: var(--podium-gold); --podium-soft: var(--podium-gold-soft); }
 .annual-podium-place.place-2 { --podium-color: var(--podium-silver); --podium-soft: var(--podium-silver-soft); }
 .annual-podium-place.place-3 { --podium-color: var(--podium-bronze); --podium-soft: var(--podium-bronze-soft); }
-.annual-podium-avatar { width: clamp(58px, 14vw, 84px); aspect-ratio: 1; padding: 3px; border: 2px solid var(--podium-color); border-radius: 50%; background: var(--podium-soft); box-shadow: 0 0 0 4px color-mix(in oklab, var(--podium-color) 12%, transparent); }
+.annual-podium-avatar { width: clamp(58px, 14vw, 84px); aspect-ratio: 1; padding: 3px; border: 2px solid var(--podium-color); border-radius: 18px; background: var(--podium-soft); box-shadow: 0 0 0 4px color-mix(in oklab, var(--podium-color) 12%, transparent); }
 .annual-podium-place.place-1 .annual-podium-avatar { width: clamp(74px, 18vw, 108px); box-shadow: 0 0 0 5px color-mix(in oklab, var(--podium-color) 18%, transparent); }
-.annual-podium-avatar [data-slot='avatar'] { border: 0; }
+.annual-podium-avatar [data-slot='avatar'] { border: 0; border-radius: 14px; }
+.annual-podium-avatar [data-slot='avatar']::after { border-radius: 14px; }
+.annual-podium-avatar [data-slot='avatar-image'], .annual-podium-avatar [data-slot='avatar-fallback'] { border-radius: 12px; }
 .annual-podium-avatar [data-slot='avatar-fallback'] { background: var(--podium-soft); color: var(--podium-color); font-size: 20px; font-weight: 650; }
 .annual-podium-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
 .annual-podium-messages { color: var(--card-foreground); font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
