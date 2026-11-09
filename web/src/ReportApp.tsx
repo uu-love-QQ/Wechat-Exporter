@@ -1091,20 +1091,56 @@ function AnnualReportView({
             </p>
             {night && <p>深夜陪你最多的是 <strong className="annual-person"><PersonAvatar person={night} />{night.displayName}</strong>，{night.nightMessages} 条，占全部深夜私聊的 {numberPercent(night.share)}。</p>}
           </div>
-          <div className="annual-heat" role="img" aria-label="星期和小时热力图">
+          <div className="annual-heat" aria-label="星期和小时热力图">
             <span />
             {Array.from({ length: 24 }, (_, hour) => (
-              <span className="hour" key={hour}>{hour % 6 === 0 ? hour : ''}</span>
+              <span className="hour" key={hour}>{hour % 3 === 0 ? hour : ''}</span>
             ))}
-            {annual.heatmap.weekdayHourCounts.map((row, weekday) => (
-              <div className="contents" key={weekday}>
-                <span className="day">{['一', '二', '三', '四', '五', '六', '日'][weekday]}</span>
-                {row.map((count, hour) => {
-                  const max = Math.max(...annual.heatmap.weekdayHourCounts.flat(), 1)
-                  return <span className="cell" key={hour} style={{ opacity: Math.max(0.08, count / max) }} title={`周${['一', '二', '三', '四', '五', '六', '日'][weekday]} ${hour}:00 · ${count} 条`} />
-                })}
-              </div>
-            ))}
+            {annual.heatmap.weekdayHourCounts.map((row, weekday) => {
+              const day = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][weekday]
+              const max = Math.max(...annual.heatmap.weekdayHourCounts.flat(), 1)
+              return (
+                <div className="contents" key={weekday}>
+                  <span className="day">{day}</span>
+                  {row.map((count, hour) => {
+                    const share = messageTotalNumber > 0 ? (count / messageTotalNumber) * 100 : 0
+                    return (
+                      <Tooltip key={hour}>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            className="cell"
+                            style={{ opacity: Math.max(0.08, count / max) }}
+                            aria-label={`${day} ${String(hour).padStart(2, '0')}:00，${count} 条消息，占全部 ${share.toFixed(1)}%`}
+                          />
+                        </TooltipTrigger>
+                        <TooltipContent side="top" sideOffset={8} className="annual-heat-tooltip">
+                          <span className="annual-heat-tooltip-head">{day} {String(hour).padStart(2, '0')}:00–{String(hour + 1).padStart(2, '0')}:00</span>
+                          <span className="annual-heat-tooltip-row">
+                            <span className="annual-heat-dot" aria-hidden="true" />
+                            消息
+                            <span className="annual-heat-leader" aria-hidden="true" />
+                            <strong>{formatNumber(count)} 条</strong>
+                          </span>
+                          <span className="annual-heat-tooltip-row">
+                            占全部
+                            <span className="annual-heat-leader" aria-hidden="true" />
+                            <strong>{share.toFixed(1)}%</strong>
+                          </span>
+                        </TooltipContent>
+                      </Tooltip>
+                    )
+                  })}
+                </div>
+              )
+            })}
+          </div>
+          <div className="annual-heat-legend" aria-label="消息量图例">
+            <span>少</span>
+            <span className="annual-heat-swatches" aria-hidden="true">
+              {[0.16, 0.32, 0.5, 0.72, 1].map((opacity) => <i key={opacity} style={{ opacity }} />)}
+            </span>
+            <span>多</span>
           </div>
         </AnnualChapter>
 

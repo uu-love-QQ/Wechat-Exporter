@@ -539,9 +539,20 @@
 .annual-podium-place.place-3 .annual-podium-stand { min-height: 50px; }
 .annual-runners-up { margin-top: 12px; }
 .annual-heat { display: grid; gap: 3px; grid-template-columns: auto repeat(24, minmax(0, 1fr)); align-items: center; }
-.annual-heat span.cell { aspect-ratio: 1; border-radius: 2px; background: var(--annual-time-fill); }
-.annual-heat span.hour { color: var(--muted-foreground); font-size: 7px; text-align: center; }
-.annual-heat span.day { padding-right: 6px; color: var(--muted-foreground); font-size: 9px; }
+.annual-heat .cell { display: block; width: 100%; aspect-ratio: 1; padding: 0; border: 0; border-radius: 2px; background: var(--annual-time-fill); cursor: default; }
+.annual-heat .cell:hover, .annual-heat .cell:focus-visible { position: relative; z-index: 2; outline: 2px solid var(--foreground); outline-offset: 1px; }
+.annual-heat span.hour { color: var(--muted-foreground); font-size: 8px; text-align: center; font-variant-numeric: tabular-nums; }
+.annual-heat span.day { padding-right: 6px; color: var(--muted-foreground); font-size: 10px; white-space: nowrap; }
+.annual-heat-legend { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; color: var(--muted-foreground); font-size: 10px; }
+.annual-heat-swatches { display: inline-flex; gap: 3px; }
+.annual-heat-swatches i { display: block; width: 10px; height: 10px; border-radius: 2px; background: var(--annual-time-fill); }
+.annual-heat-tooltip { display: flex; width: 208px; max-width: min(208px, calc(100vw - 32px)); flex-direction: column; align-items: stretch; gap: 7px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); color: var(--card-foreground); box-shadow: 0 12px 28px color-mix(in oklab, var(--foreground) 16%, transparent); }
+.annual-heat-tooltip svg { fill: var(--card); background: var(--card); }
+.annual-heat-tooltip-head { align-self: flex-start; padding: 3px 6px; border-radius: 5px; background: var(--muted); color: var(--card-foreground); font-size: 11px; font-weight: 650; white-space: nowrap; }
+.annual-heat-tooltip-row { display: flex; align-items: baseline; width: 100%; gap: 5px; color: var(--muted-foreground); font-size: 11px; white-space: nowrap; }
+.annual-heat-tooltip-row strong { margin-left: auto; color: var(--card-foreground); font-weight: 650; font-variant-numeric: tabular-nums; }
+.annual-heat-dot { flex: 0 0 auto; align-self: center; width: 8px; height: 8px; border-radius: 2px; background: var(--annual-time-fill); }
+.annual-heat-leader { flex: 1; min-width: 10px; margin: 0 1px 3px; border-bottom: 1px dotted color-mix(in oklab, var(--muted-foreground) 52%, transparent); }
 .annual-month-hero { display: flex; align-items: center; gap: 14px; margin: 20px 0 8px; }
 .annual-month-hero-avatar { width: 64px; height: 64px; border: 2px solid var(--podium-gold); border-radius: 16px; }
 .annual-month-hero-avatar [data-slot='avatar-image'], .annual-month-hero-avatar [data-slot='avatar-fallback'] { border-radius: 12px; }
