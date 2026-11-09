@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::{ReportKind, ValidatedCli};
+use crate::db::Db;
 use crate::export::{self, ExportContext};
 use crate::progress::Progress;
 use crate::util::{format_timestamp, GENERATOR};
@@ -288,6 +289,16 @@ struct FriendAnnual {
     initiated_peer: usize,
 }
 
+#[derive(Default, Clone)]
+struct MomentsStats {
+    posts: usize,
+    likes_received: usize,
+    likes_given: usize,
+    post_types: BTreeMap<String, usize>,
+    top_likers: BTreeMap<String, usize>,
+    top_liked_authors: BTreeMap<String, usize>,
+}
+
 #[derive(Default)]
 struct AnnualStats {
     aggregate: Aggregate,
@@ -304,6 +315,7 @@ struct AnnualStats {
     day_total: BTreeMap<String, usize>,
     day_friend: BTreeMap<String, BTreeMap<String, usize>>,
     phrases: BTreeMap<String, usize>,
+    moments: Option<MomentsStats>,
 }
 
 impl AnnualStats {
@@ -634,7 +646,23 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32) -> serde_json::Value {
         "fading": fading,
         "phrases": phrases,
         "summary": summary,
-        "moments": serde_json::Value::Null,
+        "moments": stats.moments.as_ref().map(|moments| {
+            let mut post_types: Vec<_> = moments.post_types.iter().collect();
+            post_types.sort_by(|a, b| b.1.cmp(a.1));
+            let mut likers: Vec<_> = moments.top_likers.iter().collect();
+            likers.sort_by(|a, b| b.1.cmp(a.1));
+            let mut liked: Vec<_> = moments.top_liked_authors.iter().collect();
+            liked.sort_by(|a, b| b.1.cmp(a.1));
+            serde_json::json!({
+                "status": "ok",
+                "posts": moments.posts,
+                "likesReceived": moments.likes_received,
+                "likesGiven": moments.likes_given,
+                "postTypes": post_types.into_iter().map(|(name, count)| serde_json::json!({"contentType": name, "count": count})).collect::<Vec<_>>(),
+                "topLikers": likers.into_iter().map(|(username, count)| serde_json::json!({"username": username, "count": count})).collect::<Vec<_>>(),
+                "topLikedAuthors": liked.into_iter().map(|(username, count)| serde_json::json!({"username": username, "count": count})).collect::<Vec<_>>(),
+            })
+        }),
     })
 }
 
@@ -643,6 +671,104 @@ fn format_duration(ms: i64) -> String {
     else if ms < 60_000 { format!("{:.1} 秒", ms as f64 / 1000.0) }
     else if ms < 3_600_000 { format!("{:.1} 分钟", ms as f64 / 60_000.0) }
     else { format!("{:.1} 小时", ms as f64 / 3_600_000.0) }
+}
+
+fn moments_db_path(account_root: Option<&Path>, db_storage: Option<&Path>) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(root) = account_root {
+        candidates.push(root.join("sns").join("sns.db"));
+        candidates.push(root.join("db_storage").join("sns").join("sns.db"));
+    }
+    if let Some(db) = db_storage {
+        candidates.push(db.join("sns").join("sns.db"));
+        if let Some(parent) = db.parent() {
+            candidates.push(parent.join("sns").join("sns.db"));
+        }
+    }
+    candidates.into_iter().find(|path| path.exists())
+}
+
+fn load_moments(
+    account_root: Option<&Path>,
+    db_storage: Option<&Path>,
+    key: Option<&[u8; 32]>,
+    plaintext: bool,
+    self_username: Option<&str>,
+    year: i32,
+) -> Option<MomentsStats> {
+    let path = moments_db_path(account_root, db_storage)?;
+    let db = Db::open(&path, key, plaintext).ok()?;
+    let tables = db.tables().ok()?;
+    let table = tables.iter().find(|table| {
+        table.eq_ignore_ascii_case("SnsTimeLine") || table.to_ascii_lowercase().contains("snstimeline")
+    })?.clone();
+    let columns = db.columns(&table).ok()?;
+    let has = |name: &str| columns.iter().any(|column| column.eq_ignore_ascii_case(name));
+    let user_col = ["user_name", "userName", "username"].iter().find(|name| has(name))?;
+    let content_col = ["content", "Content"].iter().find(|name| has(name))?;
+    let time_col = ["create_time", "createTime", "createtime"].iter().find(|name| has(name)).copied();
+    let sql = format!(
+        "SELECT {}, {}{} FROM {}",
+        crate::db::quote_ident(user_col),
+        crate::db::quote_ident(content_col),
+        time_col.map(|column| format!(", {}", crate::db::quote_ident(column))).unwrap_or_default(),
+        crate::db::quote_ident(&table)
+    );
+    let mut stmt = db.conn().prepare(&sql).ok()?;
+    let mut rows = stmt.query([]).ok()?;
+    let self_id = self_username.unwrap_or("").to_lowercase();
+    let mut stats = MomentsStats::default();
+    while let Ok(Some(row)) = rows.next() {
+        let poster = row.get::<_, Option<String>>(0).ok().flatten().unwrap_or_default();
+        let content = row.get::<_, Option<String>>(1).ok().flatten().unwrap_or_default();
+        let table_time = if time_col.is_some() {
+            row.get::<_, Option<i64>>(2).ok().flatten().unwrap_or(0)
+        } else {
+            0
+        };
+        let timestamp = crate::wechat::parse::xml_value(&content, "createTime")
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .unwrap_or(table_time);
+        let timestamp = if timestamp > 1_000_000_000_000 { timestamp / 1000 } else { timestamp };
+        if timestamp <= 0 {
+            continue;
+        }
+        let Some(date) = Local.timestamp_opt(timestamp, 0).single() else {
+            continue;
+        };
+        if year != 0 && date.year() != year {
+            continue;
+        }
+        let likes = regex::Regex::new(r"(?is)<like>.*?<username>(.*?)</username>")
+            .ok()?
+            .captures_iter(&content)
+            .filter_map(|capture| capture.get(1).map(|value| crate::wechat::parse::unescape_xml(value.as_str()).trim().to_string()))
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if poster.to_lowercase() == self_id {
+            stats.posts += 1;
+            stats.likes_received += likes.len();
+            let content_type = crate::wechat::parse::xml_value(&content, "contentType")
+                .or_else(|| crate::wechat::parse::xml_value(&content, "type"))
+                .unwrap_or_else(|| "0".to_string());
+            let label = match content_type.as_str() {
+                "1" => "图片", "2" => "文字", "3" => "链接", "4" => "音乐",
+                "5" => "分享", "15" => "视频", "28" => "视频号", "34" => "视频号直播",
+                "42" => "音乐", "54" => "实况照片", _ => "其他",
+            };
+            *stats.post_types.entry(label.to_string()).or_default() += 1;
+            for liker in likes {
+                *stats.top_likers.entry(liker).or_default() += 1;
+            }
+        } else if likes.iter().any(|liker| liker.to_lowercase() == self_id) {
+            stats.likes_given += 1;
+            *stats.top_liked_authors.entry(poster).or_default() += 1;
+        }
+    }
+    if stats.posts == 0 && stats.likes_given == 0 {
+        return None;
+    }
+    Some(stats)
 }
 
 fn private_report(
@@ -755,6 +881,10 @@ fn annual_report(
     contacts: &HashMap<String, Contact>,
     conversations: &[Conversation],
     self_username: Option<&str>,
+    account_root: Option<&Path>,
+    db_storage: Option<&Path>,
+    key: Option<&[u8; 32]>,
+    plaintext: bool,
     progress: &mut Progress,
 ) -> Result<AnnualStats> {
     let (start, end) = year_bounds(year);
@@ -778,6 +908,27 @@ fn annual_report(
         stats.observe_conversation(conversation, &messages);
     }
     stats.sync_aggregate_friends();
+    progress.set_phase("分析朋友圈");
+    stats.moments = load_moments(account_root, db_storage, key, plaintext, self_username, year);
+    if let Some(moments) = &mut stats.moments {
+        let display = |username: &str| {
+            contacts
+                .get(username)
+                .map(|contact| contact.display_name())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| username.to_string())
+        };
+        moments.top_likers = moments
+            .top_likers
+            .iter()
+            .map(|(username, count)| (display(username), *count))
+            .collect();
+        moments.top_liked_authors = moments
+            .top_liked_authors
+            .iter()
+            .map(|(username, count)| (display(username), *count))
+            .collect();
+    }
     if stats.aggregate.total == 0 {
         bail!("no messages available for the selected year");
     }
@@ -1094,6 +1245,8 @@ pub fn run(
     contacts: &HashMap<String, Contact>,
     conversations: &[Conversation],
     contact_db: Option<&Path>,
+    account_root: Option<&Path>,
+    db_storage: Option<&Path>,
     self_username: Option<&str>,
     account_id: Option<&str>,
 ) -> Result<()> {
@@ -1137,7 +1290,18 @@ pub fn run(
             (payload_group(conversation, &aggregate), "group-report.html", "group", Some(conversation.id.clone()))
         }
         ReportKind::Annual => {
-            let stats = annual_report(year, store, contacts, conversations, self_username, &mut progress)?;
+            let stats = annual_report(
+                year,
+                store,
+                contacts,
+                conversations,
+                self_username,
+                account_root,
+                db_storage,
+                options.key.as_ref(),
+                options.plaintext,
+                &mut progress,
+            )?;
             (payload_annual(year, &stats), "annual-report.html", "annual", None)
         }
         ReportKind::Dual => {
@@ -1563,5 +1727,32 @@ mod report_filter_tests {
         assert!(!is_word_text("123456"));
         assert!(is_word_text("你手边有没有实物，让我看看"));
         assert!(is_word_text("面包板不是pcb的替代吗"));
+    }
+}
+
+#[cfg(test)]
+mod moments_tests {
+    use super::load_moments;
+    use std::fs;
+
+    #[test]
+    fn reads_self_posts_and_likes_from_sns_db() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sns = dir.path().join("sns");
+        fs::create_dir_all(&sns).unwrap();
+        let db = rusqlite::Connection::open(sns.join("sns.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE SnsTimeLine (user_name TEXT, content TEXT);
+             INSERT INTO SnsTimeLine VALUES ('me', '<timelineObject><createTime>1700000000</createTime><contentType>1</contentType><likeList><like><username>friend</username></like></likeList></timelineObject>');
+             INSERT INTO SnsTimeLine VALUES ('friend', '<timelineObject><createTime>1700000001</createTime><contentType>2</contentType><likeList><like><username>me</username></like></likeList></timelineObject>');",
+        )
+        .unwrap();
+        drop(db);
+        let stats = load_moments(Some(dir.path()), None, None, true, Some("me"), 0).expect("moments");
+        assert_eq!(stats.posts, 1);
+        assert_eq!(stats.likes_received, 1);
+        assert_eq!(stats.likes_given, 1);
+        assert_eq!(stats.top_likers.get("friend"), Some(&1));
+        assert_eq!(stats.top_liked_authors.get("friend"), Some(&1));
     }
 }

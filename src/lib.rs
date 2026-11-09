@@ -313,6 +313,8 @@ pub fn run() -> Result<()> {
             &contacts,
             &conversations,
             layout.contact_db.as_deref(),
+            layout.account_root.as_deref(),
+            layout.db_storage.as_deref(),
             self_username.as_deref(),
             account_id.as_deref(),
         ),

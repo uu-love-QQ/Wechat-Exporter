@@ -285,3 +285,211 @@
   --report-hero: #1e3a8a;
   --report-hero-fg: #eff6ff;
 }
+
+/* Annual report: editorial chapter layout inspired by Alpha. */
+:root {
+  --annual-time: #4656a8;
+  --annual-time-fill: #5b6fd0;
+  --annual-time-soft: #eceffb;
+  --annual-people: #8a5a00;
+  --annual-people-fill: #b97f00;
+  --annual-people-soft: #fbf2dd;
+}
+
+.dark {
+  --annual-time: #aebafa;
+  --annual-time-fill: #8fa3ff;
+  --annual-time-soft: #1d2748;
+  --annual-people: #f2c66d;
+  --annual-people-fill: #e0a93a;
+  --annual-people-soft: #3a2d14;
+}
+
+.annual-report {
+  min-height: 100dvh;
+  background: var(--card);
+  color: var(--card-foreground);
+}
+.annual-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 56px;
+  padding: 8px clamp(16px, 4vw, 56px);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--card) 88%, transparent);
+  backdrop-filter: blur(12px);
+}
+.annual-toolbar-title { display: flex; flex-direction: column; gap: 1px; }
+.annual-toolbar-title strong { font-size: 14px; font-weight: 650; }
+.annual-toolbar-title span { color: var(--muted-foreground); font-size: 11px; }
+.annual-wrap { max-width: 980px; margin: 0 auto; }
+.annual-cover {
+  position: relative;
+  padding: clamp(48px, 8vw, 96px) clamp(24px, 7vw, 64px) clamp(48px, 7vw, 80px);
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background:
+    radial-gradient(70% 120% at 0% 0%, color-mix(in oklab, var(--primary) 11%, transparent), transparent 70%),
+    radial-gradient(55% 100% at 100% 0%, color-mix(in oklab, var(--annual-time-fill) 10%, transparent), transparent 70%),
+    var(--card);
+}
+.annual-cover-kicker {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.annual-cover h1 {
+  max-width: 14em;
+  margin: 14px 0 20px;
+  font-size: clamp(36px, 7vw, 72px);
+  font-weight: 300;
+  letter-spacing: -.045em;
+  line-height: 1.05;
+}
+.annual-cover-lead { max-width: 35em; color: var(--muted-foreground); font-size: 15px; line-height: 1.8; }
+.annual-cover-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 20px; color: var(--muted-foreground); font-size: 12px; }
+.annual-chapter {
+  --annual-accent: var(--primary);
+  --annual-accent-soft: color-mix(in oklab, var(--primary) 12%, transparent);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: clamp(36px, 5vw, 56px) clamp(20px, 6vw, 64px) clamp(48px, 7vw, 72px);
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  scroll-margin-top: 56px;
+}
+.annual-chapter[data-accent='time'] { --annual-accent: var(--annual-time); --annual-accent-soft: var(--annual-time-soft); }
+.annual-chapter[data-accent='people'] { --annual-accent: var(--annual-people); --annual-accent-soft: var(--annual-people-soft); }
+.annual-ghost {
+  position: absolute;
+  top: 18px;
+  right: clamp(16px, 5vw, 40px);
+  color: transparent;
+  font-size: clamp(80px, 18vw, 168px);
+  font-weight: 300;
+  letter-spacing: -.04em;
+  line-height: 1;
+  -webkit-text-stroke: 1px color-mix(in oklab, var(--foreground) 14%, transparent);
+  pointer-events: none;
+  user-select: none;
+}
+.annual-kicker {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.annual-kicker-index { color: var(--annual-accent); font-size: 13px; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+.annual-hint { margin-left: auto; letter-spacing: 0; text-transform: none; }
+.annual-hint summary { cursor: pointer; color: var(--muted-foreground); font-size: 11px; }
+.annual-hint p { max-width: 32em; margin: 6px 0 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; letter-spacing: 0; text-transform: none; }
+.annual-chapter h2 {
+  max-width: 22em;
+  margin: 6px 0 0;
+  color: var(--card-foreground);
+  font-size: clamp(21px, 2.6vw, 26px);
+  font-weight: 700;
+  line-height: 1.45;
+  text-wrap: balance;
+}
+.annual-figure { display: grid; gap: 6px; margin: 0; }
+.annual-figure-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.annual-figure-value strong {
+  color: var(--card-foreground);
+  font-size: clamp(44px, 8vw, 82px);
+  font-weight: 300;
+  letter-spacing: -.04em;
+  line-height: 1;
+  font-variant-numeric: lining-nums proportional-nums;
+  overflow-wrap: anywhere;
+}
+.annual-figure-value small { color: var(--annual-accent); font-size: 15px; font-weight: 550; }
+.annual-figure > small { color: var(--muted-foreground); font-size: 12px; }
+.annual-lead { display: grid; max-width: 36em; gap: 8px; font-size: 15px; line-height: 1.85; }
+.annual-lead strong { color: var(--annual-accent); font-weight: 650; }
+.annual-visual { display: grid; gap: 20px; margin-top: 4px; }
+.annual-folio { display: none; margin: 20px 0 0; color: var(--muted-foreground); font-size: 10px; letter-spacing: .12em; text-align: right; font-variant-numeric: tabular-nums; }
+.annual-dots {
+  position: fixed;
+  z-index: 20;
+  top: 50%;
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--card) 86%, transparent);
+  backdrop-filter: blur(10px);
+  transform: translateY(-50%);
+}
+.annual-dot {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.annual-dot::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: var(--border); transition: all .2s; }
+.annual-dot[aria-current='true']::before { width: 6px; height: 18px; border-radius: 999px; background: var(--annual-accent, var(--primary)); }
+.annual-dot:hover::before { background: var(--muted-foreground); }
+.annual-dot-label { position: absolute; right: 34px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--foreground); font-size: 11px; white-space: nowrap; opacity: 0; pointer-events: none; transform: translateX(4px); transition: all .15s; }
+.annual-dot:hover .annual-dot-label, .annual-dot:focus-visible .annual-dot-label { opacity: 1; transform: translateX(0); }
+.annual-split { display: flex; height: 34px; overflow: hidden; border-radius: 999px; background: var(--muted); }
+.annual-split > span { display: flex; align-items: center; justify-content: center; min-width: 0; color: #fff; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.annual-split .first { background: var(--annual-time-fill); }
+.annual-split .second { background: var(--annual-people-fill); }
+.annual-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+.annual-stat { padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+.annual-stat span { display: block; color: var(--muted-foreground); font-size: 11px; }
+.annual-stat strong { display: block; margin-top: 4px; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.annual-stat small { display: block; margin-top: 2px; color: var(--muted-foreground); font-size: 11px; }
+.annual-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.annual-list li { display: flex; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px dotted color-mix(in oklab, var(--muted-foreground) 42%, transparent); }
+.annual-list .name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.annual-list .value { color: var(--muted-foreground); font-size: 12px; font-variant-numeric: tabular-nums; }
+.annual-list .rank { width: 24px; color: var(--annual-accent); font-size: 11px; font-variant-numeric: tabular-nums; }
+.annual-heat { display: grid; gap: 3px; grid-template-columns: auto repeat(24, minmax(0, 1fr)); align-items: center; }
+.annual-heat span.cell { aspect-ratio: 1; border-radius: 2px; background: var(--annual-time-fill); }
+.annual-heat span.hour { color: var(--muted-foreground); font-size: 7px; text-align: center; }
+.annual-heat span.day { padding-right: 6px; color: var(--muted-foreground); font-size: 9px; }
+.annual-companions { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+.annual-companion { padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); font-size: 11px; }
+.annual-companion .period { color: var(--annual-accent); font-size: 10px; font-variant-numeric: tabular-nums; }
+.annual-companion .person { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.annual-companion .count { display: block; margin-top: 2px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.annual-phrases { display: flex; flex-wrap: wrap; gap: 8px; }
+.annual-phrase { padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--muted); font-size: 12px; }
+.annual-phrase strong { margin-left: 4px; color: var(--annual-accent); font-size: 10px; }
+.annual-missing { padding: 14px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted-foreground); font-size: 13px; }
+@media (max-width: 860px) {
+  .annual-dots { display: none; }
+  .annual-folio { display: block; }
+}
+@media (max-width: 560px) {
+  .annual-chapter { padding: 32px 18px 44px; }
+  .annual-cover { padding: 40px 20px 44px; }
+  .annual-split > span { font-size: 10px; }
+  .annual-ghost { font-size: 96px; }
+}
