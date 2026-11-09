@@ -506,7 +506,7 @@
 .annual-person { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
 .annual-person-avatar { flex: 0 0 auto; border: 1px solid color-mix(in oklab, var(--annual-accent) 35%, var(--border)); }
 .annual-person-avatar [data-slot='avatar-fallback'] { font-size: 10px; font-weight: 650; color: var(--annual-accent); background: var(--annual-accent-soft); }
-.annual-top-hero { display: flex; align-items: center; gap: 14px; max-width: 640px; padding: 14px 16px; border: 1px solid color-mix(in oklab, var(--podium-gold) 34%, var(--border)); border-radius: 14px; background: linear-gradient(110deg, var(--podium-gold-soft), color-mix(in oklab, var(--card) 82%, var(--podium-gold-soft))); }
+.annual-top-hero { display: flex; align-items: center; gap: 14px; max-width: 640px; padding: 14px 16px 14px 14px; border: 1px solid color-mix(in oklab, var(--podium-gold) 24%, var(--border)); border-left: 3px solid var(--podium-gold); border-radius: 14px; background: var(--card); box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 6%, transparent); }
 .annual-top-avatar { flex: 0 0 auto; width: 64px; height: 64px; padding: 3px; border: 2px solid var(--podium-gold); border-radius: 16px; background: var(--card); }
 .annual-top-avatar [data-slot='avatar'] { border: 0; border-radius: 12px; }
 .annual-top-avatar [data-slot='avatar-fallback'] { color: var(--podium-gold); background: var(--podium-gold-soft); font-size: 20px; font-weight: 650; }

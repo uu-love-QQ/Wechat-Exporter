@@ -913,7 +913,7 @@ function AnnualReportView({
           question="这一年，你和谁聊得最多？"
           hint="按你和每位好友的私聊消息总数排序，你发的和 TA 发的都算。"
           accent="people"
-          ghost="01"
+          ghost="挚友"
         >
           {top ? (
             <>
