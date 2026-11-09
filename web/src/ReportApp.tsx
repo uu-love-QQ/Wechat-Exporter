@@ -83,6 +83,7 @@ export interface AnnualCompanion {
 }
 
 export interface AnnualData {
+  year: number
   topFriends: AnnualPerson[]
   monthlyCompanions: AnnualCompanion[]
   heatmap: {
@@ -313,7 +314,7 @@ function GroupedBars({ data, labels }: { data: ReportSeries[]; labels: [string, 
   )
 }
 
-function TypeList({ types, total }: { types: ReportCount[]; total: number }) {
+function TypeList({ types, total, showPercent = true }: { types: ReportCount[]; total: number; showPercent?: boolean }) {
   if (types.length === 0) return <ChartEmpty />
   const max = Math.max(...types.map((item) => item.count), 1)
   return (
@@ -323,7 +324,7 @@ function TypeList({ types, total }: { types: ReportCount[]; total: number }) {
           <div className="flex items-center justify-between gap-3 text-xs">
             <span className="truncate">{item.name}</span>
             <span className="shrink-0 text-muted-foreground tabular-nums">
-              {item.count} · {Math.round(pct(item.count, total))}%
+              {showPercent ? `${item.count} · ${Math.round(pct(item.count, total))}%` : `${formatNumber(item.count)} 条`}
             </span>
           </div>
           <Progress value={pct(item.count, max)} />
@@ -730,6 +731,25 @@ function AnnualSplit({ first, second, title }: { first: { label: string; value: 
   )
 }
 
+function annualTypeRows(types: ReportCount[]): ReportCount[] {
+  const order = ['文字', '表情', '图片', '语音', '链接', '通话', '拍一拍', '其他']
+  const counts = new Map<string, number>()
+  for (const item of types) {
+    let name = '其他'
+    if (/文本|文字/.test(item.name)) name = '文字'
+    else if (/表情/.test(item.name)) name = '表情'
+    else if (/图片/.test(item.name)) name = '图片'
+    else if (/语音/.test(item.name)) name = '语音'
+    else if (/链接/.test(item.name)) name = '链接'
+    else if (/通话/.test(item.name)) name = '通话'
+    else if (/拍一拍/.test(item.name)) name = '拍一拍'
+    counts.set(name, (counts.get(name) ?? 0) + item.count)
+  }
+  return order
+    .map((name) => ({ name, count: counts.get(name) ?? 0 }))
+    .filter((item) => item.count > 0)
+}
+
 function AnnualReportView({
   data,
   annual,
@@ -742,6 +762,10 @@ function AnnualReportView({
   setDark: (update: (value: boolean) => boolean) => void
 }) {
   const [active, setActive] = useState('overview')
+  const messageTotal = data.kpis.find((item) => item.label === '消息总数')?.value ?? '0'
+  const messageTotalNumber = data.types.reduce((sum, item) => sum + item.count, 0)
+  const typeRows = annualTypeRows(data.types)
+  const [firstMessageTime, lastMessageTime] = data.range.split(' → ')
   const chapters = [
     'overview', 'top-friends', 'companions', 'rhythm', 'initiative', 'response',
     'balance', 'streak', 'fading', 'phrases', 'moments', 'closing',
@@ -813,13 +837,30 @@ function AnnualReportView({
           accent="quantity"
           ghost={data.range.slice(0, 4)}
         >
-          <AnnualFigure value={formatNumber(data.kpis.find((item) => item.label === '消息总数')?.value ? Number(data.kpis.find((item) => item.label === '消息总数')!.value.replace(/,/g, '')) : 0)} unit="条" label="私聊消息" />
           <div className="annual-lead">
             <p>
-              从 {data.range.split(' → ')[0]} 到 {data.range.split(' → ')[1] || ''}，你和{' '}
-              <strong>{annual.topFriends.length}</strong> 位好友留下了{' '}
-              <strong>{data.kpis.find((item) => item.label === '消息总数')?.value ?? '0'}</strong> 条私聊消息。
+              <strong>{annual.year > 0 ? `${annual.year} 年` : data.heading.match(/\d{4}/)?.[0] ? `${data.heading.match(/\d{4}/)![0]} 年` : '这些年'}</strong>，你和{' '}
+              <strong>{annual.topFriends.length}</strong> 位好友在私聊里收发了{' '}
+              <strong>{messageTotal}</strong> 条消息。
             </p>
+            <p>
+              其中你发出 <strong>{formatNumber(data.ratio?.me ?? 0)}</strong> 条，收到{' '}
+              <strong>{formatNumber(data.ratio?.other ?? 0)}</strong> 条。
+            </p>
+          </div>
+          <div className="annual-times">
+            <div>
+              <span>第一条消息</span>
+              <strong>{firstMessageTime || '-'}</strong>
+            </div>
+            <div>
+              <span>最后一条消息</span>
+              <strong>{lastMessageTime || '-'}</strong>
+            </div>
+          </div>
+          <div className="annual-types">
+            <h3>消息类型</h3>
+            <TypeList types={typeRows} total={messageTotalNumber} showPercent={false} />
           </div>
           <div className="annual-stats">
             {data.kpis.slice(0, 5).map((kpi) => (

@@ -423,6 +423,12 @@
 .annual-figure > small { color: var(--muted-foreground); font-size: 12px; }
 .annual-lead { display: grid; max-width: 36em; gap: 8px; font-size: 15px; line-height: 1.85; }
 .annual-lead strong { color: var(--annual-accent); font-weight: 650; }
+.annual-times { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; max-width: 44em; margin-top: 4px; }
+.annual-times > div { display: grid; gap: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
+.annual-times span { color: var(--muted-foreground); font-size: 11px; letter-spacing: .04em; }
+.annual-times strong { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.annual-types { display: grid; gap: 14px; max-width: 44em; margin-top: 8px; }
+.annual-types h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .annual-visual { display: grid; gap: 20px; margin-top: 4px; }
 .annual-folio { display: none; margin: 20px 0 0; color: var(--muted-foreground); font-size: 10px; letter-spacing: .12em; text-align: right; font-variant-numeric: tabular-nums; }
 .annual-dots {

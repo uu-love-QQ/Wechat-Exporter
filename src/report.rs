@@ -660,6 +660,7 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32) -> serde_json::Value {
         summary.push(serde_json::json!({"label":"口头禅","value":format!("「{}」 {} 次", phrase["text"].as_str().unwrap_or(""), phrase["count"])}));
     }
     serde_json::json!({
+        "year": year,
         "topFriends": top_friends,
         "monthlyCompanions": monthly_companions,
         "heatmap": {"weekdayHourCounts": stats.heatmap, "peak": heatmap_peak},
