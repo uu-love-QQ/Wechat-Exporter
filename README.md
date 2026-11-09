@@ -312,7 +312,7 @@ wechat-exporter export --key <64位Hex> \
 ```
 
 上传包含 HTML、报告、JSON、媒体文件等全部输出；目录不存在时自动
-`MKCOL` 创建。密码保存在本地配置文件中（Unix 下权限 0600）。
+`MKCOL` 创建，文件使用并发上传。密码保存在本地配置文件中（Unix 下权限 0600）。
 
 ### upgrade
 

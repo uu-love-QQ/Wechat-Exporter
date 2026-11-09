@@ -32,6 +32,22 @@ impl<'a> ExportContext<'a> {
     }
 }
 
+fn write_format(context: &ExportContext<'_>, format: Format, path: &Path) -> Result<()> {
+    match format {
+        Format::Json => write_json(context, path)?,
+        Format::Markdown => write_markdown(context, path)?,
+        Format::ChatlabJson => write_chatlab_json(context, path, false)?,
+        Format::ChatlabJsonl => write_chatlab_json(context, path, true)?,
+        Format::Html => write_html(context, path)?,
+        Format::Txt => write_txt(context, path)?,
+        Format::Xlsx => write_xlsx(context, path)?,
+        Format::ArkmeJson => write_arkme_json(context, path)?,
+        Format::Sql => write_sql(context, path)?,
+        Format::Weclone => write_weclone(context, path)?,
+    }
+    Ok(())
+}
+
 pub fn write_conversation(
     context: &ExportContext<'_>,
     output_dir: &Path,
@@ -41,21 +57,33 @@ pub fn write_conversation(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
     let mut written = BTreeMap::new();
-    for format in formats {
-        let path = output_dir.join(format.file_name());
-        match format {
-            Format::Json => write_json(context, &path)?,
-            Format::Markdown => write_markdown(context, &path)?,
-            Format::ChatlabJson => write_chatlab_json(context, &path, false)?,
-            Format::ChatlabJsonl => write_chatlab_json(context, &path, true)?,
-            Format::Html => write_html(context, &path)?,
-            Format::Txt => write_txt(context, &path)?,
-            Format::Xlsx => write_xlsx(context, &path)?,
-            Format::ArkmeJson => write_arkme_json(context, &path)?,
-            Format::Sql => write_sql(context, &path)?,
-            Format::Weclone => write_weclone(context, &path)?,
+    if formats.len() > 1 {
+        let results = std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(formats.len());
+            for &format in formats {
+                let path = output_dir.join(format.file_name());
+                let handle = scope.spawn(move || {
+                    write_format(context, format, &path)
+                        .with_context(|| format!("failed to write {}", path.display()))?;
+                    Ok::<_, anyhow::Error>((format, path))
+                });
+                handles.push(handle);
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or_else(|_| Err(anyhow::anyhow!("export worker panicked"))))
+                .collect::<Result<Vec<_>>>()
+        })?;
+        for (format, path) in results {
+            written.insert(format.name().to_string(), path);
         }
-        written.insert(format.name().to_string(), path);
+    } else {
+        for &format in formats {
+            let path = output_dir.join(format.file_name());
+            write_format(context, format, &path)
+                .with_context(|| format!("failed to write {}", path.display()))?;
+            written.insert(format.name().to_string(), path);
+        }
     }
     if report {
         let path = output_dir.join(REPORT_FILE_NAME);

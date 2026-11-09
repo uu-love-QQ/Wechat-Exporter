@@ -194,19 +194,86 @@ pub fn upload_directory(
     let files = collect_files(output_dir)?;
     progress.set_phase(format!("WebDAV 备份 · {} 个文件", files.len()));
     progress.steps(0, files.len(), "文件");
-    for (index, path) in files.iter().enumerate() {
+    struct Task {
+        path: PathBuf,
+        url: String,
+    }
+    let mut tasks = Vec::with_capacity(files.len());
+    let mut parents: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for path in &files {
         let relative = path
             .strip_prefix(output_dir)
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let parts: Vec<&str> = relative.split('/').collect();
-        let (parents, file_name) = parts.split_at(parts.len().saturating_sub(1));
-        let parent_url = client.ensure_collection(&collection, parents)?;
-        let url = format!("{}/{}", parent_url, encode_segment(file_name.first().copied().unwrap_or("file")));
-        let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-        client.put(&url, &bytes)?;
-        progress.steps(index + 1, files.len(), "文件");
+        let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let (parent_parts, file_name) = parts.split_at(parts.len() - 1);
+        let parent_key = parent_parts.join("/");
+        let parent_url = if let Some(url) = parents.get(&parent_key) {
+            url.clone()
+        } else {
+            let url = client.ensure_collection(&collection, parent_parts)?;
+            parents.insert(parent_key, url.clone());
+            url
+        };
+        tasks.push(Task {
+            path: path.clone(),
+            url: format!("{}/{}", parent_url, encode_segment(file_name.first().copied().unwrap_or("file"))),
+        });
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failed = std::sync::atomic::AtomicBool::new(false);
+    let errors = std::sync::Mutex::new(Vec::<String>::new());
+    let progress = std::sync::Mutex::new(progress);
+    let workers = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4)
+        .min(tasks.len().max(1));
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let next = &next;
+            let failed = &failed;
+            let errors = &errors;
+            let progress = &progress;
+            let client = &client;
+            let tasks = &tasks;
+            scope.spawn(move || {
+                loop {
+                    if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if index >= tasks.len() {
+                        break;
+                    }
+                    let task = &tasks[index];
+                    let result = fs::read(&task.path)
+                        .with_context(|| format!("failed to read {}", task.path.display()))
+                        .and_then(|bytes| client.put(&task.url, &bytes));
+                    if let Err(error) = result {
+                        failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                        if let Ok(mut errors) = errors.lock() {
+                            errors.push(format!("{}: {error:#}", task.path.display()));
+                        }
+                        break;
+                    }
+                    if let Ok(mut progress) = progress.lock() {
+                        progress.steps(index + 1, tasks.len(), "文件");
+                    }
+                }
+            });
+        }
+    });
+    if failed.load(std::sync::atomic::Ordering::Relaxed) {
+        let message = errors
+            .lock()
+            .ok()
+            .and_then(|errors| errors.first().cloned())
+            .unwrap_or_else(|| "WebDAV upload failed".to_string());
+        bail!(message);
     }
     Ok(UploadSummary {
         remote: collection,
