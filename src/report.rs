@@ -1070,7 +1070,6 @@ fn group_report(
 fn annual_report(
     year: i32,
     loaded: &[(Conversation, Vec<ExportMessage>)],
-    contacts: &HashMap<String, Contact>,
     self_username: Option<&str>,
     account_root: Option<&Path>,
     db_storage: Option<&Path>,
@@ -1493,7 +1492,6 @@ pub fn run(
             let stats = annual_report(
                 year,
                 &loaded,
-                contacts,
                 self_username,
                 account_root,
                 db_storage,

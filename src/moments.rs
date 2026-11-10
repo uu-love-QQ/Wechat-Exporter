@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{Datelike, Local, TimeZone};
 use regex::Regex;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use crate::db::Db;
@@ -60,6 +60,7 @@ pub fn load_moments_from_path(
         .context("SnsTimeLine table not found")?;
     let columns = db.columns(&table).context("failed to read SnsTimeLine columns")?;
     let has = |name: &str| columns.iter().any(|column| column.eq_ignore_ascii_case(name));
+    let tid_col = ["tid", "Tid", "ID"].iter().find(|name| has(name)).copied();
     let user_col = ["user_name", "userName", "username"].iter().find(|name| has(name)).copied();
     let content_col = ["content", "Content"].iter().find(|name| has(name)).copied();
     let time_col = ["create_time", "createTime", "createtime"].iter().find(|name| has(name)).copied();
@@ -68,45 +69,57 @@ pub fn load_moments_from_path(
     };
 
     let mut fields = Vec::new();
+    let mut next_index = 0usize;
+    let tid_index = if let Some(column) = tid_col {
+        fields.push(crate::db::quote_ident(column));
+        let index = next_index;
+        next_index += 1;
+        Some(index)
+    } else {
+        None
+    };
+    let user_index = next_index;
     if let Some(column) = user_col {
         fields.push(crate::db::quote_ident(column));
     } else {
         fields.push("''".to_string());
     }
+    next_index += 1;
+    let content_index = next_index;
     fields.push(crate::db::quote_ident(content_col));
-    if let Some(column) = time_col {
+    next_index += 1;
+    let time_index = time_col.map(|column| {
         fields.push(crate::db::quote_ident(column));
-    }
+        next_index
+    });
     let sql = format!("SELECT {} FROM {}", fields.join(", "), crate::db::quote_ident(&table));
     let mut stmt = db.conn().prepare(&sql).context("failed to prepare moments query")?;
     let mut rows = stmt.query([]).context("failed to query moments")?;
 
+    let timeline_re = Regex::new(r"(?is)<TimelineObject\b.*?</TimelineObject>").expect("valid timeline regex");
+    let content_object_re = Regex::new(r"(?is)<ContentObject\b.*?</ContentObject>").expect("valid content regex");
+    let like_list_re = Regex::new(r"(?is)<(?:likeList|like_user_list)\b.*?</(?:likeList|like_user_list)>").expect("valid like list regex");
+    let username_re = Regex::new(r"(?is)<username\b[^>]*>(.*?)</username>").expect("valid username regex");
     let self_id = self_username.unwrap_or("").trim().to_lowercase();
-    let like_block = Regex::new(r"(?is)<like(?:\s[^>]*)?>(.*?)</like>").expect("valid like regex");
-    let username = Regex::new(r"(?is)<username>(.*?)</username>").expect("valid username regex");
     let mut stats = MomentsStats::default();
+    let mut posts: HashMap<i64, (String, bool, Vec<String>)> = HashMap::new();
+    let mut synthetic_id = -1i64;
 
     while let Ok(Some(row)) = rows.next() {
-        let poster = match row.get::<_, Option<rusqlite::types::Value>>(0).ok().flatten() {
-            Some(rusqlite::types::Value::Text(value)) => value,
-            Some(rusqlite::types::Value::Blob(bytes)) => String::from_utf8_lossy(&bytes).to_string(),
-            _ => String::new(),
+        let post_id = tid_index
+            .and_then(|index| row_i64(&row, index))
+            .unwrap_or_else(|| {
+                let id = synthetic_id;
+                synthetic_id -= 1;
+                id
+            });
+        let poster = row_text(&row, user_index);
+        let content = row_text(&row, content_index);
+        let table_time = time_index.map(|index| row_i64(&row, index).unwrap_or(0)).unwrap_or(0);
+        let Some(timeline) = timeline_re.find(&content).map(|value| value.as_str()) else {
+            continue;
         };
-        let content = match row.get::<_, Option<rusqlite::types::Value>>(1).ok().flatten() {
-            Some(rusqlite::types::Value::Text(value)) => value,
-            Some(rusqlite::types::Value::Blob(bytes)) => String::from_utf8_lossy(&bytes).to_string(),
-            _ => String::new(),
-        };
-        let table_time = if time_col.is_some() {
-            match row.get::<_, Option<rusqlite::types::Value>>(2).ok().flatten() {
-                Some(rusqlite::types::Value::Integer(value)) => value,
-                Some(rusqlite::types::Value::Text(value)) => value.trim().parse::<i64>().unwrap_or(0),
-                _ => 0,
-            }
-        } else {
-            0
-        };
-        let timestamp = crate::wechat::parse::xml_value(&content, "createTime")
+        let timestamp = crate::wechat::parse::xml_value(timeline, "createTime")
             .and_then(|value| value.trim().parse::<i64>().ok())
             .unwrap_or(table_time);
         let timestamp = if timestamp > 1_000_000_000_000 { timestamp / 1000 } else { timestamp };
@@ -119,62 +132,143 @@ pub fn load_moments_from_path(
         if year != 0 && date.year() != year {
             continue;
         }
-        let poster = if poster.trim().is_empty() {
-            crate::wechat::parse::xml_value(&content, "username")
-                .map(|value| crate::wechat::parse::unescape_xml(&value))
-                .unwrap_or_default()
-        } else {
-            poster
+        let like_block_start = like_list_re.find(timeline).map(|value| value.start());
+        let author_scope = like_block_start.map(|start| &timeline[..start]).unwrap_or(timeline);
+        let xml_author = crate::wechat::parse::xml_value(author_scope, "username")
+            .map(|value| crate::wechat::parse::unescape_xml(&value).trim().to_string())
+            .filter(|value| !value.is_empty());
+        let poster = xml_author.unwrap_or_else(|| poster.trim().to_string());
+        let poster_id = poster.to_lowercase();
+        let is_self = !self_id.is_empty() && poster_id == self_id;
+        let content_object = content_object_re.find(timeline).map(|value| value.as_str());
+        let content_type = content_object
+            .and_then(|value| crate::wechat::parse::xml_value(value, "type"))
+            .or_else(|| crate::wechat::parse::xml_value(timeline, "contentType"))
+            .or_else(|| crate::wechat::parse::xml_value(timeline, "type"))
+            .unwrap_or_else(|| "0".to_string());
+        let label = match content_type.trim() {
+            "1" => "图片",
+            "2" => "文字",
+            "3" => "链接",
+            "4" | "42" => "音乐",
+            "5" => "分享",
+            "15" => "视频",
+            "28" => "视频号",
+            "34" => "视频号直播",
+            "54" => "实况照片",
+            _ => "其他",
         };
-        let poster_id = poster.trim().to_lowercase();
-        let likes = like_block
-            .captures_iter(&content)
-            .flat_map(|block| {
-                let inner = block.get(1).map(|value| value.as_str()).unwrap_or("");
-                username
-                    .captures_iter(inner)
+        let xml_likes = like_list_re
+            .find(timeline)
+            .map(|block| {
+                username_re
+                    .captures_iter(block.as_str())
                     .filter_map(|capture| capture.get(1).map(|value| crate::wechat::parse::unescape_xml(value.as_str()).trim().to_string()))
                     .filter(|value| !value.is_empty())
                     .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
-
-        if !self_id.is_empty() && poster_id == self_id {
+            .unwrap_or_default();
+        if is_self {
             stats.posts += 1;
-            stats.likes_received += likes.len();
-            let content_type = crate::wechat::parse::xml_value(&content, "contentType")
-                .or_else(|| crate::wechat::parse::xml_value(&content, "type"))
-                .unwrap_or_else(|| "0".to_string());
-            let label = match content_type.trim() {
-                "1" => "图片",
-                "2" => "文字",
-                "3" => "链接",
-                "4" | "42" => "音乐",
-                "5" => "分享",
-                "15" => "视频",
-                "28" => "视频号",
-                "34" => "视频号直播",
-                "54" => "实况照片",
-                _ => "其他",
-            };
             *stats.post_types.entry(label.to_string()).or_default() += 1;
-            for liker in likes {
-                if liker.trim().to_lowercase() != self_id {
-                    *stats.top_likers.entry(liker).or_default() += 1;
+        }
+        posts.insert(post_id, (poster, is_self, xml_likes));
+    }
+
+    let message_table = tables
+        .iter()
+        .find(|table| table.eq_ignore_ascii_case("SnsMessage_tmp3") || table.to_ascii_lowercase().contains("snsmessage"))
+        .cloned();
+    let mut seen_likes: std::collections::HashSet<(i64, String)> = std::collections::HashSet::new();
+    if let Some(message_table) = &message_table {
+        let columns = db.columns(message_table).context("failed to read SnsMessage columns")?;
+        let has = |name: &str| columns.iter().any(|column| column.eq_ignore_ascii_case(name));
+        let feed_col = ["feed_id", "feedId"].iter().find(|name| has(name)).copied();
+        let type_col = ["type", "Type"].iter().find(|name| has(name)).copied();
+        let from_col = ["from_username", "fromUsername"].iter().find(|name| has(name)).copied();
+        if let (Some(feed_col), Some(type_col), Some(from_col)) = (feed_col, type_col, from_col) {
+            let del_filter = if has("del_status") { " WHERE COALESCE(del_status, 0) = 0" } else { "" };
+            let sql = format!(
+                "SELECT {}, {}, {} FROM {}{}",
+                crate::db::quote_ident(feed_col),
+                crate::db::quote_ident(type_col),
+                crate::db::quote_ident(from_col),
+                crate::db::quote_ident(message_table),
+                del_filter
+            );
+            let mut stmt = db.conn().prepare(&sql).context("failed to prepare interactions query")?;
+            let mut rows = stmt.query([]).context("failed to query interactions")?;
+            while let Ok(Some(row)) = rows.next() {
+                let Some(feed_id) = row_i64(&row, 0) else { continue };
+                let Some(kind) = row_i64(&row, 1) else { continue };
+                if kind != 1 {
+                    continue;
                 }
-            }
-        } else if !self_id.is_empty() && likes.iter().any(|liker| liker.trim().to_lowercase() == self_id) {
-            stats.likes_given += 1;
-            if !poster_id.is_empty() && poster_id != self_id {
-                *stats.top_liked_authors.entry(poster).or_default() += 1;
+                let liker = row_text(&row, 2).trim().to_string();
+                if liker.is_empty() {
+                    continue;
+                }
+                let liker_id = liker.to_lowercase();
+                let Some((author, is_self, _)) = posts.get(&feed_id) else { continue };
+                if !seen_likes.insert((feed_id, liker_id.clone())) {
+                    continue;
+                }
+                if *is_self {
+                    stats.likes_received += 1;
+                    if liker_id != self_id {
+                        *stats.top_likers.entry(liker).or_default() += 1;
+                    }
+                } else if liker_id == self_id && author.to_lowercase() != self_id {
+                    stats.likes_given += 1;
+                    *stats.top_liked_authors.entry(author.clone()).or_default() += 1;
+                }
             }
         }
     }
 
-    if stats.posts == 0 && stats.likes_given == 0 {
+    // Older databases store likes only inside the timeline XML. Use them when
+    // there is no interaction table; also recover outgoing likes that the
+    // notification table may not retain.
+    for (post_id, (author, is_self, likes)) in &posts {
+        for liker in likes {
+            let liker_id = liker.to_lowercase();
+            if !seen_likes.insert((*post_id, liker_id.clone())) {
+                continue;
+            }
+            if *is_self {
+                if message_table.is_none() {
+                    stats.likes_received += 1;
+                    if liker_id != self_id {
+                        *stats.top_likers.entry(liker.clone()).or_default() += 1;
+                    }
+                }
+            } else if liker_id == self_id && author.to_lowercase() != self_id {
+                stats.likes_given += 1;
+                *stats.top_liked_authors.entry(author.clone()).or_default() += 1;
+            }
+        }
+    }
+
+    if stats.posts == 0 && stats.likes_received == 0 && stats.likes_given == 0 {
         return Ok(None);
     }
     Ok(Some(stats))
+}
+
+fn row_text(row: &rusqlite::Row<'_>, index: usize) -> String {
+    match row.get::<_, Option<rusqlite::types::Value>>(index).ok().flatten() {
+        Some(rusqlite::types::Value::Text(value)) => value,
+        Some(rusqlite::types::Value::Blob(bytes)) => String::from_utf8_lossy(&bytes).to_string(),
+        _ => String::new(),
+    }
+}
+
+fn row_i64(row: &rusqlite::Row<'_>, index: usize) -> Option<i64> {
+    match row.get::<_, Option<rusqlite::types::Value>>(index).ok().flatten() {
+        Some(rusqlite::types::Value::Integer(value)) => Some(value),
+        Some(rusqlite::types::Value::Text(value)) => value.trim().parse::<i64>().ok(),
+        _ => None,
+    }
 }
 
 pub fn ranked(rows: &BTreeMap<String, usize>, limit: usize) -> Vec<(String, usize)> {
@@ -208,6 +302,29 @@ mod tests {
         assert_eq!(stats.top_likers.get("friend"), Some(&1));
         assert_eq!(stats.top_likers.get("other"), Some(&1));
         assert_eq!(stats.top_likers.get("me"), None);
+        assert_eq!(stats.top_liked_authors.get("friend"), Some(&1));
+    }
+
+    #[test]
+    fn reads_likes_from_sns_message_and_uses_xml_author() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sns = dir.path().join("sns");
+        fs::create_dir_all(&sns).unwrap();
+        let db = rusqlite::Connection::open(sns.join("sns.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE SnsTimeLine (tid INTEGER PRIMARY KEY, user_name TEXT, content TEXT);
+             CREATE TABLE SnsMessage_tmp3 (feed_id INTEGER, type INTEGER, from_username TEXT, del_status INTEGER);
+             INSERT INTO SnsTimeLine VALUES (100, '', '<TimelineObject><username>me</username><createTime>1700000000</createTime><ContentObject><type>1</type></ContentObject></TimelineObject>');
+             INSERT INTO SnsTimeLine VALUES (101, '', '<TimelineObject><username>friend</username><createTime>1700000001</createTime><ContentObject><type>2</type></ContentObject></TimelineObject>');
+             INSERT INTO SnsMessage_tmp3 VALUES (100, 1, 'a', 0), (100, 1, 'b', 0), (100, 1, 'c', 0), (100, 1, 'd', 0), (100, 1, 'e', 0), (100, 1, 'f', 0), (100, 1, 'g', 0), (101, 1, 'me', 0), (101, 1, 'me', 1);",
+        )
+        .unwrap();
+        drop(db);
+        let stats = load_moments(Some(dir.path()), None, None, true, Some("me"), 0).expect("moments");
+        assert_eq!(stats.posts, 1);
+        assert_eq!(stats.likes_received, 7);
+        assert_eq!(stats.likes_given, 1);
+        assert_eq!(stats.top_likers.len(), 7);
         assert_eq!(stats.top_liked_authors.get("friend"), Some(&1));
     }
 }
