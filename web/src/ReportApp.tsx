@@ -848,6 +848,17 @@ function PersonName({ person }: { person: { displayName: string; avatar?: string
   )
 }
 
+function PhraseTooltip({ rank, phrase }: { rank: number; phrase: { text: string; count: number } }) {
+  return (
+    <TooltipContent side="top" sideOffset={7} className="annual-phrase-tooltip">
+      <span className="annual-phrase-tooltip-rank">第 {rank} 名</span>
+      <span className="annual-phrase-tooltip-word">[{phrase.text}]</span>
+      <span className="annual-phrase-tooltip-line" aria-hidden="true" />
+      <span className="annual-phrase-tooltip-count">{phrase.count} 次</span>
+    </TooltipContent>
+  )
+}
+
 function AnnualReportView({
   data,
   annual,
@@ -863,6 +874,7 @@ function AnnualReportView({
   const messageTotal = data.kpis.find((item) => item.label === '消息总数')?.value ?? '0'
   const messageTotalNumber = data.types.reduce((sum, item) => sum + item.count, 0)
   const typeRows = annualTypeRows(data.types)
+  const maxPhraseCount = annual.phrases[0]?.count ?? 1
   const [firstMessageTime, lastMessageTime] = data.range.split(' → ')
   const chapters = [
     'overview', 'top-friends', 'companions', 'rhythm', 'initiative', 'response',
@@ -1407,12 +1419,44 @@ function AnnualReportView({
           ghost=""
         >
           {phrase ? (
-            <>
-              <AnnualFigure value={`「${phrase.text}」`} unit={`${phrase.count} 次`} label="最常说的短句" />
-              <div className="annual-phrases">
-                {annual.phrases.map((item) => <span className="annual-phrase" key={item.text}>{item.text}<strong>{item.count}</strong></span>)}
+            <div className="annual-phrase-layout">
+              <ol className="annual-phrase-list" aria-label="口头禅前 10 名">
+                {annual.phrases.slice(0, 10).map((item, index) => (
+                  <li key={item.text}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button type="button" className="annual-phrase-row">
+                          <span className="rank">{index + 1}</span>
+                          <span className="text">{item.text}</span>
+                          <span className="leader" aria-hidden="true" />
+                          <span className="count">{item.count} 次</span>
+                        </button>
+                      </TooltipTrigger>
+                      <PhraseTooltip rank={index + 1} phrase={item} />
+                    </Tooltip>
+                  </li>
+                ))}
+              </ol>
+              <div className="annual-phrase-cloud" aria-label="口头禅词云">
+                {annual.phrases.slice(0, 40).map((item, index) => {
+                  const size = Math.round(13 + Math.sqrt(item.count / maxPhraseCount) * 25)
+                  return (
+                    <Tooltip key={item.text}>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          className={`annual-cloud-word color-${index % 4}`}
+                          style={{ fontSize: `${size}px` }}
+                        >
+                          {item.text}
+                        </button>
+                      </TooltipTrigger>
+                      <PhraseTooltip rank={index + 1} phrase={item} />
+                    </Tooltip>
+                  )
+                })}
               </div>
-            </>
+            </div>
           ) : <p className="annual-missing">没有重复出现 2 次以上的短句。</p>}
         </AnnualChapter>
 

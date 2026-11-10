@@ -731,7 +731,7 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<Strin
     });
     let mut phrase_rows: Vec<(&String, &usize)> = stats.phrases.iter().filter(|(_, count)| **count >= 2).collect();
     phrase_rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-    phrase_rows.truncate(10);
+    phrase_rows.truncate(50);
     let phrases = phrase_rows.into_iter().map(|(text, count)| serde_json::json!({"text": text, "count": count})).collect::<Vec<_>>();
     let first_activity = aggregate
         .days
