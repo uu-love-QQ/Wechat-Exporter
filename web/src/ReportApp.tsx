@@ -1278,8 +1278,8 @@ function AnnualReportView({
           {streak ? <AnnualFigure value={String(streak.days)} unit="天" label={`和 ${streak.displayName} 连续聊天`} /> : <AnnualFigure value="-" label="没有连续 2 天以上的好友" />}
           <div className="annual-lead">
             {streak && <p>你和 <PersonName person={streak} /> 从 {streak.startDate} 到 {streak.endDate}，连续 {streak.days} 天每天都有聊天。</p>}
-            {annual.accountStreak && <p>你自己最长连续 {annual.accountStreak.days} 天，每天都至少和一位好友聊过。</p>}
-            {busiest && <p>{busiest.date} 是你私聊最多的一天，共 {busiest.messages} 条{busiest.topFriend ? <>，聊得最多的是 <PersonName person={busiest.topFriend} /></> : ''}。</p>}
+            {annual.accountStreak && <p>你自己最长连续 {annual.accountStreak.days} 天，从 {annual.accountStreak.startDate} 到 {annual.accountStreak.endDate}，每天都至少和一位好友聊过。</p>}
+            {busiest && <p>{busiest.date} 是你私聊最多的一天，共 {busiest.messages} 条{busiest.topFriend ? <>，聊得最多的是 <PersonName person={busiest.topFriend} />，共 {busiest.topFriend.messages} 条</> : ''}。</p>}
           </div>
           {(streak || annual.accountStreak) && (
             <div className="annual-timeline" aria-label="连续聊天时间线">
@@ -1337,7 +1337,7 @@ function AnnualReportView({
           id="phrases"
           index={10}
           title="你的口头禅"
-          question={phrase ? `你最常说的话是「${phrase.text}」？` : '你最常说的话是什么？'}
+          question={phrase ? `你最常说的话是「${phrase.text}」` : '你最常说的话是什么？'}
           hint="只看你发出的文字消息，整条消息完全相同才算同一句；2–20 个字，至少出现 2 次。"
           accent="quantity"
           ghost=""
