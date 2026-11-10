@@ -345,8 +345,16 @@ fn run_contacts(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Re
         .values()
         .filter(|contact| match kind {
             ContactKind::All => true,
-            ContactKind::Friend => !contact.is_group,
-            ContactKind::Group => contact.is_group,
+            ContactKind::Friend => contact.kind == "friend",
+            ContactKind::Group => contact.kind == "group",
+            ContactKind::Official => contact.kind == "official"
+                && contact.official_account_kind.as_deref() != Some("service"),
+            ContactKind::Service => contact.kind == "official"
+                && contact.official_account_kind.as_deref() == Some("service"),
+            ContactKind::Enterprise => contact.is_enterprise && !contact.is_group,
+            ContactKind::EnterpriseGroup => contact.is_enterprise && contact.is_group,
+            ContactKind::Former => contact.is_former_friend,
+            ContactKind::Blocked => contact.is_blocked,
         })
         .filter(|contact| {
             let Some(query) = query.as_deref() else { return true };
@@ -387,7 +395,13 @@ fn run_contacts(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Re
             "remark": contact.remark,
             "alias": contact.alias,
             "displayName": contact.display_name(),
+            "kind": contact.kind,
             "isGroup": contact.is_group,
+            "isEnterprise": contact.is_enterprise,
+            "isBlocked": contact.is_blocked,
+            "isFormerFriend": contact.is_former_friend,
+            "officialAccountKind": contact.official_account_kind,
+            "officialAccountType": contact.official_account_type,
             "avatarUrl": contact.avatar_url,
         }))
         .collect::<Vec<_>>();
@@ -396,7 +410,17 @@ fn run_contacts(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Re
         "generator": util::GENERATOR,
         "account_id": account_id,
         "query": options.list_query,
-        "kind": match kind { ContactKind::All => "all", ContactKind::Friend => "friend", ContactKind::Group => "group" },
+        "kind": match kind {
+            ContactKind::All => "all",
+            ContactKind::Friend => "friend",
+            ContactKind::Group => "group",
+            ContactKind::Official => "official",
+            ContactKind::Service => "service",
+            ContactKind::Enterprise => "enterprise",
+            ContactKind::EnterpriseGroup => "enterprise-group",
+            ContactKind::Former => "former",
+            ContactKind::Blocked => "blocked",
+        },
         "total": rows.len(),
         "contacts": items,
         "next_cursor": next_cursor,

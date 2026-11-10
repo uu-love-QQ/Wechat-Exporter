@@ -175,10 +175,22 @@ pub struct ListArgs {
 pub enum ContactKind {
     /// 全部联系人与群聊
     All,
-    /// 仅好友
+    /// 好友（含企业好友）
     Friend,
-    /// 仅群聊
+    /// 群聊（含企业群聊）
     Group,
+    /// 公众号（订阅号）
+    Official,
+    /// 服务号
+    Service,
+    /// 企业好友
+    Enterprise,
+    /// 企业群聊
+    EnterpriseGroup,
+    /// 曾经的好友
+    Former,
+    /// 黑名单
+    Blocked,
 }
 
 #[derive(Args, Debug)]

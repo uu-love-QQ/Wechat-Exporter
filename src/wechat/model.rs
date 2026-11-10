@@ -8,6 +8,14 @@ pub struct Contact {
     pub alias: String,
     pub is_group: bool,
     pub avatar_url: String,
+    /// friend, group, official, former_friend, blocked, other
+    pub kind: String,
+    /// subscription, service, enterprise, unknown (official accounts only)
+    pub official_account_kind: Option<String>,
+    pub official_account_type: Option<i64>,
+    pub is_enterprise: bool,
+    pub is_blocked: bool,
+    pub is_former_friend: bool,
 }
 
 impl Contact {
