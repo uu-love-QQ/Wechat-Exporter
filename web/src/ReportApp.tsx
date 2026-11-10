@@ -887,13 +887,13 @@ function PhraseWordCloud({ phrases, dark }: { phrases: Array<{ text: string; cou
       },
       series: [{
         type: 'wordCloud',
-        shape: 'circle',
+        shape: 'square',
         left: 'center',
         top: 'center',
-        width: '96%',
-        height: '92%',
-        gridSize: 6,
-        sizeRange: [12, 42],
+        width: '100%',
+        height: '100%',
+        gridSize: 4,
+        sizeRange: [11, 56],
         rotationRange: [0, 90],
         rotationStep: 90,
         drawOutOfBound: false,
@@ -1505,13 +1505,22 @@ function AnnualReportView({
           id="phrases"
           index={10}
           title="你的口头禅"
-          question={phrase ? `你最常说的话是「${phrase.text}」` : '你最常说的话是什么？'}
+          question="这一年你最常说的话是什么？"
           hint="只看你发出的文字消息，整条消息完全相同才算同一句；2–20 个字，至少出现 2 次。"
           accent="quantity"
           ghost=""
         >
           {phrase ? (
-            <div className="annual-phrase-layout">
+            <>
+              <div className="annual-phrase-headline">
+                <strong>「{phrase.text}」</strong>
+                <span>{formatNumber(phrase.count)} 次</span>
+              </div>
+              <p className="annual-phrase-lead">
+                你发出的消息里，<strong>「{phrase.text}」</strong>出现了 <strong>{formatNumber(phrase.count)}</strong> 次
+                {annual.phrases[1] && <>，其次是<strong>「{annual.phrases[1].text}」</strong>（<strong>{formatNumber(annual.phrases[1].count)}</strong> 次）</>}。
+              </p>
+              <div className="annual-phrase-layout">
               <ol className="annual-phrase-list" aria-label="口头禅前 10 名">
                 {annual.phrases.slice(0, 10).map((item, index) => (
                   <li key={item.text}>
@@ -1533,6 +1542,7 @@ function AnnualReportView({
                 <PhraseWordCloud phrases={cloudPhrases} dark={dark} />
               </div>
             </div>
+            </>
           ) : <p className="annual-missing">没有重复出现 2 次以上的短句。</p>}
         </AnnualChapter>
 

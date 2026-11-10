@@ -644,6 +644,11 @@
 .annual-companion .person { display: flex; align-items: center; gap: 6px; margin-top: 2px; min-width: 0; font-weight: 600; }
 .annual-companion .person > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .annual-companion .count { display: block; margin-top: 2px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.annual-phrase-headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px; margin-top: 8px; }
+.annual-phrase-headline strong { color: var(--card-foreground); font-size: clamp(34px, 5vw, 52px); font-weight: 700; letter-spacing: -.03em; line-height: 1.1; }
+.annual-phrase-headline span { color: var(--muted-foreground); font-size: 14px; font-variant-numeric: tabular-nums; }
+.annual-phrase-lead { max-width: 48em; margin: 10px 0 18px; color: var(--card-foreground); font-size: 14px; line-height: 1.8; }
+.annual-phrase-lead strong { color: var(--annual-accent); font-weight: 700; }
 .annual-phrase-layout { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 22px; margin-top: 8px; align-items: stretch; }
 .annual-phrase-list { display: flex; flex-direction: column; justify-content: center; gap: 2px; margin: 0; padding: 0 20px 0 0; border-right: 1px solid var(--border); list-style: none; }
 .annual-phrase-row { display: flex; align-items: baseline; width: 100%; gap: 8px; padding: 7px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: help; }
@@ -652,8 +657,8 @@
 .annual-phrase-row .text { max-width: 45%; overflow: hidden; color: var(--card-foreground); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .annual-phrase-row .leader { flex: 1; min-width: 10px; margin-bottom: 3px; border-bottom: 1px dotted color-mix(in oklab, var(--muted-foreground) 55%, transparent); }
 .annual-phrase-row .count { flex: 0 0 auto; color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.annual-phrase-cloud { position: relative; min-height: 320px; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--muted); }
-.annual-wordcloud-chart { width: 100%; height: 320px; }
+.annual-phrase-cloud { position: relative; min-height: 340px; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--muted); }
+.annual-wordcloud-chart { width: 100%; height: 340px; }
 .annual-cloud-tooltip { display: flex; width: 132px; flex-direction: column; align-items: flex-start; gap: 5px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); color: var(--card-foreground); box-shadow: 0 12px 28px color-mix(in oklab, var(--foreground) 16%, transparent); }
 .annual-cloud-tooltip-rank { color: var(--muted-foreground); font-size: 10px; }
 .annual-cloud-tooltip-word { color: var(--muted-foreground); font-size: 13px; }
@@ -669,7 +674,7 @@
   .annual-phrase-layout { grid-template-columns: 1fr; gap: 16px; }
   .annual-phrase-list { padding: 0 0 12px; border-right: 0; border-bottom: 1px solid var(--border); }
   .annual-phrase-cloud { min-height: 260px; }
-  .annual-wordcloud-chart { height: 260px; }
+  .annual-wordcloud-chart { height: 300px; }
 }
 .annual-phrases { display: flex; flex-wrap: wrap; gap: 8px; }
 .annual-phrase { padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--muted); font-size: 12px; }
