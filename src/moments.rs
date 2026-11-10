@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use base64::Engine as _;
 use chrono::{Datelike, Local, TimeZone};
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap};
@@ -98,11 +99,12 @@ pub fn load_moments_from_path(
 
     let timeline_re = Regex::new(r"(?is)<TimelineObject\b.*?</TimelineObject>").expect("valid timeline regex");
     let content_object_re = Regex::new(r"(?is)<ContentObject\b.*?</ContentObject>").expect("valid content regex");
-    let like_list_re = Regex::new(r"(?is)<(?:likeList|like_user_list)\b.*?</(?:likeList|like_user_list)>").expect("valid like list regex");
+    let like_list_re = Regex::new(r"(?is)<(?:LikeUserList|likeUserList|likeList|like_user_list)\b.*?</(?:LikeUserList|likeUserList|likeList|like_user_list)>").expect("valid like list regex");
     let username_re = Regex::new(r"(?is)<username\b[^>]*>(.*?)</username>").expect("valid username regex");
     let self_id = self_username.unwrap_or("").trim().to_lowercase();
     let mut stats = MomentsStats::default();
     let mut posts: HashMap<i64, (String, bool, Vec<String>)> = HashMap::new();
+    let mut seen_posts = std::collections::HashSet::new();
     let mut synthetic_id = -1i64;
 
     while let Ok(Some(row)) = rows.next() {
@@ -114,7 +116,7 @@ pub fn load_moments_from_path(
                 id
             });
         let poster = row_text(&row, user_index);
-        let content = row_text(&row, content_index);
+        let content = row_content(&row, content_index);
         let table_time = time_index.map(|index| row_i64(&row, index).unwrap_or(0)).unwrap_or(0);
         let Some(timeline) = timeline_re.find(&content).map(|value| value.as_str()) else {
             continue;
@@ -168,7 +170,7 @@ pub fn load_moments_from_path(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        if is_self {
+        if is_self && seen_posts.insert(post_id) {
             stats.posts += 1;
             *stats.post_types.entry(label.to_string()).or_default() += 1;
         }
@@ -236,11 +238,9 @@ pub fn load_moments_from_path(
                 continue;
             }
             if *is_self {
-                if message_table.is_none() {
-                    stats.likes_received += 1;
-                    if liker_id != self_id {
-                        *stats.top_likers.entry(liker.clone()).or_default() += 1;
-                    }
+                stats.likes_received += 1;
+                if liker_id != self_id {
+                    *stats.top_likers.entry(liker.clone()).or_default() += 1;
                 }
             } else if liker_id == self_id && author.to_lowercase() != self_id {
                 stats.likes_given += 1;
@@ -253,6 +253,64 @@ pub fn load_moments_from_path(
         return Ok(None);
     }
     Ok(Some(stats))
+}
+
+fn row_content(row: &rusqlite::Row<'_>, index: usize) -> String {
+    let Some(value) = row.get::<_, Option<rusqlite::types::Value>>(index).ok().flatten() else {
+        return String::new();
+    };
+    let raw = match value {
+        rusqlite::types::Value::Text(value) => return decode_sns_text(value),
+        rusqlite::types::Value::Blob(bytes) => bytes,
+        _ => return String::new(),
+    };
+    let bytes = if raw.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        let mut decoder = match ruzstd::decoding::StreamingDecoder::new(raw.as_slice()) {
+            Ok(decoder) => decoder,
+            Err(_) => return String::new(),
+        };
+        let mut decoded = Vec::new();
+        use std::io::Read;
+        if decoder.read_to_end(&mut decoded).is_err() {
+            return String::new();
+        }
+        decoded
+    } else {
+        raw
+    };
+    String::from_utf8_lossy(&bytes).trim().to_string()
+}
+
+fn decode_sns_text(value: String) -> String {
+    let text = value.trim().to_string();
+    if text.is_empty() || text.starts_with('<') {
+        return text;
+    }
+    let compact: String = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+    if compact.len() >= 16 && compact.len() % 2 == 0 && compact.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        if let Ok(bytes) = hex::decode(&compact) {
+            if bytes.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+                if let Ok(mut decoder) = ruzstd::decoding::StreamingDecoder::new(bytes.as_slice()) {
+                    let mut decoded = Vec::new();
+                    use std::io::Read;
+                    if decoder.read_to_end(&mut decoded).is_ok() {
+                        return String::from_utf8_lossy(&decoded).trim().to_string();
+                    }
+                }
+            }
+            if let Ok(text) = String::from_utf8(bytes) {
+                return text.trim().to_string();
+            }
+        }
+    }
+    if compact.len() >= 24 && compact.len() % 4 == 0 {
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&compact) {
+            if let Ok(text) = String::from_utf8(bytes) {
+                return text.trim().to_string();
+            }
+        }
+    }
+    text
 }
 
 fn row_text(row: &rusqlite::Row<'_>, index: usize) -> String {
@@ -306,6 +364,27 @@ mod tests {
     }
 
     #[test]
+    fn handles_weflow_like_user_list_tags() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sns = dir.path().join("sns");
+        fs::create_dir_all(&sns).unwrap();
+        let db = rusqlite::Connection::open(sns.join("sns.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE SnsTimeLine (user_name TEXT, content TEXT);
+             INSERT INTO SnsTimeLine VALUES ('', '<TimelineObject><username>me</username><createTime>1700000000</createTime><ContentObject><type>1</type></ContentObject><LikeUserList><LikeUser><username>friend</username></LikeUser></LikeUserList></TimelineObject>');
+             INSERT INTO SnsTimeLine VALUES ('', '<TimelineObject><username>friend</username><createTime>1700000001</createTime><ContentObject><type>2</type></ContentObject><LikeUserList><LikeUser><username>me</username></LikeUser></LikeUserList></TimelineObject>');",
+        )
+        .unwrap();
+        drop(db);
+        let stats = load_moments(Some(dir.path()), None, None, true, Some("me"), 0).expect("moments");
+        assert_eq!(stats.posts, 1);
+        assert_eq!(stats.likes_received, 1);
+        assert_eq!(stats.likes_given, 1);
+        assert_eq!(stats.top_likers.get("friend"), Some(&1));
+        assert_eq!(stats.top_liked_authors.get("friend"), Some(&1));
+    }
+
+    #[test]
     fn reads_likes_from_sns_message_and_uses_xml_author() {
         let dir = tempfile::TempDir::new().unwrap();
         let sns = dir.path().join("sns");
@@ -334,7 +413,8 @@ pub fn run(options: &crate::cli::ValidatedCli, layout: &crate::wechat::discover:
         .context("sns.db not found; make sure the WeChat account has moments data")?;
     let self_username = options
         .self_username
-        .clone()
+        .as_deref()
+        .map(crate::util::clean_account_id)
         .or_else(|| layout.account_root.as_ref().and_then(|root| root.file_name()).and_then(|name| name.to_str()).map(crate::util::clean_account_id));
     let stats = load_moments_from_path(
         &path,
