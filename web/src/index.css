@@ -549,6 +549,22 @@
 .annual-heat-legend { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; color: var(--muted-foreground); font-size: 10px; }
 .annual-heat-swatches { display: inline-flex; gap: 3px; }
 .annual-heat-swatches i { display: block; width: 10px; height: 10px; border-radius: 2px; background: var(--annual-time-fill); }
+.annual-balance-person { display: flex; align-items: center; gap: 14px; margin-top: 4px; }
+.annual-balance-avatar { width: 64px; height: 64px; border: 2px solid var(--podium-gold); border-radius: 16px; }
+.annual-balance-avatar [data-slot='avatar-image'], .annual-balance-avatar [data-slot='avatar-fallback'] { border-radius: 12px; }
+.annual-balance-avatar [data-slot='avatar-fallback'] { color: var(--podium-gold); background: var(--podium-gold-soft); font-size: 20px; font-weight: 650; }
+.annual-balance-person > strong { overflow: hidden; color: var(--card-foreground); font-size: 22px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.annual-balance-copy { max-width: 46em; margin: 14px 0 0; color: var(--card-foreground); font-size: 14px; line-height: 1.8; }
+.annual-balance-copy strong { color: var(--card-foreground); font-weight: 700; font-variant-numeric: tabular-nums; }
+.annual-balance-legend { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; margin-top: 18px; color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
+.annual-balance-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.annual-balance-legend i { display: block; width: 8px; height: 8px; border-radius: 2px; }
+.annual-balance-legend i.me { background: var(--annual-time-fill); }
+.annual-balance-legend i.ta { background: var(--annual-people-fill); }
+.annual-balance-bar { display: flex; height: 10px; margin-top: 7px; overflow: hidden; border-radius: 999px; background: var(--muted); }
+.annual-balance-bar span { display: block; height: 100%; }
+.annual-balance-bar span.me { background: var(--annual-time-fill); }
+.annual-balance-bar span.ta { background: var(--annual-people-fill); }
 .annual-fading-person { display: flex; align-items: center; gap: 14px; margin-top: 4px; }
 .annual-fading-avatar { width: 64px; height: 64px; border: 2px solid var(--podium-gold); border-radius: 16px; }
 .annual-fading-avatar [data-slot='avatar-image'], .annual-fading-avatar [data-slot='avatar-fallback'] { border-radius: 12px; }

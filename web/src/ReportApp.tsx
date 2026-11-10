@@ -1282,13 +1282,32 @@ function AnnualReportView({
           accent="people"
           ghost=""
         >
-          {balance ? (
-            <>
-              <AnnualFigure value={balance.displayName} label={`平衡度 ${Math.round(balance.balance * 100)}%`} />
-              <div className="annual-lead"><p><PersonName person={balance} /> 你给 TA 发了 {balance.sent} 条，TA 给你发了 {balance.received} 条，是收发最接近的一位。</p></div>
-              <AnnualSplit first={{ label: '你发', value: balance.sent }} second={{ label: 'TA 发', value: balance.received }} title="收发对比" />
-            </>
-          ) : <p className="annual-missing">还没有双方都发过 50 条以上消息的好友。</p>}
+          {balance ? (() => {
+            const total = balance.sent + balance.received
+            const mineShare = total > 0 ? Math.round((balance.sent / total) * 100) : 0
+            const otherShare = total > 0 ? 100 - mineShare : 0
+            return (
+              <div className="annual-balance">
+                <div className="annual-balance-person">
+                  <PersonAvatar person={balance} size="lg" className="annual-balance-avatar" />
+                  <strong>{balance.displayName}</strong>
+                </div>
+                <p className="annual-balance-copy">
+                  你给 {balance.displayName} 发了 <strong>{formatNumber(balance.sent)}</strong> 条，TA 给你发了{' '}
+                  <strong>{formatNumber(balance.received)}</strong> 条，较少的一方是较多一方的{' '}
+                  <strong>{Math.round(balance.balance * 100)}%</strong>，是收发最接近的一位。
+                </p>
+                <div className="annual-balance-legend">
+                  <span><i className="me" aria-hidden="true" />你发 {mineShare}% · {formatNumber(balance.sent)} 条</span>
+                  <span><i className="ta" aria-hidden="true" />TA 发 {otherShare}% · {formatNumber(balance.received)} 条</span>
+                </div>
+                <div className="annual-balance-bar" role="img" aria-label={`你发 ${balance.sent} 条，TA 发 ${balance.received} 条`}>
+                  <span className="me" style={{ width: `${mineShare}%` }} />
+                  <span className="ta" style={{ width: `${otherShare}%` }} />
+                </div>
+              </div>
+            )
+          })() : <p className="annual-missing">还没有双方都发过 50 条以上消息的好友。</p>}
         </AnnualChapter>
 
         <AnnualChapter
