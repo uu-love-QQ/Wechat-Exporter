@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CalendarDays, Info, MessagesSquare, Moon, Sun, Users } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -29,6 +29,8 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import * as echarts from 'echarts'
+import 'echarts-wordcloud'
 
 export interface ReportKpi {
   label: string
@@ -848,6 +850,92 @@ function PersonName({ person }: { person: { displayName: string; avatar?: string
   )
 }
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] ?? char))
+}
+
+function PhraseWordCloud({ phrases, dark }: { phrases: Array<{ text: string; count: number }>; dark: boolean }) {
+  const container = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const element = container.current
+    if (!element) return
+    echarts.getInstanceByDom(element)?.dispose()
+    const chart = echarts.init(element, undefined, { renderer: 'canvas' })
+    const colors = dark
+      ? ['#aebafa', '#f2c66d', '#a9b8ce', '#e8effb']
+      : ['#4656a8', '#8a5a00', '#6b7280', '#0f172a']
+    const data = phrases.map((phrase, index) => ({
+      name: phrase.text,
+      value: phrase.count,
+      rank: index + 1,
+      textStyle: { color: colors[index % colors.length] },
+    }))
+    try {
+      chart.setOption({
+      tooltip: {
+        trigger: 'item',
+        confine: true,
+        backgroundColor: 'transparent',
+        borderWidth: 0,
+        padding: 0,
+        extraCssText: 'box-shadow:none;',
+        formatter: (params: any) => {
+          const item = params.data as { rank: number; name: string; value: number }
+          return `<div class="annual-cloud-tooltip"><span class="annual-cloud-tooltip-rank">第 ${item.rank} 名</span><span class="annual-cloud-tooltip-word">[${escapeHtml(item.name)}]</span><span class="annual-cloud-tooltip-line"></span><span class="annual-cloud-tooltip-count">${item.value} 次</span></div>`
+        },
+      },
+      series: [{
+        type: 'wordCloud',
+        shape: 'circle',
+        left: 'center',
+        top: 'center',
+        width: '96%',
+        height: '92%',
+        gridSize: 6,
+        sizeRange: [12, 42],
+        rotationRange: [-90, 90],
+        rotationStep: 45,
+        drawOutOfBound: false,
+        layoutAnimation: false,
+        textStyle: {
+          fontFamily: 'Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif',
+          fontWeight: 600,
+        },
+        emphasis: {
+          textStyle: { textShadowBlur: 8, textShadowColor: colors[0] ?? '#4f7cff' },
+        },
+        data,
+      }],
+    })
+    } catch (error) {
+      console.error('word cloud failed', error)
+      element.dataset.cloudError = String(error)
+    }
+    let flushTries = 0
+    const flushTimer = window.setInterval(() => {
+      if (chart.isDisposed() || element.querySelector('canvas') || flushTries++ > 20) {
+        window.clearInterval(flushTimer)
+        return
+      }
+      chart.resize()
+      chart.getZr().flush()
+    }, 100)
+    const observer = new ResizeObserver(() => {
+      chart.resize()
+      chart.getZr().flush()
+    })
+    observer.observe(element)
+    return () => {
+      window.clearInterval(flushTimer)
+      observer.disconnect()
+      chart.dispose()
+    }
+  }, [phrases, dark])
+
+  return <div ref={container} className="annual-wordcloud-chart" role="img" aria-label="口头禅词云" />
+}
+
 function PhraseTooltip({ rank, phrase }: { rank: number; phrase: { text: string; count: number } }) {
   return (
     <TooltipContent side="top" sideOffset={7} className="annual-phrase-tooltip">
@@ -878,7 +966,7 @@ function AnnualReportView({
   const messageTotal = data.kpis.find((item) => item.label === '消息总数')?.value ?? '0'
   const messageTotalNumber = data.types.reduce((sum, item) => sum + item.count, 0)
   const typeRows = annualTypeRows(data.types)
-  const maxPhraseCount = annual.phrases[0]?.count ?? 1
+  const cloudPhrases = useMemo(() => annual.phrases.slice(0, 40), [annual.phrases])
   const [firstMessageTime, lastMessageTime] = data.range.split(' → ')
   const chapters = [
     'overview', 'top-friends', 'companions', 'rhythm', 'initiative', 'response',
@@ -1441,24 +1529,8 @@ function AnnualReportView({
                   </li>
                 ))}
               </ol>
-              <div className="annual-phrase-cloud" aria-label="口头禅词云">
-                {annual.phrases.slice(0, 40).map((item, index) => {
-                  const size = Math.round(13 + Math.sqrt(item.count / maxPhraseCount) * 25)
-                  return (
-                    <Tooltip key={item.text}>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          className={`annual-cloud-word color-${index % 4}${index % 6 === 3 && item.text.length <= 6 ? ' is-vertical' : ''}`}
-                          style={{ fontSize: `${size}px` }}
-                        >
-                          {item.text}
-                        </button>
-                      </TooltipTrigger>
-                      <PhraseTooltip rank={index + 1} phrase={item} />
-                    </Tooltip>
-                  )
-                })}
+              <div className="annual-phrase-cloud">
+                <PhraseWordCloud phrases={cloudPhrases} dark={dark} />
               </div>
             </div>
           ) : <p className="annual-missing">没有重复出现 2 次以上的短句。</p>}
