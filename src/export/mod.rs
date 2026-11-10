@@ -672,9 +672,14 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
         } else {
             None
         };
+        let system = message.type_name == "系统消息"
+            || message.type_name == "拍一拍"
+            || message.app_subtype == Some(62)
+            || matches!(message.base_type, 10000 | 10002);
         messages.push(serde_json::json!({
             "index": message.index,
             "sender": message.sender_name,
+            "system": system,
             "time": timestamp,
             "day": day,
             "mine": message.is_send,

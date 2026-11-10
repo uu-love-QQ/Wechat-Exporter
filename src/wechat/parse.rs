@@ -116,6 +116,42 @@ fn clean_system(content: &str) -> String {
     }
 }
 
+fn clean_pat(content: &str, xml: &str) -> String {
+    let extract_title = |source: &str| {
+        let lower = source.to_ascii_lowercase();
+        if let Some(start) = lower.find("<title>") {
+            if let Some(end) = lower[start + 7..].find("</title>") {
+                let value = source[start + 7..start + 7 + end]
+                    .replace("<![CDATA[", "")
+                    .replace("]]>", "");
+                return Some(value.trim().to_string());
+            }
+        }
+        None
+    };
+    let raw = extract_title(xml)
+        .or_else(|| extract_title(content))
+        .unwrap_or_else(|| content.to_string());
+    let mut text = raw.trim().to_string();
+    if let Some(stripped) = text.strip_prefix("[拍一拍]") {
+        text = stripped.trim().to_string();
+    }
+    // Pat XML appends internal ids and numeric fields after the human-readable
+    // title. Cut them when they start at a numeric token cluster.
+    if let Ok(re) = regex::Regex::new(r"\s+\d{1,3}(?:\s+\d{1,3}){2,}.*$") {
+        text = re.replace(&text, "").to_string();
+    }
+    if let Ok(re) = regex::Regex::new(r"accountId_[A-Za-z0-9_-]+") {
+        text = re.replace_all(&text, "").to_string();
+    }
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        "拍一拍".to_string()
+    } else {
+        text
+    }
+}
+
 fn app_type(xml: &str, fallback_sub: i64) -> Option<i64> {
     xml_value(xml, "type")
         .and_then(|value| value.trim().parse::<i64>().ok())
@@ -566,16 +602,15 @@ pub fn parse_content(
     let body = body.trim_matches('\0').trim().to_string();
     let xml = normalize_xml(&body);
     let app_subtype = app_type(&xml, sub_type);
+    let is_pat = full_type == 266_287_972_401
+        || app_subtype == Some(62)
+        || xml.contains("<pat")
+        || body.starts_with("[拍一拍]");
 
-    if full_type == 266_287_972_401 {
-        let text = clean_system(&body);
+    if is_pat {
         return ParsedContent {
-            text: if text.is_empty() {
-                "[拍一拍]".to_string()
-            } else {
-                format!("[拍一拍] {text}")
-            },
-            type_name: "其他消息".to_string(),
+            text: clean_pat(&body, &xml),
+            type_name: "拍一拍".to_string(),
             app_subtype: Some(62),
             media: None,
             quote: None,
@@ -834,6 +869,19 @@ mod tests {
         );
         assert_eq!(parsed.type_name, "系统消息");
         assert_eq!(parsed.text, "Alice 撤回了一条消息");
+    }
+
+    #[test]
+    fn cleans_pat_system_message() {
+        let parsed = parse_content(
+            "<sysmsg type=\"pat\"><pat><title>我拍了拍 \"Alice\" 亲密值＋2</title><template>${wxid_a}拍了拍${wxid_b}</template><fromusername>wxid_a</fromusername><pattedusername>wxid_b</pattedusername><pattemplate>abc</pattemplate></pat><text>62 0 0 0 0 wxid_a wxid_b</text></sysmsg>",
+            49,
+            62,
+            49,
+        );
+        assert_eq!(parsed.type_name, "拍一拍");
+        assert!(parsed.text.contains("我拍了拍"));
+        assert!(!parsed.text.contains("62 0 0"));
     }
 
     #[test]

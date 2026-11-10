@@ -40,6 +40,7 @@ export interface ChatMessage {
   time: string
   day: string
   mine: boolean
+  system?: boolean
   content: string
   quote: QuoteRef | null
   record: ChatRecord | null

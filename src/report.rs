@@ -115,6 +115,13 @@ fn year_bounds(year: i32) -> (Option<i64>, Option<i64>) {
     (start, end)
 }
 
+fn is_report_content_message(message: &ExportMessage) -> bool {
+    message.type_name != "系统消息"
+        && message.type_name != "拍一拍"
+        && message.app_subtype != Some(62)
+        && !matches!(message.base_type, 10000 | 10002)
+}
+
 fn load_messages(
     store: &Store,
     conversation: &Conversation,
@@ -123,9 +130,11 @@ fn load_messages(
     start_ms: Option<i64>,
     end_ms: Option<i64>,
 ) -> Result<Vec<ExportMessage>> {
-    store
+    let mut messages = store
         .load_messages(&conversation.id, self_username, contacts, start_ms, end_ms)
-        .with_context(|| format!("failed to load messages for {}", conversation.id))
+        .with_context(|| format!("failed to load messages for {}", conversation.id))?;
+    messages.retain(is_report_content_message);
+    Ok(messages)
 }
 
 #[derive(Default)]
@@ -933,7 +942,8 @@ fn load_conversations_parallel(
                         end_ms,
                     );
                     match loaded {
-                        Ok(messages) => {
+                        Ok(mut messages) => {
+                            messages.retain(is_report_content_message);
                             if let Ok(mut results) = results.lock() {
                                 results[index] = Some((conversation.clone(), messages));
                             }
@@ -1120,7 +1130,7 @@ fn kpis_for(aggregate: &Aggregate, kind: &str) -> Vec<(String, String, String)> 
         }
         _ => {}
     }
-    metrics.push(("消息总数".into(), export::format_count(aggregate.total), "含系统与媒体消息".into()));
+    metrics.push(("消息总数".into(), export::format_count(aggregate.total), "含媒体消息，不含系统提示".into()));
     metrics.push(("总字数".into(), export::format_count(aggregate.chars), format!("平均 {avg:.1} 字/条")));
     metrics.push(("活跃天数".into(), export::format_count(aggregate.active_days()), format!("跨度 {} 天", aggregate.span_days())));
     metrics.push(("单日最高".into(), export::format_count(peak.1), peak.0));
@@ -1680,6 +1690,7 @@ fn parse_json_conversation(value: &serde_json::Value, path: &Path) -> Result<Loa
             record: None,
         });
     }
+    messages.retain(is_report_content_message);
     if messages.is_empty() {
         bail!("no messages in {}", path.display());
     }

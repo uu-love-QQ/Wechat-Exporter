@@ -429,6 +429,23 @@ function MessageRow({
   onPreview: (media: ChatMedia) => void
 }) {
   const mine = message.mine
+  if (message.system) {
+    return (
+      <div
+        id={`msg-${message.index}`}
+        tabIndex={-1}
+        className={cn(
+          'message-row flex justify-center rounded-2xl px-4 py-1 outline-none',
+          flash && 'message-flash',
+        )}
+      >
+        <div className="max-w-[90%] rounded-full border border-border bg-muted/60 px-3 py-1 text-center text-xs text-muted-foreground">
+          <time className="mr-2 opacity-60">{message.time}</time>
+          <span>{message.content}</span>
+        </div>
+      </div>
+    )
+  }
   return (
     <div
       id={`msg-${message.index}`}
