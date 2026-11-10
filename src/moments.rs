@@ -121,7 +121,8 @@ pub fn load_moments_from_path(
         let Some(timeline) = timeline_re.find(&content).map(|value| value.as_str()) else {
             continue;
         };
-        let timestamp = crate::wechat::parse::xml_value(timeline, "createTime")
+        let timestamp = crate::wechat::parse::xml_value(&content, "createTime")
+            .or_else(|| crate::wechat::parse::xml_value(timeline, "createTime"))
             .and_then(|value| value.trim().parse::<i64>().ok())
             .unwrap_or(table_time);
         let timestamp = if timestamp > 1_000_000_000_000 { timestamp / 1000 } else { timestamp };
@@ -138,7 +139,7 @@ pub fn load_moments_from_path(
         let poster_id = poster.to_lowercase();
         let is_self = !self_id.is_empty() && poster_id == self_id;
         let content_object = content_object_re.find(timeline).map(|value| value.as_str());
-        let content_type = crate::wechat::parse::xml_value(timeline, "contentStyle")
+        let content_type = crate::wechat::parse::xml_value(&content, "contentStyle")
             .or_else(|| content_object.and_then(|value| crate::wechat::parse::xml_value(value, "type")))
             .or_else(|| crate::wechat::parse::xml_value(timeline, "contentType"))
             .or_else(|| crate::wechat::parse::xml_value(timeline, "type"))
@@ -156,7 +157,7 @@ pub fn load_moments_from_path(
             _ => "其他",
         };
         let xml_likes = like_list_re
-            .find(timeline)
+            .find(&content)
             .map(|block| {
                 username_re
                     .captures_iter(block.as_str())
@@ -219,16 +220,19 @@ pub fn load_moments_from_path(
                             if row_i64(&row, 1) != Some(1) {
                                 continue;
                             }
-                            if row_text(&row, 2).trim().to_lowercase() != self_id {
-                                continue;
-                            }
                             let Some(feed_id) = row_i64(&row, 0) else { continue };
                             let canonical = if posts.contains_key(&feed_id) { feed_id } else if posts.contains_key(&-feed_id) { -feed_id } else { feed_id.abs() };
                             let Some((author, is_self, _)) = posts.get(&canonical) else { continue };
-                            if *is_self || author.is_empty() || author.to_lowercase() == self_id {
+                            if *is_self {
+                                let liker = row_text(&row, 2).trim().to_string();
+                                let liker_id = liker.to_lowercase();
+                                if !liker.is_empty() && liker_id != self_id && seen_likes.insert((canonical, liker_id)) {
+                                    stats.likes_received += 1;
+                                    *stats.top_likers.entry(liker).or_default() += 1;
+                                }
+                            } else if author.is_empty() || author.to_lowercase() == self_id {
                                 continue;
-                            }
-                            if seen_likes.insert((canonical, self_id.clone())) {
+                            } else if seen_likes.insert((canonical, self_id.clone())) {
                                 stats.likes_given += 1;
                                 *stats.top_liked_authors.entry(author.clone()).or_default() += 1;
                             }
@@ -354,6 +358,26 @@ mod tests {
     }
 
     #[test]
+    fn reads_incoming_notification_likes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sns = dir.path().join("sns");
+        fs::create_dir_all(&sns).unwrap();
+        let db = rusqlite::Connection::open(sns.join("sns.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE SnsTimeLine (tid INTEGER PRIMARY KEY, user_name TEXT, content TEXT);
+             CREATE TABLE SnsMessage_tmp3 (feed_id INTEGER, type INTEGER, from_username TEXT, del_status INTEGER);
+             INSERT INTO SnsTimeLine VALUES (100, 'me', '<TimelineObject><createTime>1700000000</createTime><contentStyle>1</contentStyle></TimelineObject>');
+             INSERT INTO SnsMessage_tmp3 VALUES (100, 1, 'a', 0), (100, 1, 'b', 0), (100, 1, 'c', 0), (100, 1, 'd', 0), (100, 1, 'e', 0), (100, 1, 'f', 0), (100, 1, 'g', 0), (100, 1, 'me', 0);",
+        )
+        .unwrap();
+        drop(db);
+        let stats = load_moments(Some(dir.path()), None, None, true, Some("me"), 0).expect("moments");
+        assert_eq!(stats.posts, 1);
+        assert_eq!(stats.likes_received, 7);
+        assert_eq!(stats.top_likers.len(), 7);
+    }
+
+    #[test]
     fn recovers_outgoing_likes_from_notifications() {
         let dir = tempfile::TempDir::new().unwrap();
         let sns = dir.path().join("sns");
@@ -372,6 +396,27 @@ mod tests {
         assert_eq!(stats.posts, 1);
         assert_eq!(stats.likes_received, 0);
         assert_eq!(stats.likes_given, 1);
+        assert_eq!(stats.top_liked_authors.get("friend"), Some(&1));
+    }
+
+    #[test]
+    fn reads_like_list_outside_timeline_object() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sns = dir.path().join("sns");
+        fs::create_dir_all(&sns).unwrap();
+        let db = rusqlite::Connection::open(sns.join("sns.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE SnsTimeLine (tid INTEGER PRIMARY KEY, user_name TEXT, content TEXT);
+             INSERT INTO SnsTimeLine VALUES (100, 'me', '<TimelineObject><createTime>1700000000</createTime><contentStyle>1</contentStyle></TimelineObject><likeUserList><User><username>friend</username></User><User><username>other</username></User></likeUserList>');
+             INSERT INTO SnsTimeLine VALUES (101, 'friend', '<TimelineObject><createTime>1700000001</createTime><contentStyle>2</contentStyle></TimelineObject><likeUserList><User><username>me</username></User></likeUserList>');",
+        )
+        .unwrap();
+        drop(db);
+        let stats = load_moments(Some(dir.path()), None, None, true, Some("me"), 0).expect("moments");
+        assert_eq!(stats.posts, 1);
+        assert_eq!(stats.likes_received, 2);
+        assert_eq!(stats.likes_given, 1);
+        assert_eq!(stats.top_likers.get("friend"), Some(&1));
         assert_eq!(stats.top_liked_authors.get("friend"), Some(&1));
     }
 
