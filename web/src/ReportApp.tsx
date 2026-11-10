@@ -859,6 +859,10 @@ function PhraseTooltip({ rank, phrase }: { rank: number; phrase: { text: string;
   )
 }
 
+function FriendName({ name }: { name: string }) {
+  return <strong className="annual-friend-name">{name}</strong>
+}
+
 function AnnualReportView({
   data,
   annual,
@@ -1228,7 +1232,7 @@ function AnnualReportView({
               <PersonAvatar person={night} className="annual-night-avatar" />
               <strong className="annual-night-name">{night.displayName}</strong>
               <p>
-                深夜（00:00–05:59）陪你聊天最多的是 <strong>{night.displayName}</strong>：
+                深夜（00:00–05:59）陪你聊天最多的是 <FriendName name={night.displayName} />：
                 <strong>{formatNumber(night.nightMessages)}</strong> 条，占所有深夜私聊的{' '}
                 <strong>{Math.round(night.share * 100)}%</strong>。你的私聊里，深夜消息一共{' '}
                 <strong>{formatNumber(annual.nightTotal ?? (night.share > 0 ? Math.round(night.nightMessages / night.share) : 0))}</strong> 条，占全部的 <strong>{numberPercent(annual.nightShareOfAll)}</strong>。
@@ -1305,7 +1309,7 @@ function AnnualReportView({
                   <strong>{balance.displayName}</strong>
                 </div>
                 <p className="annual-balance-copy">
-                  你给 {balance.displayName} 发了 <strong>{formatNumber(balance.sent)}</strong> 条，TA 给你发了{' '}
+                  你给 <FriendName name={balance.displayName} /> 发了 <strong>{formatNumber(balance.sent)}</strong> 条，TA 给你发了{' '}
                   <strong>{formatNumber(balance.received)}</strong> 条，较少的一方是较多一方的{' '}
                   <strong>{Math.round(balance.balance * 100)}%</strong>，是收发最接近的一位。
                 </p>
@@ -1384,7 +1388,7 @@ function AnnualReportView({
                 <strong>{fading.displayName}</strong>
               </div>
               <p className="annual-fading-copy">
-                {chineseDate(fading.earlyStart)} 至 {chineseDate(fading.earlyEnd)}，你和 {fading.displayName} 聊了{' '}
+                {chineseDate(fading.earlyStart)} 至 {chineseDate(fading.earlyEnd)}，你和 <FriendName name={fading.displayName} /> 聊了{' '}
                 <strong>{formatNumber(fading.earlyMessages)}</strong> 条；{chineseDate(fading.lateStart)} 至 {chineseDate(fading.lateEnd)}，只聊了{' '}
                 <strong>{formatNumber(fading.lateMessages)}</strong> 条。<span>想念的话，可以打个招呼。</span>
               </p>
@@ -1445,7 +1449,7 @@ function AnnualReportView({
                       <TooltipTrigger asChild>
                         <button
                           type="button"
-                          className={`annual-cloud-word color-${index % 4}`}
+                          className={`annual-cloud-word color-${index % 4}${index % 6 === 3 && item.text.length <= 6 ? ' is-vertical' : ''}`}
                           style={{ fontSize: `${size}px` }}
                         >
                           {item.text}
