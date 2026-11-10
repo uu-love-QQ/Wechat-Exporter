@@ -472,6 +472,7 @@ fn debug_rows(
     key: Option<&[u8; 32]>,
     plaintext: bool,
     self_username: Option<&str>,
+    year: i32,
 ) -> Result<serde_json::Value> {
     let db = Db::open(path, key, plaintext)?;
     let tables = db.tables()?;
@@ -515,14 +516,26 @@ fn debug_rows(
             .and_then(|v| v.trim().parse::<i64>().ok());
         let style = crate::wechat::parse::xml_value(&content, "contentStyle")
             .or_else(|| crate::wechat::parse::xml_value(timeline, "contentStyle"));
+        if year != 0 {
+            let Some(ts) = xml_time else { continue };
+            let Some(date) = Local.timestamp_opt(ts, 0).single() else { continue };
+            if date.year() != year { continue; }
+        }
         let like_count = like_re.find(&content).map(|block| username_re.captures_iter(block.as_str()).count()).unwrap_or(0);
+        let content_type = crate::wechat::parse::xml_value(timeline, "type")
+            .or_else(|| crate::wechat::parse::xml_value(&content, "contentType"));
         items.push(serde_json::json!({
             "tid": ti.and_then(|i| row_i64(&row, i)),
             "author": author,
             "xmlCreateTime": xml_time,
             "tableTime": timei.and_then(|i| row_i64(&row, i)),
             "contentStyle": style,
+            "contentType": content_type,
+            "private": crate::wechat::parse::xml_value(&content, "private"),
+            "contentDesc": crate::wechat::parse::xml_value(&content, "contentDesc").map(|v| v.chars().take(80).collect::<String>()),
+            "hasMedia": content.contains("<mediaList"),
             "likeCount": like_count,
+            "commentCount": content.matches("<comment>").count(),
             "contentLength": content.len(),
             "contentStart": content.chars().take(80).collect::<String>(),
         }));
@@ -575,7 +588,7 @@ pub fn run(options: &crate::cli::ValidatedCli, layout: &crate::wechat::discover:
         "topLikedAuthors": ranked(&stats.top_liked_authors, 10).into_iter().map(|(username, count)| serde_json::json!({"username": username, "displayName": display(&username), "count": count})).collect::<Vec<_>>(),
     });
     if options.debug {
-        payload["debug"] = debug_rows(&path, options.key.as_ref(), options.plaintext, self_username.as_deref())?;
+        payload["debug"] = debug_rows(&path, options.key.as_ref(), options.plaintext, self_username.as_deref(), options.report_year)?;
     }
     if let Some(dir) = &options.output_dir {
         std::fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
