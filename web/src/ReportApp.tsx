@@ -133,7 +133,7 @@ export interface AnnualData {
     avatar?: string | null
   } | null
   phrases: Array<{ text: string; count: number }>
-  summary: Array<{ label: string; value: string; person?: string }>
+  summary: Array<{ label: string; value: string; person?: string; conversationId?: string; avatar?: string | null }>
   moments: {
     status: string
     posts: number
@@ -1288,6 +1288,10 @@ function AnnualReportView({
     () => annual.phrases.slice(0, 30).map((item) => ({ term: item.text, count: item.count })),
     [annual.phrases],
   )
+  const closingLabels = ['私聊消息', '聊得最多', '你先开口', '最长连续', '口头禅', '聊过的好友', '最常聊天', '你的平均回复', '私聊最多的一天', '朋友圈']
+  const closingRows = closingLabels
+    .map((label) => annual.summary.find((item) => item.label === label))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
   const [firstMessageTime, lastMessageTime] = data.range.split(' → ')
   const chapters = [
     'overview', 'top-friends', 'companions', 'rhythm', 'initiative', 'response',
@@ -1911,21 +1915,45 @@ function AnnualReportView({
           id="closing"
           index={12}
           title="尾声"
-          question="这些年的私聊，一页看完"
+          question={annual.year > 0 ? `${annual.year} 年的私聊，一页看完` : '这些年的私聊，一页看完'}
           hint="把年度报告里最重要的数字收在一起。"
           accent="quantity"
-          ghost="终"
+          ghost={annual.year > 0 ? String(annual.year) : '终'}
         >
-          <div className="annual-lead"><p>这些年，你和 {annual.friendCount ?? annual.topFriends.length} 位好友留下了 {data.kpis.find((item) => item.label === '消息总数')?.value ?? '0'} 条私聊消息。</p></div>
-          <ol className="annual-list">
-            {annual.summary.map((item, index) => (
-              <li key={`${item.label}-${index}`}>
-                <span className="rank">{String(index + 1).padStart(2, '0')}</span>
-                <span className="name">{item.label}{item.person ? ` · ${item.person}` : ''}</span>
-                <span className="value">{item.value}</span>
-              </li>
+          <div className="annual-lead">
+            <p>
+              {annual.year > 0 ? `${annual.year} 年` : '这些年'}，你和 {annual.friendCount ?? annual.topFriends.length} 位好友留下了{' '}
+              {data.kpis.find((item) => item.label === '消息总数')?.value ?? '0'} 条私聊消息。
+            </p>
+          </div>
+          <div className="annual-closing-grid">
+            {[closingRows.slice(0, 5), closingRows.slice(5, 10)].map((column, columnIndex) => (
+              <div className="annual-closing-column" key={columnIndex}>
+                {column.map((item) => {
+                  let value = item.value
+                  if (item.label === '私聊最多的一天') {
+                    const match = /^(\d{4})-(\d{2})-(\d{2})\s*·\s*(.+)$/.exec(value)
+                    if (match) value = `${match[1]}年${Number(match[2])}月${Number(match[3])}日 · ${match[4]}`
+                  }
+                  return (
+                    <div className="annual-closing-row" key={item.label}>
+                      <span className="annual-closing-label">{item.label}</span>
+                      <span className="annual-closing-value">
+                        {item.person && (
+                          <PersonAvatar
+                            person={{ displayName: item.person, avatar: item.avatar }}
+                            className="annual-closing-avatar"
+                          />
+                        )}
+                        {item.person && <span className="annual-closing-person">{item.person}</span>}
+                        <strong>{value}</strong>
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
             ))}
-          </ol>
+          </div>
         </AnnualChapter>
       </div>
 

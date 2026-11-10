@@ -780,10 +780,24 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<Strin
     summary.push(serde_json::json!({"label":"私聊消息","value":format!("{} 条", export::format_count(aggregate.total))}));
     summary.push(serde_json::json!({"label":"聊过的好友","value":format!("{} 位", stats.friends.len())}));
     if let Some(top) = top_friends.first() {
-        summary.push(serde_json::json!({"label":"聊得最多","value":format!("{} 条", top["messages"]), "person": top["displayName"]}));
+        summary.push(serde_json::json!({
+            "label":"聊得最多",
+            "value":format!("{} 条", export::format_count(top["messages"].as_u64().unwrap_or(0) as usize)),
+            "person": top["displayName"],
+            "conversationId": top["conversationId"],
+        }));
     }
     if peak_value > 0 {
-        summary.push(serde_json::json!({"label":"最常聊天","value":format!("周{} {:02}:00", ["一","二","三","四","五","六","日"][heatmap_peak["weekday"].as_u64().unwrap_or(0) as usize], heatmap_peak["hour"].as_u64().unwrap_or(0))}));
+        let hour = heatmap_peak["hour"].as_u64().unwrap_or(0) as usize;
+        summary.push(serde_json::json!({
+            "label":"最常聊天",
+            "value":format!(
+                "周{} {:02}:00–{:02}:00",
+                ["一","二","三","四","五","六","日"][heatmap_peak["weekday"].as_u64().unwrap_or(0) as usize],
+                hour,
+                (hour + 1) % 24
+            ),
+        }));
     }
     if !rate_mine.is_null() {
         summary.push(serde_json::json!({"label":"你先开口","value":format!("{:.0}%", rate_mine.as_f64().unwrap_or(0.0) * 100.0)}));
@@ -792,13 +806,27 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<Strin
         summary.push(serde_json::json!({"label":"你的平均回复","value":format_duration(mine["averageMs"].as_i64().unwrap_or(0))}));
     }
     if let Some(streak) = &streak {
-        summary.push(serde_json::json!({"label":"最长连续","value":format!("{} 天", streak["days"]), "person": streak["displayName"]}));
+        summary.push(serde_json::json!({
+            "label":"最长连续",
+            "value":format!("{} 天", streak["days"]),
+            "person": streak["displayName"],
+            "conversationId": streak["conversationId"],
+        }));
     }
     if let Some(busiest) = &busiest {
-        summary.push(serde_json::json!({"label":"私聊最多的一天","value":format!("{} · {} 条", busiest["date"].as_str().unwrap_or(""), busiest["messages"])}));
+        summary.push(serde_json::json!({
+            "label":"私聊最多的一天",
+            "value":format!("{} · {} 条", busiest["date"].as_str().unwrap_or(""), export::format_count(busiest["messages"].as_u64().unwrap_or(0) as usize)),
+        }));
     }
     if let Some(phrase) = phrases.first() {
-        summary.push(serde_json::json!({"label":"口头禅","value":format!("「{}」 {} 次", phrase["text"].as_str().unwrap_or(""), phrase["count"])}));
+        summary.push(serde_json::json!({
+            "label":"口头禅",
+            "value":format!("「{}」 {} 次", phrase["text"].as_str().unwrap_or(""), export::format_count(phrase["count"].as_u64().unwrap_or(0) as usize)),
+        }));
+    }
+    if let Some(moments) = &stats.moments {
+        summary.push(serde_json::json!({"label":"朋友圈","value":format!("{} 条", export::format_count(moments.posts))}));
     }
     let mut payload = serde_json::json!({
         "year": year,
