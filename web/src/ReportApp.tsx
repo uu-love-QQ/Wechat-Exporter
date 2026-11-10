@@ -894,8 +894,8 @@ function PhraseWordCloud({ phrases, dark }: { phrases: Array<{ text: string; cou
         height: '92%',
         gridSize: 6,
         sizeRange: [12, 42],
-        rotationRange: [-90, 90],
-        rotationStep: 45,
+        rotationRange: [0, 90],
+        rotationStep: 90,
         drawOutOfBound: false,
         layoutAnimation: false,
         textStyle: {
