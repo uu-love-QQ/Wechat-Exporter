@@ -150,6 +150,11 @@ pub fn load_moments_from_path(
             .or_else(|| crate::wechat::parse::xml_value(timeline, "contentType"))
             .or_else(|| crate::wechat::parse::xml_value(timeline, "type"))
             .unwrap_or_else(|| "1".to_string());
+        // 朋友圈的“位置”动态（ContentObject type 7）不是 Alpha 年度统计
+        // 中的发帖/点赞对象。真实样本中它们通常没有正文和互动。
+        if content_type.trim() == "7" {
+            continue;
+        }
         let label = match content_type.trim() {
             "1" => "图片",
             "2" => "文字",
@@ -195,56 +200,6 @@ pub fn load_moments_from_path(
             } else if liker_id == self_id && author.to_lowercase() != self_id {
                 stats.likes_given += 1;
                 *stats.top_liked_authors.entry(author.clone()).or_default() += 1;
-            }
-        }
-    }
-
-    // Outgoing likes are not part of the incoming notification feed on some
-    // WeChat builds; recover them from SnsMessage_tmp3 when available.
-    if let Some(message_table) = tables
-        .iter()
-        .find(|table| table.eq_ignore_ascii_case("SnsMessage_tmp3") || table.to_ascii_lowercase().contains("snsmessage"))
-    {
-        if let Ok(columns) = db.columns(message_table) {
-            let has = |name: &str| columns.iter().any(|column| column.eq_ignore_ascii_case(name));
-            let feed_col = ["feed_id", "feedId"].iter().find(|name| has(name)).copied();
-            let type_col = ["type", "Type"].iter().find(|name| has(name)).copied();
-            let from_col = ["from_username", "fromUsername"].iter().find(|name| has(name)).copied();
-            if let (Some(feed_col), Some(type_col), Some(from_col)) = (feed_col, type_col, from_col) {
-                let del_filter = if has("del_status") { " WHERE COALESCE(del_status, 0) = 0" } else { "" };
-                let sql = format!(
-                    "SELECT {}, {}, {} FROM {}{}",
-                    crate::db::quote_ident(feed_col),
-                    crate::db::quote_ident(type_col),
-                    crate::db::quote_ident(from_col),
-                    crate::db::quote_ident(message_table),
-                    del_filter
-                );
-                if let Ok(mut stmt) = db.conn().prepare(&sql) {
-                    if let Ok(mut rows) = stmt.query([]) {
-                        while let Ok(Some(row)) = rows.next() {
-                            if row_i64(&row, 1) != Some(1) {
-                                continue;
-                            }
-                            let Some(feed_id) = row_i64(&row, 0) else { continue };
-                            let canonical = if posts.contains_key(&feed_id) { feed_id } else if posts.contains_key(&-feed_id) { -feed_id } else { feed_id.abs() };
-                            let Some((author, is_self, _)) = posts.get(&canonical) else { continue };
-                            if *is_self {
-                                let liker = row_text(&row, 2).trim().to_string();
-                                let liker_id = liker.to_lowercase();
-                                if !liker.is_empty() && liker_id != self_id && seen_likes.insert((canonical, liker_id)) {
-                                    stats.likes_received += 1;
-                                    *stats.top_likers.entry(liker).or_default() += 1;
-                                }
-                            } else if author.is_empty() || author.to_lowercase() == self_id {
-                                continue;
-                            } else if seen_likes.insert((canonical, self_id.clone())) {
-                                stats.likes_given += 1;
-                                *stats.top_liked_authors.entry(author.clone()).or_default() += 1;
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -383,45 +338,22 @@ mod tests {
     }
 
     #[test]
-    fn reads_incoming_notification_likes() {
+    fn ignores_location_updates() {
         let dir = tempfile::TempDir::new().unwrap();
         let sns = dir.path().join("sns");
         fs::create_dir_all(&sns).unwrap();
         let db = rusqlite::Connection::open(sns.join("sns.db")).unwrap();
         db.execute_batch(
             "CREATE TABLE SnsTimeLine (tid INTEGER PRIMARY KEY, user_name TEXT, content TEXT);
-             CREATE TABLE SnsMessage_tmp3 (feed_id INTEGER, type INTEGER, from_username TEXT, del_status INTEGER);
-             INSERT INTO SnsTimeLine VALUES (100, 'me', '<TimelineObject><createTime>1700000000</createTime><contentStyle>1</contentStyle></TimelineObject>');
-             INSERT INTO SnsMessage_tmp3 VALUES (100, 1, 'a', 0), (100, 1, 'b', 0), (100, 1, 'c', 0), (100, 1, 'd', 0), (100, 1, 'e', 0), (100, 1, 'f', 0), (100, 1, 'g', 0), (100, 1, 'me', 0);",
+             INSERT INTO SnsTimeLine VALUES (100, 'me', '<TimelineObject><createTime>1700000000</createTime><ContentObject><type>1</type></ContentObject></TimelineObject>');
+             INSERT INTO SnsTimeLine VALUES (101, 'me', '<TimelineObject><createTime>1700000001</createTime><ContentObject><type>7</type></ContentObject></TimelineObject>');",
         )
         .unwrap();
         drop(db);
         let stats = load_moments(Some(dir.path()), None, None, true, Some("me"), 0).expect("moments");
         assert_eq!(stats.posts, 1);
-        assert_eq!(stats.likes_received, 7);
-        assert_eq!(stats.top_likers.len(), 7);
-    }
-
-    #[test]
-    fn recovers_outgoing_likes_from_notifications() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let sns = dir.path().join("sns");
-        fs::create_dir_all(&sns).unwrap();
-        let db = rusqlite::Connection::open(sns.join("sns.db")).unwrap();
-        db.execute_batch(
-            "CREATE TABLE SnsTimeLine (tid INTEGER PRIMARY KEY, user_name TEXT, content TEXT);
-             CREATE TABLE SnsMessage_tmp3 (feed_id INTEGER, type INTEGER, from_username TEXT, del_status INTEGER);
-             INSERT INTO SnsTimeLine VALUES (100, 'me', '<TimelineObject><createTime>1700000000</createTime><contentStyle>1</contentStyle></TimelineObject>');
-             INSERT INTO SnsTimeLine VALUES (101, 'friend', '<TimelineObject><createTime>1700000001</createTime><contentStyle>2</contentStyle></TimelineObject>');
-             INSERT INTO SnsMessage_tmp3 VALUES (101, 1, 'me', 0), (101, 1, 'me', 1);",
-        )
-        .unwrap();
-        drop(db);
-        let stats = load_moments(Some(dir.path()), None, None, true, Some("me"), 0).expect("moments");
-        assert_eq!(stats.posts, 1);
-        assert_eq!(stats.likes_received, 0);
-        assert_eq!(stats.likes_given, 1);
-        assert_eq!(stats.top_liked_authors.get("friend"), Some(&1));
+        assert_eq!(stats.post_types.get("图片"), Some(&1));
+        assert_eq!(stats.post_types.get("其他"), None);
     }
 
     #[test]
