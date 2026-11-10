@@ -121,7 +121,17 @@ export interface AnnualData {
   streak: { conversationId: string; displayName: string; days: number; startDate: string; endDate: string; avatar?: string | null } | null
   accountStreak: { days: number; startDate: string; endDate: string } | null
   busiestDay: { date: string; messages: number; topFriend: { conversationId?: string; displayName: string; messages: number; avatar?: string | null } | null } | null
-  fading: { conversationId: string; displayName: string; earlyMessages: number; lateMessages: number; avatar?: string | null } | null
+  fading: {
+    conversationId: string
+    displayName: string
+    earlyMessages: number
+    lateMessages: number
+    earlyStart?: string
+    earlyEnd?: string
+    lateStart?: string
+    lateEnd?: string
+    avatar?: string | null
+  } | null
   phrases: Array<{ text: string; count: number }>
   summary: Array<{ label: string; value: string; person?: string }>
   moments: {
@@ -805,6 +815,21 @@ function monthDay(value: string | undefined): string {
   return `${Number(match[1])}月${Number(match[2])}日`
 }
 
+function chineseDate(value: string | undefined): string {
+  if (!value) return ''
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value)
+  if (!match) return value
+  return `${match[1]}年${Number(match[2])}月${Number(match[3])}日`
+}
+
+function shortDateRange(start: string | undefined, end: string | undefined): string {
+  if (!start || !end) return ''
+  const left = /^(\d{4})-(\d{2})-(\d{2})/.exec(start)
+  const right = /^(\d{4})-(\d{2})-(\d{2})/.exec(end)
+  if (!left || !right) return `${start} 至 ${end}`
+  return `${left[1]}年${Number(left[2])}月${Number(left[3])}日 至 ${Number(right[2])}月${Number(right[3])}日`
+}
+
 function PersonAvatar({ person, size = 'sm', className }: { person: { displayName: string; avatar?: string | null }; size?: 'sm' | 'default' | 'lg'; className?: string }) {
   return (
     <Avatar size={size} className={cn('annual-person-avatar', className)} aria-hidden="true">
@@ -1322,14 +1347,34 @@ function AnnualReportView({
           ghost=""
         >
           {fading ? (
-            <>
-              <AnnualFigure value={fading.displayName} label="前段聊得最多，后段明显减少" />
-              <div className="annual-lead"><p><PersonName person={fading} /> 在前半段聊得最多，后半段明显减少。</p></div>
-              <div className="annual-stats">
-                <div className="annual-stat"><span>前段</span><strong>{fading.earlyMessages}</strong><small>条消息</small></div>
-                <div className="annual-stat"><span>后段</span><strong>{fading.lateMessages}</strong><small>条消息</small></div>
+            <div className="annual-fading">
+              <div className="annual-fading-person">
+                <PersonAvatar person={fading} size="lg" className="annual-fading-avatar" />
+                <strong>{fading.displayName}</strong>
               </div>
-            </>
+              <p className="annual-fading-copy">
+                {chineseDate(fading.earlyStart)} 至 {chineseDate(fading.earlyEnd)}，你和 {fading.displayName} 聊了{' '}
+                <strong>{formatNumber(fading.earlyMessages)}</strong> 条；{chineseDate(fading.lateStart)} 至 {chineseDate(fading.lateEnd)}，只聊了{' '}
+                <strong>{formatNumber(fading.lateMessages)}</strong> 条。<span>想念的话，可以打个招呼。</span>
+              </p>
+              <div className="annual-fading-compare">
+                <div className="annual-fading-side">
+                  <span className="annual-fading-label">前段</span>
+                  <div className="annual-fading-value"><strong>{formatNumber(fading.earlyMessages)}</strong><small>条</small></div>
+                  <div className="annual-fading-track"><span className="early" style={{ width: '100%' }} /></div>
+                  <span className="annual-fading-dates">{shortDateRange(fading.earlyStart, fading.earlyEnd)}</span>
+                </div>
+                <span className="annual-fading-arrow" aria-hidden="true">→</span>
+                <div className="annual-fading-side">
+                  <span className="annual-fading-label">后段</span>
+                  <div className="annual-fading-value"><strong>{formatNumber(fading.lateMessages)}</strong><small>条</small></div>
+                  <div className="annual-fading-track">
+                    <span className="late" style={{ width: `${Math.max(2, fading.earlyMessages > 0 ? (fading.lateMessages / fading.earlyMessages) * 100 : 0)}%` }} />
+                  </div>
+                  <span className="annual-fading-dates">{shortDateRange(fading.lateStart, fading.lateEnd)}</span>
+                </div>
+              </div>
+            </div>
           ) : <p className="annual-missing">没有发现前后两段聊天数相差很大的好友。</p>}
         </AnnualChapter>
 
@@ -1359,7 +1404,7 @@ function AnnualReportView({
           question="你在朋友圈留下了什么？"
           hint="按发布时间统计；收到的赞只算你自己的朋友圈，点出的赞只算别人的朋友圈。"
           accent="people"
-          ghost="圈"
+          ghost=""
         >
           {annual.moments ? (
             <>

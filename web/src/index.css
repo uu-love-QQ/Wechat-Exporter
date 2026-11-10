@@ -549,6 +549,30 @@
 .annual-heat-legend { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; color: var(--muted-foreground); font-size: 10px; }
 .annual-heat-swatches { display: inline-flex; gap: 3px; }
 .annual-heat-swatches i { display: block; width: 10px; height: 10px; border-radius: 2px; background: var(--annual-time-fill); }
+.annual-fading-person { display: flex; align-items: center; gap: 14px; margin-top: 4px; }
+.annual-fading-avatar { width: 64px; height: 64px; border: 2px solid var(--podium-gold); border-radius: 16px; }
+.annual-fading-avatar [data-slot='avatar-image'], .annual-fading-avatar [data-slot='avatar-fallback'] { border-radius: 12px; }
+.annual-fading-avatar [data-slot='avatar-fallback'] { color: var(--podium-gold); background: var(--podium-gold-soft); font-size: 20px; font-weight: 650; }
+.annual-fading-person > strong { overflow: hidden; color: var(--card-foreground); font-size: 22px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.annual-fading-copy { max-width: 46em; margin: 14px 0 0; color: var(--card-foreground); font-size: 14px; line-height: 1.8; }
+.annual-fading-copy strong { color: var(--card-foreground); font-weight: 700; font-variant-numeric: tabular-nums; }
+.annual-fading-copy span { color: var(--muted-foreground); }
+.annual-fading-compare { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: start; gap: 18px; max-width: 48em; margin-top: 20px; }
+.annual-fading-side { display: grid; gap: 6px; min-width: 0; }
+.annual-fading-label { color: var(--muted-foreground); font-size: 11px; letter-spacing: .04em; }
+.annual-fading-value { display: flex; align-items: baseline; gap: 4px; }
+.annual-fading-value strong { color: var(--card-foreground); font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1; }
+.annual-fading-value small { color: var(--muted-foreground); font-size: 12px; }
+.annual-fading-track { height: 7px; overflow: hidden; border-radius: 999px; background: var(--muted); }
+.annual-fading-track span { display: block; height: 100%; border-radius: inherit; }
+.annual-fading-track .early { background: var(--annual-time-fill); }
+.annual-fading-track .late { background: var(--annual-people-fill); }
+.annual-fading-dates { color: var(--muted-foreground); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.annual-fading-arrow { align-self: center; color: var(--muted-foreground); font-size: 18px; }
+@media (max-width: 640px) {
+  .annual-fading-compare { grid-template-columns: 1fr; gap: 14px; }
+  .annual-fading-arrow { display: none; }
+}
 .annual-timeline { margin-top: 18px; }
 .annual-timeline-months { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--muted); }
 .annual-timeline-months span { padding: 4px 2px; border-right: 1px solid var(--border); color: var(--muted-foreground); font-size: 10px; text-align: center; font-variant-numeric: tabular-nums; }
