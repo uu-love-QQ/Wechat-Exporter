@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "wechat-exporter"
-version = "0.18.29"
+version = "0.18.30"
 dependencies = [
  "aes",
  "anyhow",

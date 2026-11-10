@@ -1285,7 +1285,7 @@ function AnnualReportView({
   const messageTotalNumber = data.types.reduce((sum, item) => sum + item.count, 0)
   const typeRows = annualTypeRows(data.types)
   const cloudPhrases = useMemo(
-    () => annual.phrases.slice(0, 40).map((item) => ({ term: item.text, count: item.count })),
+    () => annual.phrases.slice(0, 30).map((item) => ({ term: item.text, count: item.count })),
     [annual.phrases],
   )
   const [firstMessageTime, lastMessageTime] = data.range.split(' → ')
