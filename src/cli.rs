@@ -37,6 +37,7 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
   init    初始化配置并保存主密钥/图片密钥
   detect  检索本机微信数据库位置与账号
   list    列出会话
+  contact 列出、搜索联系人与群聊
   search  全文检索
   export  导出会话，可附带媒体
   report  生成私聊/群聊/双人/年度分析报告
@@ -64,6 +65,8 @@ pub enum Command {
     Detect(DetectArgs),
     /// 列出聊天会话 (ID、昵称、备注、最后活跃时间、消息数)
     List(ListArgs),
+    /// 列出、搜索联系人及群聊
+    Contact(ContactArgs),
     /// 跨会话全文关键词检索 (支持 zstd 压缩内容)
     Search(SearchArgs),
     /// 导出指定会话为 JSON/Markdown/HTML 等格式，可同时提取媒体
@@ -164,6 +167,38 @@ pub struct ListArgs {
     pub page_size: Option<u32>,
 
     /// 分页游标 (Base64 编码，上一页返回的 next_cursor)
+    #[arg(long = "cursor", value_name = "BASE64", help_heading = "分页")]
+    pub cursor: Option<String>,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContactKind {
+    /// 全部联系人与群聊
+    All,
+    /// 仅好友
+    Friend,
+    /// 仅群聊
+    Group,
+}
+
+#[derive(Args, Debug)]
+pub struct ContactArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// 按 ID、昵称、备注或别名过滤
+    #[arg(short = 'q', long = "query", value_name = "TEXT", help_heading = "查询")]
+    pub query: Option<String>,
+
+    /// 联系人类型
+    #[arg(long = "kind", value_enum, default_value_t = ContactKind::All, help_heading = "查询")]
+    pub kind: ContactKind,
+
+    /// 单页数量 (1..1000，缺省 50)
+    #[arg(long = "page-size", short = 'p', value_name = "N", help_heading = "分页")]
+    pub page_size: Option<u32>,
+
+    /// 分页游标 (上一页返回的 next_cursor)
     #[arg(long = "cursor", value_name = "BASE64", help_heading = "分页")]
     pub cursor: Option<String>,
 }
@@ -482,6 +517,7 @@ impl Format {
 pub enum Mode {
     Export,
     List,
+    Contacts(ContactKind),
     Search(String),
     DetectDatabases,
     Init,
@@ -723,6 +759,20 @@ impl Command {
                 let image_key = parse_image_key(args.image_key.as_deref())?;
                 let mut options = validated(common, Mode::Init);
                 options.image_key = image_key;
+                Ok(options)
+            }
+            Command::Contact(args) => {
+                if let Some(query) = &args.query {
+                    if query.trim().is_empty() || query.contains('\0') || query.len() > 512 {
+                        bail!("contact query must be nonempty, contain no NUL, and be at most 512 UTF-8 bytes");
+                    }
+                }
+                let common = args.common.validate()?;
+                let page_size = parse_page_size(args.page_size)?;
+                let mut options = validated(common, Mode::Contacts(args.kind));
+                options.list_query = args.query.map(|query| query.trim().to_string());
+                options.page_size = page_size;
+                options.cursor = args.cursor;
                 Ok(options)
             }
             Command::List(args) => {

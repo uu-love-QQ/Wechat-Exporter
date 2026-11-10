@@ -156,6 +156,20 @@ wechat-exporter detect --source-database /path/to/xwechat_files
 | `-s, --source-database <PATH>` | 只扫描指定目录；缺省扫描系统标准路径 |
 | `--debug` | 详细调试输出 |
 
+### contact
+
+```bash
+wechat-exporter contact --query 张 --kind friend --page-size 50
+```
+
+列出联系人和群聊，支持：
+
+- `--query/-q`：按 WXID、昵称、备注、别名过滤；
+- `--kind`：`all` / `friend` / `group`；
+- `--page-size/-p`：每页数量，1–1000；
+- `--cursor`：上一页返回的 `next_cursor`；
+- 输出包含 `id`、昵称、备注、别名、显示名、群聊标记、头像 URL。
+
 ### list
 
 列出会话 ID、昵称、备注、最后活跃时间与消息数。

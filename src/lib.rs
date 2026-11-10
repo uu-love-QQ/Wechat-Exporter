@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cli::{Cli, Mode, ValidatedCli};
+use cli::{Cli, ContactKind, Mode, ValidatedCli};
 use progress::Progress;
 use export::ExportContext;
 use wechat::conversations::{build_conversations, select_conversations};
@@ -257,6 +257,9 @@ pub fn run() -> Result<()> {
     if matches!(&options.mode, Mode::Moments) {
         return moments::run(&options, &layout);
     }
+    if matches!(&options.mode, Mode::Contacts(_)) {
+        return run_contacts(&options, &layout);
+    }
 
     let store = Store::open(&layout.message_dbs, options.key.as_ref(), options.plaintext)?;
     let contacts = wechat::contact::load_contacts(
@@ -291,7 +294,7 @@ pub fn run() -> Result<()> {
         });
 
     match &options.mode {
-        Mode::DetectDatabases | Mode::Init | Mode::Upgrade(_, _) | Mode::Backup(_) | Mode::Moments => unreachable!(),
+        Mode::DetectDatabases | Mode::Init | Mode::Upgrade(_, _) | Mode::Backup(_) | Mode::Moments | Mode::Contacts(_) => unreachable!(),
         Mode::List => run_list(&options, &conversations, account_id.as_deref()),
         Mode::Search(query) => run_search(
             &options,
@@ -325,6 +328,81 @@ pub fn run() -> Result<()> {
             account_id.as_deref(),
         ),
     }
+}
+
+fn run_contacts(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result<()> {
+    let path = layout.contact_db.as_deref().context("contact.db not found")?;
+    let contacts = wechat::contact::load_contacts(Some(path), options.key.as_ref(), options.plaintext);
+    if contacts.is_empty() {
+        bail!("no contacts loaded from {}", path.display());
+    }
+    let kind = match &options.mode {
+        Mode::Contacts(kind) => *kind,
+        _ => ContactKind::All,
+    };
+    let query = options.list_query.as_deref().map(str::to_lowercase);
+    let mut rows: Vec<&wechat::model::Contact> = contacts
+        .values()
+        .filter(|contact| match kind {
+            ContactKind::All => true,
+            ContactKind::Friend => !contact.is_group,
+            ContactKind::Group => contact.is_group,
+        })
+        .filter(|contact| {
+            let Some(query) = query.as_deref() else { return true };
+            [
+                contact.username.as_str(),
+                contact.nickname.as_str(),
+                contact.remark.as_str(),
+                contact.alias.as_str(),
+            ]
+            .join(" ")
+            .to_lowercase()
+            .contains(query)
+        })
+        .collect();
+    rows.sort_by(|a, b| a.display_name().to_lowercase().cmp(&b.display_name().to_lowercase()).then(a.username.cmp(&b.username)));
+    let offset = match &options.cursor {
+        Some(cursor) => util::decode_cursor("contact", cursor)?.2,
+        None => 0,
+    } as usize;
+    let page_size = options.page_size as usize;
+    let end = offset.saturating_add(page_size).min(rows.len());
+    let page = if offset < rows.len() { &rows[offset..end] } else { &[] };
+    let next_cursor = if end < rows.len() {
+        Some(util::encode_cursor("contact", 0, "", end as u64))
+    } else {
+        None
+    };
+    let account_id = options
+        .self_username
+        .clone()
+        .or_else(|| layout.account_root.as_ref().and_then(|root| root.file_name()).and_then(|name| name.to_str()).map(util::clean_account_id));
+    let items = page
+        .iter()
+        .map(|contact| serde_json::json!({
+            "id": contact.username,
+            "username": contact.username,
+            "nickname": contact.nickname,
+            "remark": contact.remark,
+            "alias": contact.alias,
+            "displayName": contact.display_name(),
+            "isGroup": contact.is_group,
+            "avatarUrl": contact.avatar_url,
+        }))
+        .collect::<Vec<_>>();
+    let value = serde_json::json!({
+        "schema": util::SCHEMA,
+        "generator": util::GENERATOR,
+        "account_id": account_id,
+        "query": options.list_query,
+        "kind": match kind { ContactKind::All => "all", ContactKind::Friend => "friend", ContactKind::Group => "group" },
+        "total": rows.len(),
+        "contacts": items,
+        "next_cursor": next_cursor,
+    });
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
 }
 
 fn run_list(
