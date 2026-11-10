@@ -140,8 +140,8 @@ export interface AnnualData {
     likesReceived: number
     likesGiven: number
     postTypes: Array<{ contentType: string; count: number }>
-    topLikers: Array<{ username: string; count: number }>
-    topLikedAuthors: Array<{ username: string; count: number }>
+    topLikers: Array<{ username: string; displayName?: string; count: number }>
+    topLikedAuthors: Array<{ username: string; displayName?: string; count: number }>
   } | null
 }
 
@@ -1447,8 +1447,8 @@ function AnnualReportView({
               <div className="annual-lead">
                 <p>
                   你和 <strong>{top.displayName}</strong> 聊得最多：一共{' '}
-                  <strong>{formatNumber(top.messages)}</strong> 条，其中你发了 {formatNumber(top.sent ?? 0)} 条，TA 发了{' '}
-                  {formatNumber(top.received ?? 0)} 条，占你全部私聊消息的 {topShare}%。
+                  <strong>{formatNumber(top.messages)}</strong> 条，其中你发了 <strong>{formatNumber(top.sent ?? 0)}</strong> 条，TA 发了{' '}
+                  <strong>{formatNumber(top.received ?? 0)}</strong> 条，占你全部私聊消息的 <strong>{topShare}%</strong>。
                 </p>
               </div>
               <ol className="annual-podium" aria-label="聊天最多的前三名">
@@ -1887,26 +1887,53 @@ function AnnualReportView({
                   {formatNumber(annual.moments.likesGiven)} 个赞。
                 </p>
               </div>
-              <div className="annual-stats">
-                {annual.moments.postTypes.slice(0, 6).map((item) => (
-                  <div className="annual-stat" key={item.contentType}>
-                    <span>{item.contentType}</span>
-                    <strong>{formatNumber(item.count)}</strong>
-                    <small>条</small>
+              <div className="annual-moments-grid">
+                <div className="annual-moments-types">
+                  <h3>发了什么</h3>
+                  {annual.moments.postTypes.length > 0 ? (
+                    annual.moments.postTypes.map((item) => {
+                      const max = Math.max(...annual.moments!.postTypes.map((row) => row.count), 1)
+                      return (
+                        <div className="annual-moment-type" key={item.contentType}>
+                          <span className="label">{item.contentType}</span>
+                          <div className="track"><span style={{ width: `${(item.count / max) * 100}%` }} /></div>
+                          <strong>{formatNumber(item.count)}</strong>
+                        </div>
+                      )
+                    })
+                  ) : <p className="annual-missing">这段时间没有发朋友圈。</p>}
+                </div>
+                <div className="annual-moments-rankings">
+                  <div>
+                    <h3>给你点赞最多</h3>
+                    {annual.moments.topLikers.length > 0 ? (
+                      <ol className="annual-list">
+                        {annual.moments.topLikers.slice(0, 10).map((item, index) => (
+                          <li key={item.username}>
+                            <span className="rank">{String(index + 1).padStart(2, '0')}</span>
+                            <span className="name">{item.displayName ?? item.username}</span>
+                            <span className="value">{item.count} 个赞</span>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : <p className="annual-missing">还没有人给你的朋友圈点赞。</p>}
                   </div>
-                ))}
+                  <div>
+                    <h3>你点赞最多</h3>
+                    {annual.moments.topLikedAuthors.length > 0 ? (
+                      <ol className="annual-list">
+                        {annual.moments.topLikedAuthors.slice(0, 10).map((item, index) => (
+                          <li key={item.username}>
+                            <span className="rank">{String(index + 1).padStart(2, '0')}</span>
+                            <span className="name">{item.displayName ?? item.username}</span>
+                            <span className="value">{item.count} 个赞</span>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : <p className="annual-missing">你还没有给别人的朋友圈点过赞。</p>}
+                  </div>
+                </div>
               </div>
-              {annual.moments.topLikers.length > 0 && (
-                <ol className="annual-list">
-                  {annual.moments.topLikers.slice(0, 8).map((item, index) => (
-                    <li key={item.username}>
-                      <span className="rank">{String(index + 1).padStart(2, '0')}</span>
-                      <span className="name">{item.username}</span>
-                      <span className="value">{item.count} 个赞</span>
-                    </li>
-                  ))}
-                </ol>
-              )}
             </>
           ) : <p className="annual-missing">当前数据源没有读取到朋友圈数据。</p>}
         </AnnualChapter>

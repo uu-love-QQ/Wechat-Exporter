@@ -567,6 +567,18 @@
 .annual-balance-bar span { display: block; height: 100%; }
 .annual-balance-bar span.me { background: var(--annual-time-fill); }
 .annual-balance-bar span.ta { background: var(--annual-people-fill); }
+.annual-moments-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.5fr); gap: 28px; margin-top: 18px; }
+.annual-moments-types, .annual-moments-rankings > div { min-width: 0; }
+.annual-moments-grid h3 { margin: 0 0 10px; color: var(--card-foreground); font-size: 13px; font-weight: 650; }
+.annual-moment-type { display: grid; grid-template-columns: 5em minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px dotted color-mix(in oklab, var(--muted-foreground) 38%, transparent); font-size: 12px; }
+.annual-moment-type .label { overflow: hidden; color: var(--muted-foreground); text-overflow: ellipsis; white-space: nowrap; }
+.annual-moment-type .track { height: 6px; overflow: hidden; border-radius: 999px; background: var(--muted); }
+.annual-moment-type .track span { display: block; height: 100%; border-radius: inherit; background: var(--annual-people-fill); }
+.annual-moment-type strong { color: var(--card-foreground); font-variant-numeric: tabular-nums; }
+.annual-moments-rankings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; }
+@media (max-width: 720px) {
+  .annual-moments-grid, .annual-moments-rankings { grid-template-columns: 1fr; }
+}
 .annual-closing-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 clamp(28px, 5vw, 64px); max-width: 56em; margin-top: 18px; }
 .annual-closing-column { min-width: 0; }
 .annual-closing-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; border-bottom: 1px solid var(--border); font-size: 13px; }

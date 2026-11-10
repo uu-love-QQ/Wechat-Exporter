@@ -40,6 +40,7 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
   search  全文检索
   export  导出会话，可附带媒体
   report  生成私聊/群聊/双人/年度分析报告
+  moments 分析朋友圈发帖、收赞、点赞与好友排行
   backup  配置 WebDAV 自动备份
   upgrade 检查并安装新版本
 
@@ -69,6 +70,8 @@ pub enum Command {
     Export(ExportArgs),
     /// 生成私聊/群聊/双人/年度分析报告
     Report(ReportArgs),
+    /// 分析朋友圈：发帖类型、收到的赞、给出的赞与好友排行
+    Moments(MomentsArgs),
     /// 检查并安装新版本
     Upgrade(UpgradeArgs),
     /// 配置或测试备份提供商
@@ -317,6 +320,24 @@ pub struct ReportArgs {
     pub silent: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct MomentsArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// 只统计指定年份；缺省或 0 表示全部历史
+    #[arg(long = "year", value_name = "YYYY", help_heading = "朋友圈")]
+    pub year: Option<i32>,
+
+    /// 将朋友圈统计写入该目录下的 moments.json；缺省直接打印 JSON
+    #[arg(long = "output-dir", short = 'o', value_name = "DIR", help_heading = "朋友圈")]
+    pub output_dir: Option<PathBuf>,
+
+    /// 不打印进度或提示
+    #[arg(long = "silent", action = ArgAction::SetTrue, help_heading = "其他")]
+    pub silent: bool,
+}
+
 #[derive(Subcommand, Debug, Clone)]
 pub enum BackupCommand {
     /// 配置 WebDAV 备份
@@ -449,6 +470,7 @@ pub enum Mode {
     DetectDatabases,
     Init,
     Report(ReportKind),
+    Moments,
     Upgrade(String, Option<String>),
     Backup(BackupCommand),
 }
@@ -764,6 +786,31 @@ impl Command {
                 options.report = args.report;
                 options.silent = args.silent;
                 options.backup = args.backup;
+                Ok(options)
+            }
+            Command::Moments(args) => {
+                if let Some(dir) = &args.output_dir {
+                    if !dir.is_absolute() {
+                        bail!("moments output directory must be an absolute path");
+                    }
+                    if let Some(parent) = dir.parent() {
+                        if !parent.exists() {
+                            bail!("moments output directory parent does not exist");
+                        }
+                    }
+                    if dir.is_file() {
+                        bail!("moments output directory is an existing file, not a directory");
+                    }
+                }
+                let year = args.year.unwrap_or(0);
+                if year != 0 && !(1970..=2100).contains(&year) {
+                    bail!("moments year must be 1970..2100, or 0 for all history");
+                }
+                let common = args.common.validate()?;
+                let mut options = validated(common, Mode::Moments);
+                options.output_dir = args.output_dir;
+                options.report_year = year;
+                options.silent = args.silent;
                 Ok(options)
             }
             Command::Backup(args) => {

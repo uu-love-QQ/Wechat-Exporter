@@ -293,6 +293,22 @@ SQLite 读取按 worker 独立打开只读连接，媒体落盘使用内容寻�
 `start_time` / `end_time`（Unix 秒）与 `start_time_text` / `end_time_text`，
 可直接用于确认导出范围，也可作为 `report --from-json` 的输入。
 
+### moments
+
+```bash
+wechat-exporter moments --year 2026 --output-dir /path/to/output
+```
+
+分析朋友圈并输出 `moments.json`：
+
+- `posts`：本人发布的朋友圈数量；
+- `postTypes`：图片、文字、链接、视频等类型分布；
+- `likesReceived` / `likesGiven`：收到和给出的赞；
+- `topLikers`：给你点赞最多的好友（最多 10 位）；
+- `topLikedAuthors`：你点赞最多的好友（最多 10 位）。
+
+不传 `--output-dir` 时直接打印 JSON；`--year 0` 或不传表示全部历史。
+
 ### backup
 
 配置 WebDAV 后，`export --backup` 会把整个输出目录上传到
