@@ -733,9 +733,23 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<Strin
     phrase_rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
     phrase_rows.truncate(10);
     let phrases = phrase_rows.into_iter().map(|(text, count)| serde_json::json!({"text": text, "count": count})).collect::<Vec<_>>();
+    let first_activity = aggregate
+        .days
+        .keys()
+        .next()
+        .and_then(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").ok());
+    let last_activity = aggregate
+        .days
+        .keys()
+        .next_back()
+        .and_then(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").ok());
     let fading = if let (Some(first), Some(last)) = (
-        aggregate.days.keys().next().and_then(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()),
-        aggregate.days.keys().next_back().and_then(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()),
+        if year > 0 {
+            NaiveDate::from_ymd_opt(year, 1, 1).or(first_activity)
+        } else {
+            first_activity
+        },
+        last_activity,
     ) {
         let span = (last - first).num_days();
         if span >= 60 {
