@@ -140,8 +140,8 @@ export interface AnnualData {
     likesReceived: number
     likesGiven: number
     postTypes: Array<{ contentType: string; count: number }>
-    topLikers: Array<{ username: string; displayName?: string; count: number }>
-    topLikedAuthors: Array<{ username: string; displayName?: string; count: number }>
+    topLikers: Array<{ username: string; displayName?: string; count: number; avatar?: string | null }>
+    topLikedAuthors: Array<{ username: string; displayName?: string; count: number; avatar?: string | null }>
   } | null
 }
 
@@ -1911,6 +1911,7 @@ function AnnualReportView({
                         {annual.moments.topLikers.slice(0, 10).map((item, index) => (
                           <li key={item.username}>
                             <span className="rank">{String(index + 1).padStart(2, '0')}</span>
+                            <PersonAvatar person={{ displayName: item.displayName ?? item.username, avatar: item.avatar }} className="annual-moment-avatar" />
                             <span className="name">{item.displayName ?? item.username}</span>
                             <span className="value">{item.count} 个赞</span>
                           </li>
@@ -1925,6 +1926,7 @@ function AnnualReportView({
                         {annual.moments.topLikedAuthors.slice(0, 10).map((item, index) => (
                           <li key={item.username}>
                             <span className="rank">{String(index + 1).padStart(2, '0')}</span>
+                            <PersonAvatar person={{ displayName: item.displayName ?? item.username, avatar: item.avatar }} className="annual-moment-avatar" />
                             <span className="name">{item.displayName ?? item.username}</span>
                             <span className="value">{item.count} 个赞</span>
                           </li>

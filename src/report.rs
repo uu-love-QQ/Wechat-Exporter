@@ -858,8 +858,8 @@ fn payload_annual_stats(stats: &AnnualStats, year: i32, contacts: &HashMap<Strin
                 "likesReceived": moments.likes_received,
                 "likesGiven": moments.likes_given,
                 "postTypes": post_types.into_iter().map(|(name, count)| serde_json::json!({"contentType": name, "count": count})).collect::<Vec<_>>(),
-                "topLikers": likers.into_iter().map(|(username, count)| serde_json::json!({"username": username, "displayName": display(username), "count": count})).collect::<Vec<_>>(),
-                "topLikedAuthors": liked.into_iter().map(|(username, count)| serde_json::json!({"username": username, "displayName": display(username), "count": count})).collect::<Vec<_>>(),
+                "topLikers": likers.into_iter().map(|(username, count)| serde_json::json!({"conversationId": username, "username": username, "displayName": display(username), "count": count})).collect::<Vec<_>>(),
+                "topLikedAuthors": liked.into_iter().map(|(username, count)| serde_json::json!({"conversationId": username, "username": username, "displayName": display(username), "count": count})).collect::<Vec<_>>(),
             })
         }),
     });

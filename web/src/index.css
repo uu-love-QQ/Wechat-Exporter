@@ -576,6 +576,10 @@
 .annual-moment-type .track span { display: block; height: 100%; border-radius: inherit; background: var(--annual-people-fill); }
 .annual-moment-type strong { color: var(--card-foreground); font-variant-numeric: tabular-nums; }
 .annual-moments-rankings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; }
+.annual-moments-rankings .annual-list li { align-items: center; }
+.annual-moment-avatar { width: 22px; height: 22px; border-radius: 6px; }
+.annual-moment-avatar [data-slot='avatar-image'], .annual-moment-avatar [data-slot='avatar-fallback'] { border-radius: 4px; }
+.annual-moment-avatar [data-slot='avatar-fallback'] { font-size: 9px; }
 @media (max-width: 720px) {
   .annual-moments-grid, .annual-moments-rankings { grid-template-columns: 1fr; }
 }
