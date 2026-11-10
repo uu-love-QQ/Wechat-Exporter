@@ -309,6 +309,17 @@ wechat-exporter moments --year 2026 --output-dir /path/to/output
 
 不传 `--output-dir` 时直接打印 JSON；`--year 0` 或不传表示全部历史。
 
+时间线：
+
+```bash
+wechat-exporter moments --year 2026 --posts --limit 50 --offset 0
+```
+
+- `--posts`：在 JSON 中增加 `timeline` 数组与 `timelineTotal`；
+- `--limit` / `--offset`：分页；
+- `--user`：按作者 WXID 或昵称过滤；
+- 每条时间线包含作者、时间、正文、媒体 URL、点赞用户和头像 URL。
+
 ### backup
 
 配置 WebDAV 后，`export --backup` 会把整个输出目录上传到

@@ -399,6 +399,94 @@ mod tests {
     }
 }
 
+pub fn load_timeline(
+    path: &Path,
+    key: Option<&[u8; 32]>,
+    plaintext: bool,
+    year: i32,
+) -> Result<Vec<serde_json::Value>> {
+    let db = Db::open(path, key, plaintext)?;
+    let tables = db.tables()?;
+    let Some(table) = tables.iter().find(|table| table.eq_ignore_ascii_case("SnsTimeLine") || table.to_ascii_lowercase().contains("snstimeline")) else {
+        return Ok(Vec::new());
+    };
+    let columns = db.columns(table)?;
+    let has = |name: &str| columns.iter().any(|column| column.eq_ignore_ascii_case(name));
+    let tid_col = ["tid", "Tid", "ID"].iter().find(|name| has(name)).copied();
+    let user_col = ["user_name", "userName", "username"].iter().find(|name| has(name)).copied();
+    let content_col = ["content", "Content"].iter().find(|name| has(name)).copied();
+    let Some(content_col) = content_col else { return Ok(Vec::new()) };
+    let mut fields = Vec::new();
+    let tid_index = tid_col.map(|c| { let i = fields.len(); fields.push(crate::db::quote_ident(c)); i });
+    let user_index = fields.len();
+    if let Some(c) = user_col { fields.push(crate::db::quote_ident(c)); } else { fields.push("''".into()); }
+    let content_index = fields.len();
+    fields.push(crate::db::quote_ident(content_col));
+    let sql = format!("SELECT {} FROM {}", fields.join(", "), crate::db::quote_ident(table));
+    let mut stmt = db.conn().prepare(&sql)?;
+    let mut rows = stmt.query([])?;
+    let timeline_re = Regex::new(r"(?is)<TimelineObject\b.*?</TimelineObject>")?;
+    let media_re = Regex::new(r"(?is)<media\b.*?</media>")?;
+    let like_re = Regex::new(r"(?is)<(?:LikeUserList|likeUserList|likeList|like_user_list)\b.*?</(?:LikeUserList|likeUserList|likeList|like_user_list)>")?;
+    let username_re = Regex::new(r"(?is)<username\b[^>]*>(.*?)</username>")?;
+    let mut out = Vec::new();
+    while let Ok(Some(row)) = rows.next() {
+        let content = row_content(&row, content_index);
+        let Some(timeline) = timeline_re.find(&content).map(|m| m.as_str()) else { continue };
+        let xml_time = crate::wechat::parse::xml_value(&content, "createTime")
+            .or_else(|| crate::wechat::parse::xml_value(timeline, "createTime"))
+            .and_then(|v| v.trim().parse::<i64>().ok());
+        if year != 0 {
+            let Some(ts) = xml_time else { continue };
+            let Some(date) = Local.timestamp_opt(ts, 0).single() else { continue };
+            if date.year() != year { continue; }
+        }
+        let content_type = crate::wechat::parse::xml_value(&content, "contentStyle")
+            .or_else(|| {
+                Regex::new(r"(?is)<ContentObject\b.*?</ContentObject>")
+                    .ok()
+                    .and_then(|re| re.find(timeline))
+                    .and_then(|m| crate::wechat::parse::xml_value(m.as_str(), "type"))
+            })
+            .or_else(|| crate::wechat::parse::xml_value(timeline, "contentType"))
+            .or_else(|| crate::wechat::parse::xml_value(timeline, "type"))
+            .unwrap_or_else(|| "1".into());
+        let mut media = Vec::new();
+        for block in media_re.find_iter(&content) {
+            let piece = block.as_str();
+            let url = crate::wechat::parse::xml_value(piece, "url");
+            let thumb = crate::wechat::parse::xml_value(piece, "thumb");
+            if url.is_none() && thumb.is_none() { continue; }
+            media.push(serde_json::json!({
+                "url": url,
+                "thumb": thumb,
+                "md5": crate::wechat::parse::xml_attr(piece, "url", "md5"),
+                "width": crate::wechat::parse::xml_attr(piece, "size", "width"),
+                "height": crate::wechat::parse::xml_attr(piece, "size", "height"),
+            }));
+        }
+        let likes = like_re.find(&content).map(|block| {
+            username_re.captures_iter(block.as_str())
+                .filter_map(|c| c.get(1).map(|v| crate::wechat::parse::unescape_xml(v.as_str()).trim().to_string()))
+                .filter(|v| !v.is_empty()).collect::<Vec<_>>()
+        }).unwrap_or_default();
+        let text = crate::wechat::parse::xml_value(&content, "contentDesc")
+            .map(|v| crate::wechat::parse::unescape_xml(&v))
+            .unwrap_or_default();
+        out.push(serde_json::json!({
+            "tid": tid_index.and_then(|i| row_i64(&row, i)),
+            "author": row_text(&row, user_index),
+            "createTime": xml_time,
+            "type": content_type,
+            "content": text,
+            "media": media,
+            "likes": likes,
+        }));
+    }
+    out.sort_by(|a, b| b["createTime"].as_i64().cmp(&a["createTime"].as_i64()));
+    Ok(out)
+}
+
 fn debug_rows(
     path: &Path,
     key: Option<&[u8; 32]>,
@@ -507,6 +595,12 @@ pub fn run(options: &crate::cli::ValidatedCli, layout: &crate::wechat::discover:
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| username.to_string())
     };
+    let avatar_url = |username: &str| {
+        contacts
+            .get(username)
+            .map(|contact| contact.avatar_url.trim().to_string())
+            .filter(|url| !url.is_empty())
+    };
     let mut post_types = stats.post_types.iter().collect::<Vec<_>>();
     post_types.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
     let mut payload = serde_json::json!({
@@ -516,11 +610,34 @@ pub fn run(options: &crate::cli::ValidatedCli, layout: &crate::wechat::discover:
         "likesReceived": stats.likes_received,
         "likesGiven": stats.likes_given,
         "postTypes": post_types.into_iter().map(|(label, count)| serde_json::json!({"contentType": label, "count": count})).collect::<Vec<_>>(),
-        "topLikers": ranked(&stats.top_likers, 10).into_iter().map(|(username, count)| serde_json::json!({"username": username, "displayName": display(&username), "count": count})).collect::<Vec<_>>(),
-        "topLikedAuthors": ranked(&stats.top_liked_authors, 10).into_iter().map(|(username, count)| serde_json::json!({"username": username, "displayName": display(&username), "count": count})).collect::<Vec<_>>(),
+        "topLikers": ranked(&stats.top_likers, 10).into_iter().map(|(username, count)| serde_json::json!({"username": username, "displayName": display(&username), "avatarUrl": avatar_url(&username), "count": count})).collect::<Vec<_>>(),
+        "topLikedAuthors": ranked(&stats.top_liked_authors, 10).into_iter().map(|(username, count)| serde_json::json!({"username": username, "displayName": display(&username), "avatarUrl": avatar_url(&username), "count": count})).collect::<Vec<_>>(),
     });
     if options.debug {
         payload["debug"] = debug_rows(&path, options.key.as_ref(), options.plaintext, self_username.as_deref(), options.report_year)?;
+    }
+    if options.moments_posts {
+        let mut timeline = load_timeline(&path, options.key.as_ref(), options.plaintext, options.report_year)?;
+        for item in &mut timeline {
+            let username = item["author"].as_str().unwrap_or("").to_string();
+            item["displayName"] = serde_json::Value::String(display(&username));
+            if let Some(url) = avatar_url(&username) {
+                item["avatarUrl"] = serde_json::Value::String(url);
+            }
+        }
+        if let Some(filter) = &options.moments_user {
+            let needle = filter.to_lowercase();
+            timeline.retain(|item| {
+                item["author"].as_str().unwrap_or("").to_lowercase().contains(&needle)
+                    || item["displayName"].as_str().unwrap_or("").to_lowercase().contains(&needle)
+            });
+        }
+        let total = timeline.len();
+        let offset = options.moments_offset as usize;
+        let limit = options.moments_limit as usize;
+        let page = timeline.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
+        payload["timeline"] = serde_json::Value::Array(page);
+        payload["timelineTotal"] = serde_json::json!(total);
     }
     if let Some(dir) = &options.output_dir {
         std::fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;

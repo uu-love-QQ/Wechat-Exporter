@@ -333,6 +333,22 @@ pub struct MomentsArgs {
     #[arg(long = "output-dir", short = 'o', value_name = "DIR", help_heading = "朋友圈")]
     pub output_dir: Option<PathBuf>,
 
+    /// 输出朋友圈时间线（JSON timeline 数组）
+    #[arg(long = "posts", action = ArgAction::SetTrue, help_heading = "朋友圈")]
+    pub posts: bool,
+
+    /// 时间线条数，范围 1..1000，缺省 50
+    #[arg(long = "limit", value_name = "N", help_heading = "朋友圈")]
+    pub limit: Option<u32>,
+
+    /// 时间线偏移量
+    #[arg(long = "offset", value_name = "N", help_heading = "朋友圈")]
+    pub offset: Option<u32>,
+
+    /// 按作者 WXID 或昵称过滤时间线
+    #[arg(long = "user", value_name = "TEXT", help_heading = "朋友圈")]
+    pub user: Option<String>,
+
     /// 不打印进度或提示
     #[arg(long = "silent", action = ArgAction::SetTrue, help_heading = "其他")]
     pub silent: bool,
@@ -497,6 +513,10 @@ pub struct ValidatedCli {
     pub debug: bool,
     pub report: bool,
     pub report_year: i32,
+    pub moments_posts: bool,
+    pub moments_limit: u32,
+    pub moments_offset: u32,
+    pub moments_user: Option<String>,
     pub from_json: Option<PathBuf>,
     pub silent: bool,
     pub backup: bool,
@@ -564,6 +584,10 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         debug: common.debug,
         report: false,
         report_year: 0,
+        moments_posts: false,
+        moments_limit: 50,
+        moments_offset: 0,
+        moments_user: None,
         from_json: None,
         silent: false,
         backup: false,
@@ -686,6 +710,10 @@ impl Command {
                 debug: args.debug,
                 report: false,
                 report_year: 0,
+                moments_posts: false,
+                moments_limit: 50,
+                moments_offset: 0,
+                moments_user: None,
                 from_json: None,
                 silent: false,
                 backup: false,
@@ -806,11 +834,24 @@ impl Command {
                 if year != 0 && !(1970..=2100).contains(&year) {
                     bail!("moments year must be 1970..2100, or 0 for all history");
                 }
+                let limit = args.limit.unwrap_or(50);
+                if !(1..=1000).contains(&limit) {
+                    bail!("moments limit must be 1..1000");
+                }
+                if let Some(user) = &args.user {
+                    if user.trim().is_empty() || user.chars().any(char::is_control) {
+                        bail!("moments user filter must be nonempty and contain no control characters");
+                    }
+                }
                 let common = args.common.validate()?;
                 let mut options = validated(common, Mode::Moments);
                 options.output_dir = args.output_dir;
                 options.report_year = year;
                 options.silent = args.silent;
+                options.moments_posts = args.posts;
+                options.moments_limit = limit;
+                options.moments_offset = args.offset.unwrap_or(0);
+                options.moments_user = args.user.map(|value| value.trim().to_string());
                 Ok(options)
             }
             Command::Backup(args) => {
