@@ -39,14 +39,14 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
   list    列出会话
   contact 列出、搜索联系人与群聊
   search  全文检索
-  export  导出会话，可附带媒体
+  conversation  列出会话；--export 导出会话，可附带媒体
   report  生成私聊/群聊/双人/年度分析报告
   moments 分析朋友圈发帖、收赞、点赞与好友排行
   backup  配置 WebDAV 自动备份
   upgrade 检查并安装新版本
 
   查看某个子命令的完整参数：
-    wechat-exporter export --help
+    wechat-exporter conversation --help
 
   密钥可通过命令行参数、密钥文件或 stdin 传入；缺省数据库路径时自动检索。
   分析报告示例：wechat-exporter report private --output-dir /path/to/report
@@ -69,8 +69,8 @@ pub enum Command {
     Contact(ContactArgs),
     /// 跨会话全文关键词检索 (支持 zstd 压缩内容)
     Search(SearchArgs),
-    /// 导出指定会话为 JSON/Markdown/HTML 等格式，可同时提取媒体
-    Export(ExportArgs),
+    /// 列出会话；加 --export 导出为 JSON/Markdown/HTML 等格式
+    Conversation(ConversationArgs),
     /// 生成私聊/群聊/双人/年度分析报告
     Report(ReportArgs),
     /// 分析朋友圈：发帖类型、收到的赞、给出的赞与好友排行
@@ -317,6 +317,28 @@ pub struct ExportArgs {
     /// 不打印进度条
     #[arg(long = "silent", action = ArgAction::SetTrue, help_heading = "其他")]
     pub silent: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ConversationArgs {
+    #[command(flatten)]
+    pub export: ExportArgs,
+
+    /// 执行导出；缺省时列出会话
+    #[arg(long = "export", action = ArgAction::SetTrue, help_heading = "导出")]
+    pub export_mode: bool,
+
+    /// 按会话名称、备注、昵称或 ID 过滤会话
+    #[arg(short = 'q', long = "query", value_name = "TEXT", help_heading = "查询")]
+    pub query: Option<String>,
+
+    /// 单页会话数量 (范围 1..1000，缺省 50)
+    #[arg(long = "page-size", short = 'p', value_name = "N", help_heading = "分页")]
+    pub page_size: Option<u32>,
+
+    /// 分页游标 (Base64 编码，上一页返回的 next_cursor)
+    #[arg(long = "cursor", value_name = "BASE64", help_heading = "分页")]
+    pub cursor: Option<String>,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -725,6 +747,70 @@ fn parse_formats(values: &[String]) -> Result<Vec<Format>> {
     Ok(out)
 }
 
+fn validate_export_args(args: ExportArgs) -> Result<ValidatedCli> {
+
+                for id in &args.conversation_ids {
+                    if id.is_empty() || id.len() > 1024 || id.chars().any(char::is_control) {
+                        bail!("conversation ID must be nonempty, at most 1024 bytes, and contain no control characters");
+                    }
+                }
+                if args.start_time_ms.is_some_and(|value| value <= 0) {
+                    bail!("export time must be a positive int64 decimal value");
+                }
+                if args.end_time_ms.is_some_and(|value| value <= 0) {
+                    bail!("export time must be a positive int64 decimal value");
+                }
+                if let (Some(start), Some(end)) = (args.start_time_ms, args.end_time_ms) {
+                    if start > end {
+                        bail!("export time range is inverted");
+                    }
+                }
+                let formats = parse_formats(&args.formats)?;
+                let image_key = parse_image_key(args.image_key.as_deref())?;
+                if (!args.formats.is_empty()
+                    || !args.conversation_ids.is_empty()
+                    || args.start_time_ms.is_some()
+                    || args.end_time_ms.is_some())
+                    && args.output_dir.is_none()
+                    && !args.keep_output
+                {
+                    bail!("--format requires --output-dir or --keep-output");
+                }
+                if !args.conversation_ids.is_empty()
+                    && args.output_dir.is_none()
+                    && !args.keep_output
+                {
+                    bail!("--conversation-id requires --output-dir or --keep-output");
+                }
+                if let Some(dir) = &args.output_dir {
+                    if !dir.is_absolute() {
+                        bail!("output directory must be an absolute path");
+                    }
+                    if let Some(parent) = dir.parent() {
+                        if !parent.exists() {
+                            bail!("output directory parent does not exist");
+                        }
+                    }
+                    if dir.is_file() {
+                        bail!("output directory is an existing file, not a directory");
+                    }
+                }
+                let common = args.common.validate()?;
+                let mut options = validated(common, Mode::Export);
+                options.formats = formats;
+                options.conversation_ids = args.conversation_ids;
+                options.start_time_ms = args.start_time_ms;
+                options.end_time_ms = args.end_time_ms;
+                options.include_media = args.include_media;
+                options.keep_output = args.keep_output;
+                options.output_dir = args.output_dir;
+                options.image_key = image_key;
+                options.report = args.report;
+                options.silent = args.silent;
+                options.backup = args.backup;
+                Ok(options)
+            }
+
 impl Cli {
     pub fn validate(self) -> Result<ValidatedCli> {
         let Some(command) = self.command else {
@@ -816,67 +902,39 @@ impl Command {
                 options.cursor = args.cursor;
                 Ok(options)
             }
-            Command::Export(args) => {
-                for id in &args.conversation_ids {
-                    if id.is_empty() || id.len() > 1024 || id.chars().any(char::is_control) {
-                        bail!("conversation ID must be nonempty, at most 1024 bytes, and contain no control characters");
+            Command::Conversation(args) => {
+                if args.export_mode {
+                    if args.query.is_some() || args.page_size.is_some() || args.cursor.is_some() {
+                        bail!("list options cannot be used with --export");
                     }
-                }
-                if args.start_time_ms.is_some_and(|value| value <= 0) {
-                    bail!("export time must be a positive int64 decimal value");
-                }
-                if args.end_time_ms.is_some_and(|value| value <= 0) {
-                    bail!("export time must be a positive int64 decimal value");
-                }
-                if let (Some(start), Some(end)) = (args.start_time_ms, args.end_time_ms) {
-                    if start > end {
-                        bail!("export time range is inverted");
+                    validate_export_args(args.export)
+                } else {
+                    let has_export_option = args.export.output_dir.is_some()
+                        || !args.export.formats.is_empty()
+                        || !args.export.conversation_ids.is_empty()
+                        || args.export.start_time_ms.is_some()
+                        || args.export.end_time_ms.is_some()
+                        || args.export.image_key.is_some()
+                        || args.export.include_media
+                        || args.export.keep_output
+                        || args.export.report
+                        || args.export.backup;
+                    if has_export_option {
+                        bail!("export options require --export");
                     }
-                }
-                let formats = parse_formats(&args.formats)?;
-                let image_key = parse_image_key(args.image_key.as_deref())?;
-                if (!args.formats.is_empty()
-                    || !args.conversation_ids.is_empty()
-                    || args.start_time_ms.is_some()
-                    || args.end_time_ms.is_some())
-                    && args.output_dir.is_none()
-                    && !args.keep_output
-                {
-                    bail!("--format requires --output-dir or --keep-output");
-                }
-                if !args.conversation_ids.is_empty()
-                    && args.output_dir.is_none()
-                    && !args.keep_output
-                {
-                    bail!("--conversation-id requires --output-dir or --keep-output");
-                }
-                if let Some(dir) = &args.output_dir {
-                    if !dir.is_absolute() {
-                        bail!("output directory must be an absolute path");
-                    }
-                    if let Some(parent) = dir.parent() {
-                        if !parent.exists() {
-                            bail!("output directory parent does not exist");
+                    if let Some(query) = &args.query {
+                        if query.trim().is_empty() || query.contains('\0') || query.len() > 512 {
+                            bail!("conversation query must be nonempty, contain no NUL, and be at most 512 UTF-8 bytes");
                         }
                     }
-                    if dir.is_file() {
-                        bail!("output directory is an existing file, not a directory");
-                    }
+                    let common = args.export.common.validate()?;
+                    let page_size = parse_page_size(args.page_size)?;
+                    let mut options = validated(common, Mode::List);
+                    options.list_query = args.query.map(|query| query.trim().to_string());
+                    options.page_size = page_size;
+                    options.cursor = args.cursor;
+                    Ok(options)
                 }
-                let common = args.common.validate()?;
-                let mut options = validated(common, Mode::Export);
-                options.formats = formats;
-                options.conversation_ids = args.conversation_ids;
-                options.start_time_ms = args.start_time_ms;
-                options.end_time_ms = args.end_time_ms;
-                options.include_media = args.include_media;
-                options.keep_output = args.keep_output;
-                options.output_dir = args.output_dir;
-                options.image_key = image_key;
-                options.report = args.report;
-                options.silent = args.silent;
-                options.backup = args.backup;
-                Ok(options)
             }
             Command::Moments(args) => {
                 if let Some(dir) = &args.output_dir {

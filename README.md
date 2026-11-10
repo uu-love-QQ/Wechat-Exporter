@@ -97,7 +97,7 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 .\wechat-exporter.exe search "合同" --key <64位Hex主通行码> --ascending
 
 # 4. 导出指定会话（含图片自动解密为真实图片格式）：
-.\wechat-exporter.exe export `
+.\wechat-exporter.exe conversation --export `
   --key <64位Hex主通行码> `
   --conversation-id "wxid_85da986onp4h22" `
   --format all `
@@ -105,7 +105,7 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
   --output-dir "C:\Users\14744\Downloads\uuMovies\test"
 
 # 5. 全自动模式（微信登录在线时，无需提供路径与 key）：
-.\wechat-exporter.exe export `
+.\wechat-exporter.exe conversation --export `
   --conversation-id "wxid_85da986onp4h22" `
   --format all `
   --include-media `
@@ -115,12 +115,12 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 ## 五、子命令与参数
 
 根命令只显示子命令；每个子命令只显示自己会用到的参数。例如
-`wechat-exporter export --help` 才会列出 `--conversation-id`/`--format`/`--output-dir`，
-`list --help` 不会出现这些导出参数。完整帮助优先级：
+`wechat-exporter conversation --help` 同时列出列表与导出参数；
+`conversation` 缺省列出会话，只有加 `--export` 才执行导出。完整帮助优先级：
 
 ```bash
 wechat-exporter --help            # 子命令列表
-wechat-exporter export --help     # export 专属参数 + 通用参数
+wechat-exporter conversation --help # 列表 + 导出参数
 ```
 
 ### init
@@ -221,16 +221,17 @@ wechat-exporter search "关键词" --source-database /path/to/db_storage --page-
 | `--plaintext` | 按未加密 SQLite 打开 |
 | `--debug` | 详细调试输出 |
 
-### export
+### conversation
 
-导出指定会话；`--format all` 生成全部 10 种格式。
+缺省列出会话；加 `--export` 导出指定会话，`--format all` 生成全部 10 种格式。
 
 ```bash
-wechat-exporter export --key <64位Hex密钥> \
+wechat-exporter conversation --key <64位Hex密钥> --page-size 20
+wechat-exporter conversation --export --key <64位Hex密钥> \
   --conversation-id "123456789@chatroom" --format html --output-dir /path/to/out
-wechat-exporter export --source-database /path/to/db_storage \
+wechat-exporter conversation --export --source-database /path/to/db_storage \
   --conversation-id wxid_xxx --format all --include-media --output-dir /path/to/out
-wechat-exporter export --key <64位Hex密钥> \
+wechat-exporter conversation --export --key <64位Hex密钥> \
   --conversation-id wxid_xxx --format json --report --output-dir /path/to/out
 ```
 
@@ -257,11 +258,12 @@ wechat-exporter export --key <64位Hex密钥> \
 | `--backup` | 导出完成后按配置自动上传到 WebDAV |
 | `--silent` | 不打印进度条，仅保留最终结果/错误 |
 | `--debug` | 详细调试输出 |
+| `--export` | 执行导出；缺省只列出会话 |
 
 ### report
 
 生成独立分析报告（HTML，自包含、离线）。所有 report 子命令都需要绝对路径
-`--output-dir`；数据库与密钥参数与 export 相同。
+`--output-dir`；数据库与密钥参数与 conversation 相同。
 
 ```bash
 # 私聊分析：扫描所有私聊，统计好友消息量、发送比例、类型、时段、月度趋势
@@ -345,7 +347,7 @@ wechat-exporter moments --year 2026 --posts --limit 50 --offset 0
 
 ### backup
 
-配置 WebDAV 后，`export --backup` 会把整个输出目录上传到
+配置 WebDAV 后，`conversation --export --backup` 会把整个输出目录上传到
 `<url>/<remote_path>/<输出目录名>/`。
 
 ```bash
@@ -359,7 +361,7 @@ wechat-exporter backup test    # PROPFIND 测试连接
 wechat-exporter backup clear   # 删除配置
 
 # 导出后自动备份
-wechat-exporter export --key <64位Hex> \
+wechat-exporter conversation --export --key <64位Hex> \
   --conversation-id 123456789@chatroom --format all --include-media \
   --output-dir /path/to/out --backup
 ```

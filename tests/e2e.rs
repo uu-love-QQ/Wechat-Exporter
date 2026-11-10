@@ -71,7 +71,8 @@ fn exports_all_formats_and_media() {
     let (temp, source) = fixture();
     let output = temp.path().join("out");
     let (code, stdout, stderr) = run_with_key(&[
-        "export",
+        "conversation",
+        "--export",
         "--source-database",
         source.to_str().unwrap(),
         "--conversation-id",
@@ -219,7 +220,8 @@ fn exports_visual_report() {
     let (temp, source) = fixture();
     let output = temp.path().join("report-out");
     let (code, _, stderr) = run_with_key(&[
-        "export",
+        "conversation",
+        "--export",
         "--source-database",
         source.to_str().unwrap(),
         "--conversation-id",
@@ -326,7 +328,8 @@ fn reports_from_exported_json() {
     let (temp, source) = fixture();
     let exported = temp.path().join("json-src");
     let (code, _, stderr) = run_with_key(&[
-        "export",
+        "conversation",
+        "--export",
         "--source-database",
         source.to_str().unwrap(),
         "--format",
@@ -376,7 +379,7 @@ fn help_scopes_options_to_subcommands() {
         .output()
         .expect("root help");
     let root = String::from_utf8_lossy(&root.stdout);
-    for command in ["init", "detect", "list", "search", "export"] {
+    for command in ["init", "detect", "list", "search", "conversation"] {
         assert!(root.contains(command), "missing subcommand {command}");
     }
     assert!(!root.contains("--conversation-id"));
@@ -393,14 +396,15 @@ fn help_scopes_options_to_subcommands() {
     assert!(!list.contains("--format"));
 
     let export = Command::new(env!("CARGO_BIN_EXE_wechat-exporter"))
-        .args(["export", "--help"])
+        .args(["conversation", "--help"])
         .output()
-        .expect("export help");
+        .expect("conversation help");
     let export = String::from_utf8_lossy(&export.stdout);
     assert!(export.contains("--conversation-id"));
     assert!(export.contains("--format"));
     assert!(export.contains("--report"));
-    assert!(!export.contains("--page-size"));
+    assert!(export.contains("--page-size"));
+    assert!(export.contains("--export"));
     assert!(!export.contains("--ascending"));
 }
 
@@ -409,7 +413,8 @@ fn exported_chatlab_matches_spec_shape() {
     let (temp, source) = fixture();
     let output = temp.path().join("chatlab");
     let (code, _, stderr) = run_with_key(&[
-        "export",
+        "conversation",
+        "--export",
         "--source-database",
         source.to_str().unwrap(),
         "--conversation-id",
