@@ -29,8 +29,6 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import * as echarts from 'echarts'
-import 'echarts-wordcloud'
 
 export interface ReportKpi {
   label: string
@@ -850,90 +848,410 @@ function PersonName({ person }: { person: { displayName: string; avatar?: string
   )
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] ?? char))
+const CLOUD_MAX_TERMS = 100
+const CLOUD_MIN_SCALE = 0.3
+const CLOUD_WEIGHTS = [500, 500, 600, 650, 700]
+const VERTICAL_TERM = /^[\p{Script=Han}]{2,6}$/u
+const HAN_LINE = /^[\p{Script=Han}\p{P}]+$/u
+
+interface CloudTerm {
+  term: string
+  count: number
 }
 
-function PhraseWordCloud({ phrases, dark }: { phrases: Array<{ text: string; count: number }>; dark: boolean }) {
-  const container = useRef<HTMLDivElement>(null)
+interface CloudWord extends CloudTerm {
+  x: number
+  y: number
+  fontSize: number
+  level: number
+  vertical: boolean
+  ink: number
+}
 
-  useEffect(() => {
-    const element = container.current
-    if (!element) return
-    echarts.getInstanceByDom(element)?.dispose()
-    const chart = echarts.init(element, undefined, { renderer: 'canvas' })
-    const colors = dark
-      ? ['#aebafa', '#f2c66d', '#a9b8ce', '#e8effb']
-      : ['#4656a8', '#8a5a00', '#6b7280', '#0f172a']
-    const data = phrases.map((phrase, index) => ({
-      name: phrase.text,
-      value: phrase.count,
-      rank: index + 1,
-      textStyle: { color: colors[index % colors.length] },
-    }))
-    try {
-      chart.setOption({
-      tooltip: {
-        trigger: 'item',
-        confine: true,
-        backgroundColor: 'transparent',
-        borderWidth: 0,
-        padding: 0,
-        extraCssText: 'box-shadow:none;',
-        formatter: (params: any) => {
-          const item = params.data as { rank: number; name: string; value: number }
-          return `<div class="annual-cloud-tooltip"><span class="annual-cloud-tooltip-rank">第 ${item.rank} 名</span><span class="annual-cloud-tooltip-word">[${escapeHtml(item.name)}]</span><span class="annual-cloud-tooltip-line"></span><span class="annual-cloud-tooltip-count">${item.value} 次</span></div>`
-        },
-      },
-      series: [{
-        type: 'wordCloud',
-        shape: 'square',
-        left: 'center',
-        top: 'center',
-        width: '100%',
-        height: '100%',
-        gridSize: 4,
-        sizeRange: [11, 56],
-        rotationRange: [0, 90],
-        rotationStep: 90,
-        drawOutOfBound: false,
-        layoutAnimation: false,
-        textStyle: {
-          fontFamily: 'Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif',
-          fontWeight: 600,
-        },
-        emphasis: {
-          textStyle: { textShadowBlur: 8, textShadowColor: colors[0] ?? '#4f7cff' },
-        },
-        data,
-      }],
-    })
-    } catch (error) {
-      console.error('word cloud failed', error)
-      element.dataset.cloudError = String(error)
-    }
-    let flushTries = 0
-    const flushTimer = window.setInterval(() => {
-      if (chart.isDisposed() || element.querySelector('canvas') || flushTries++ > 20) {
-        window.clearInterval(flushTimer)
-        return
+interface CloudFrame {
+  width: number
+  height: number
+  minFont: number
+  measure: (text: string, fontSize: number, level: number) => number
+  bounds: { left: number; top: number; right: number; bottom: number }
+  probes: ReturnType<typeof probeRings>
+}
+
+interface CloudLayoutWord extends CloudTerm {
+  scale: number
+  level: number
+  ink: number
+  phase: number
+  orientations: boolean[]
+}
+
+function cloudTerms(terms: CloudTerm[], limit = CLOUD_MAX_TERMS): CloudTerm[] {
+  const merged = new Map<string, number>()
+  for (const { term, count } of terms) {
+    const text = term.trim()
+    if (!text || !Number.isFinite(count) || count <= 0) continue
+    merged.set(text, (merged.get(text) ?? 0) + count)
+  }
+  return [...merged]
+    .map(([term, count]) => ({ term, count }))
+    .sort((a, b) => b.count - a.count || (a.term < b.term ? -1 : a.term > b.term ? 1 : 0))
+    .slice(0, limit)
+}
+
+function cloudRatio(count: number, min: number, max: number): number {
+  if (max <= min) return 1
+  return Math.max(0, Math.min(1, (Math.sqrt(count) - Math.sqrt(min)) / (Math.sqrt(max) - Math.sqrt(min))))
+}
+
+function estimateTextWidth(text: string, fontSize: number): number {
+  let em = 0
+  for (const char of text) {
+    em += /\p{Extended_Pictographic}/u.test(char) ? 1.2 : /[\u2E80-\u9FFF\uAC00-\uD7AF\uFF00-\uFFEF]/u.test(char) ? 1 : /[A-Z0-9mwMW]/.test(char) ? 0.68 : 0.56
+  }
+  return Math.max(1, em) * fontSize
+}
+
+function cloudWeight(level: number): number {
+  return CLOUD_WEIGHTS[Math.max(0, Math.min(CLOUD_WEIGHTS.length - 1, Math.round(level)))]
+}
+
+function cloudWordBox(term: string, fontSize: number, vertical: boolean, measure: CloudFrame['measure']) {
+  if (vertical) return { width: fontSize, height: [...term].length * fontSize }
+  return { width: measure(term, fontSize, 0), height: fontSize * (HAN_LINE.test(term) ? 1.02 : 1.16) }
+}
+
+function wordGap(fontSize: number): number {
+  return Math.max(2, fontSize * 0.06)
+}
+
+function termHash(term: string): number {
+  let hash = 2166136261
+  for (let index = 0; index < term.length; index++) {
+    hash ^= term.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+function occupancy(width: number, height: number) {
+  const BUCKET = 48
+  const COVER = 4
+  const cols = Math.max(1, Math.ceil(width / BUCKET))
+  const rows = Math.max(1, Math.ceil(height / BUCKET))
+  const buckets: Array<Array<{ left: number; top: number; right: number; bottom: number }>> = Array.from({ length: cols * rows }, () => [])
+  const coverCols = Math.max(1, Math.ceil(width / COVER))
+  const coverRows = Math.max(1, Math.ceil(height / COVER))
+  const covered = new Uint8Array(coverCols * coverRows)
+  const cell = (value: number, limit: number) => Math.max(0, Math.min(limit - 1, Math.floor(value / BUCKET)))
+  return {
+    covered(x: number, y: number) {
+      const col = Math.floor(x / COVER)
+      const row = Math.floor(y / COVER)
+      return col >= 0 && row >= 0 && col < coverCols && row < coverRows && covered[row * coverCols + col] === 1
+    },
+    free(left: number, top: number, right: number, bottom: number) {
+      for (let row = cell(top, rows), lastRow = cell(bottom, rows); row <= lastRow; row++) {
+        for (let col = cell(left, cols), lastCol = cell(right, cols); col <= lastCol; col++) {
+          for (const other of buckets[row * cols + col]) {
+            if (left < other.right && right > other.left && top < other.bottom && bottom > other.top) return false
+          }
+        }
       }
-      chart.resize()
-      chart.getZr().flush()
-    }, 100)
-    const observer = new ResizeObserver(() => {
-      chart.resize()
-      chart.getZr().flush()
-    })
-    observer.observe(element)
-    return () => {
-      window.clearInterval(flushTimer)
-      observer.disconnect()
-      chart.dispose()
-    }
-  }, [phrases, dark])
+      return true
+    },
+    add(box: { left: number; top: number; right: number; bottom: number }) {
+      for (let row = cell(box.top, rows), lastRow = cell(box.bottom, rows); row <= lastRow; row++) {
+        for (let col = cell(box.left, cols), lastCol = cell(box.right, cols); col <= lastCol; col++) buckets[row * cols + col].push(box)
+      }
+      const lastCol = Math.min(coverCols, Math.floor(box.right / COVER))
+      const lastRow = Math.min(coverRows, Math.floor(box.bottom / COVER))
+      for (let row = Math.max(0, Math.ceil(box.top / COVER)); row < lastRow; row++) {
+        for (let col = Math.max(0, Math.ceil(box.left / COVER)); col < lastCol; col++) covered[row * coverCols + col] = 1
+      }
+    },
+  }
+}
 
-  return <div ref={container} className="annual-wordcloud-chart" role="img" aria-label="口头禅词云" />
+function probeRings(cx: number, cy: number, halfWidth: number, halfHeight: number) {
+  const RING_STEP = 4
+  const PROBE_STEP = 4
+  const rings = Math.max(1, Math.ceil(Math.min(halfWidth, halfHeight) / RING_STEP))
+  const xs = [cx]
+  const ys = [cy]
+  const starts = [0]
+  for (let ring = 1; ring <= rings; ring++) {
+    starts.push(xs.length)
+    const a = (halfWidth * ring) / rings
+    const b = (halfHeight * ring) / rings
+    const perimeter = 4 * (a + b)
+    const count = Math.max(8, Math.ceil(perimeter / PROBE_STEP))
+    for (let index = 0; index < count; index++) {
+      let t = (index / count) * perimeter
+      if (t < 2 * a) {
+        xs.push(cx - a + t)
+        ys.push(cy - b)
+        continue
+      }
+      t -= 2 * a
+      if (t < 2 * b) {
+        xs.push(cx + a)
+        ys.push(cy - b + t)
+        continue
+      }
+      t -= 2 * b
+      if (t < 2 * a) {
+        xs.push(cx + a - t)
+        ys.push(cy + b)
+        continue
+      }
+      xs.push(cx - a)
+      ys.push(cy + b - (t - 2 * a))
+    }
+  }
+  starts.push(xs.length)
+  return {
+    x: Float64Array.from(xs),
+    y: Float64Array.from(ys),
+    ringStart: Int32Array.from(starts),
+    halfWidth,
+    halfHeight,
+    rings,
+  }
+}
+
+function findSpot(
+  frame: CloudFrame,
+  occupied: ReturnType<typeof occupancy>,
+  halfW: number,
+  halfH: number,
+  gap: number,
+  phase: number,
+) {
+  const { probes, bounds } = frame
+  const reachX = probes.halfWidth - halfW
+  const reachY = probes.halfHeight - halfH
+  if (reachX < 0 || reachY < 0) return null
+  for (let ring = 0; ring <= probes.rings; ring++) {
+    if ((probes.halfWidth * ring) / probes.rings > reachX && (probes.halfHeight * ring) / probes.rings > reachY) return null
+    const start = probes.ringStart[ring]
+    const count = probes.ringStart[ring + 1] - start
+    const offset = Math.floor(phase * count)
+    for (let step = 0; step < count; step++) {
+      const index = start + ((offset + step) % count)
+      const x = probes.x[index]
+      const y = probes.y[index]
+      if (x - halfW < bounds.left || x + halfW > bounds.right || y - halfH < bounds.top || y + halfH > bounds.bottom || occupied.covered(x, y)) continue
+      if (occupied.free(x - halfW - gap, y - halfH - gap, x + halfW + gap, y + halfH + gap)) {
+        return { left: x - halfW - gap, top: y - halfH - gap, right: x + halfW + gap, bottom: y + halfH + gap }
+      }
+    }
+  }
+  return null
+}
+
+function placeWords(words: CloudLayoutWord[], top: number, frame: CloudFrame, strict: boolean): CloudWord[] | null {
+  const occupied = occupancy(frame.width, frame.height)
+  const placed: CloudWord[] = []
+  for (const word of words) {
+    const fontSize = Math.max(frame.minFont, Math.round(top * word.scale))
+    const gap = wordGap(fontSize)
+    let spot = null
+    let vertical = false
+    for (const orientation of word.orientations) {
+      const box = cloudWordBox(word.term, fontSize, orientation, frame.measure)
+      spot = findSpot(frame, occupied, box.width / 2, box.height / 2, gap, word.phase)
+      if (spot) {
+        vertical = orientation
+        break
+      }
+    }
+    if (!spot) {
+      if (strict) return null
+      continue
+    }
+    occupied.add(spot)
+    placed.push({
+      term: word.term,
+      count: word.count,
+      x: Math.round(((spot.left + spot.right) / 2) * 10) / 10,
+      y: Math.round(((spot.top + spot.bottom) / 2) * 10) / 10,
+      fontSize,
+      level: word.level,
+      vertical,
+      ink: word.ink,
+    })
+  }
+  return placed
+}
+
+function layoutWordCloud(terms: CloudTerm[], width: number, height: number, measure: CloudFrame['measure']): CloudWord[] {
+  const minFont = 11
+  const inset = 10
+  const items = cloudTerms(terms)
+  const innerWidth = width - 2 * inset
+  const innerHeight = height - 2 * inset
+  if (!items.length || innerWidth <= 0 || innerHeight <= 0) return []
+  const max = items[0].count
+  const min = items[items.length - 1].count
+  const words: CloudLayoutWord[] = items.map((item, rank) => {
+    const hash = termHash(item.term)
+    const ratio = max === min ? 1 : (item.count - min) / (max - min)
+    const standing = rank >= 3 && VERTICAL_TERM.test(item.term)
+    const upright = standing && (hash >>> 8) % 10 < 3
+    return {
+      ...item,
+      scale: CLOUD_MIN_SCALE + (1 - CLOUD_MIN_SCALE) * cloudRatio(item.count, min, max),
+      level: Math.max(1, Math.ceil(Math.sqrt(ratio) * 4)),
+      ink: rank === 0 ? 0 : hash % 4,
+      phase: ((hash >>> 16) % 997) / 997,
+      orientations: !standing ? [false] : upright ? [true, false] : [false, true],
+    }
+  })
+  const frame: CloudFrame = {
+    width,
+    height,
+    minFont,
+    measure,
+    bounds: { left: inset, top: inset, right: width - inset, bottom: height - inset },
+    probes: probeRings(width / 2, height / 2, innerWidth / 2, innerHeight / 2),
+  }
+  const perPixel = Math.max(0.5, measure(words[0].term, 100, words[0].level) / 100)
+  const cap = Math.min(innerHeight * 0.3, 128)
+  let ceiling = Math.max(minFont, Math.min(cap, (innerWidth - 8) / perPixel, innerHeight / 1.3))
+  const inkArea = (top: number) => words.reduce((sum, word) => {
+    const box = cloudWordBox(word.term, Math.max(minFont, Math.round(top * word.scale)), false, measure)
+    return sum + box.width * box.height
+  }, 0)
+  const packable = 0.72 * innerWidth * innerHeight
+  if (inkArea(ceiling) > packable) {
+    let low = minFont
+    let high = ceiling
+    while (high - low > 1) {
+      const middle = (low + high) / 2
+      if (inkArea(middle) > packable) high = middle
+      else low = middle
+    }
+    ceiling = low
+  }
+  const fits = (top: number) => placeWords(words, top, frame, true)
+  let best = fits(ceiling)
+  if (best) return best
+  best = fits(minFont)
+  if (!best) return placeWords(words, minFont, frame, false) ?? []
+  let low = minFont
+  let high = ceiling
+  while (high - low > 1) {
+    const middle = (low + high) / 2
+    const placed = fits(middle)
+    if (placed) {
+      low = middle
+      best = placed
+    } else high = middle
+  }
+  return best ?? []
+}
+
+function makeCloudMeasure(): CloudFrame['measure'] {
+  const context = document.createElement('canvas').getContext('2d')
+  if (!context) return (text, fontSize) => estimateTextWidth(text, fontSize)
+  const widths = new Map<string, number>()
+  return (text, fontSize, level) => {
+    const weight = cloudWeight(level)
+    const key = `${weight}:${text}`
+    let width = widths.get(key)
+    if (width === undefined) {
+      context.font = `${weight} 100px "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif`
+      width = context.measureText(text).width
+      widths.set(key, width)
+    }
+    return (width * fontSize) / 100
+  }
+}
+
+function useCloudSize(ref: React.RefObject<HTMLDivElement | null>) {
+  const [size, setSize] = useState({ width: 0, height: 0 })
+  useEffect(() => {
+    const element = ref.current
+    if (!element) return
+    const apply = () => {
+      const rect = element.getBoundingClientRect()
+      setSize((current) => current.width === Math.floor(rect.width) && current.height === Math.floor(rect.height)
+        ? current
+        : { width: Math.floor(rect.width), height: Math.floor(rect.height) })
+    }
+    apply()
+    const observer = new ResizeObserver(apply)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [ref])
+  return size
+}
+
+function PhraseWordCloud({ phrases }: { phrases: CloudTerm[] }) {
+  const container = useRef<HTMLDivElement>(null)
+  const size = useCloudSize(container)
+  const measure = useMemo(() => makeCloudMeasure(), [])
+  const words = useMemo(
+    () => size.width > 0 && size.height > 0 ? layoutWordCloud(phrases, size.width, size.height, measure) : [],
+    [phrases, size.width, size.height, measure],
+  )
+  const [hover, setHover] = useState<CloudWord | null>(null)
+
+  return (
+    <div ref={container} className="annual-wordcloud-chart" aria-label="口头禅词云">
+      {size.width > 0 && (
+        <svg className="annual-wordcloud-svg" viewBox={`0 0 ${size.width} ${size.height}`} role="img" aria-label="口头禅词云">
+          {words.map((word) => {
+            const characters = [...word.term]
+            const first = word.y - ((characters.length - 1) * word.fontSize) / 2
+            return (
+              <g
+                key={word.term}
+                className="annual-cloud-word"
+                data-ink={word.ink}
+                data-level={word.level}
+                tabIndex={0}
+                role="button"
+                aria-label={`第 ${words.indexOf(word) + 1} 名，${word.term}，${word.count} 次`}
+                onMouseEnter={() => setHover(word)}
+                onMouseLeave={() => setHover(null)}
+                onFocus={() => setHover(word)}
+                onBlur={() => setHover(null)}
+              >
+                {word.vertical ? (
+                  <text x={word.x} y={first} textAnchor="middle" dominantBaseline="central" fontSize={word.fontSize} fontWeight={cloudWeight(word.level)}>
+                    {characters.map((character, index) => (
+                      <tspan key={index} x={word.x} y={first + index * word.fontSize} dominantBaseline="central">{character}</tspan>
+                    ))}
+                  </text>
+                ) : (
+                  <text x={word.x} y={word.y} textAnchor="middle" dominantBaseline="central" fontSize={word.fontSize} fontWeight={cloudWeight(word.level)}>
+                    {word.term}
+                  </text>
+                )}
+              </g>
+            )
+          })}
+        </svg>
+      )}
+      {hover && (
+        <div
+          className="annual-cloud-hover"
+          style={{
+            left: Math.min(Math.max(hover.x, 70), Math.max(70, size.width - 70)),
+            top: Math.max(hover.y - hover.fontSize / 2 - 4, 0),
+          }}
+        >
+          <div className="annual-cloud-tooltip">
+            <span className="annual-cloud-tooltip-rank">第 {words.indexOf(hover) + 1} 名</span>
+            <span className="annual-cloud-tooltip-word">[{hover.term}]</span>
+            <span className="annual-cloud-tooltip-line" />
+            <span className="annual-cloud-tooltip-count">{hover.count} 次</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function PhraseTooltip({ rank, phrase }: { rank: number; phrase: { text: string; count: number } }) {
@@ -966,7 +1284,10 @@ function AnnualReportView({
   const messageTotal = data.kpis.find((item) => item.label === '消息总数')?.value ?? '0'
   const messageTotalNumber = data.types.reduce((sum, item) => sum + item.count, 0)
   const typeRows = annualTypeRows(data.types)
-  const cloudPhrases = useMemo(() => annual.phrases.slice(0, 40), [annual.phrases])
+  const cloudPhrases = useMemo(
+    () => annual.phrases.slice(0, 40).map((item) => ({ term: item.text, count: item.count })),
+    [annual.phrases],
+  )
   const [firstMessageTime, lastMessageTime] = data.range.split(' → ')
   const chapters = [
     'overview', 'top-friends', 'companions', 'rhythm', 'initiative', 'response',
@@ -1512,10 +1833,7 @@ function AnnualReportView({
         >
           {phrase ? (
             <>
-              <div className="annual-phrase-headline">
-                <strong>「{phrase.text}」</strong>
-                <span>{formatNumber(phrase.count)} 次</span>
-              </div>
+              <AnnualFigure value={`「${phrase.text}」`} unit={`${formatNumber(phrase.count)}次`} label="最常说的短句" /> 
               <p className="annual-phrase-lead">
                 你发出的消息里，<strong>「{phrase.text}」</strong>出现了 <strong>{formatNumber(phrase.count)}</strong> 次
                 {annual.phrases[1] && <>，其次是<strong>「{annual.phrases[1].text}」</strong>（<strong>{formatNumber(annual.phrases[1].count)}</strong> 次）</>}。
@@ -1539,7 +1857,7 @@ function AnnualReportView({
                 ))}
               </ol>
               <div className="annual-phrase-cloud">
-                <PhraseWordCloud phrases={cloudPhrases} dark={dark} />
+                <PhraseWordCloud phrases={cloudPhrases} />
               </div>
             </div>
             </>

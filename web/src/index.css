@@ -657,8 +657,21 @@
 .annual-phrase-row .text { max-width: 45%; overflow: hidden; color: var(--card-foreground); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .annual-phrase-row .leader { flex: 1; min-width: 10px; margin-bottom: 3px; border-bottom: 1px dotted color-mix(in oklab, var(--muted-foreground) 55%, transparent); }
 .annual-phrase-row .count { flex: 0 0 auto; color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.annual-phrase-cloud { position: relative; min-height: 340px; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--muted); }
-.annual-wordcloud-chart { width: 100%; height: 340px; }
+.annual-phrase-cloud { position: relative; min-height: 340px; overflow: visible; border: 1px solid var(--border); border-radius: 14px; background: var(--muted); }
+.annual-wordcloud-chart { position: relative; width: 100%; height: 340px; }
+.annual-wordcloud-svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.annual-cloud-word { cursor: default; outline: none; }
+.annual-cloud-word[data-ink='0'] { --cloud-ink: var(--annual-time); }
+.annual-cloud-word[data-ink='1'] { --cloud-ink: var(--annual-people); }
+.annual-cloud-word[data-ink='2'] { --cloud-ink: var(--muted-foreground); }
+.annual-cloud-word[data-ink='3'] { --cloud-ink: var(--card-foreground); }
+.annual-cloud-word[data-level='1'] { fill: color-mix(in oklab, var(--cloud-ink) 38%, var(--foreground)); }
+.annual-cloud-word[data-level='2'] { fill: color-mix(in oklab, var(--cloud-ink) 58%, var(--foreground)); }
+.annual-cloud-word[data-level='3'] { fill: color-mix(in oklab, var(--cloud-ink) 78%, var(--foreground)); }
+.annual-cloud-word[data-level='4'] { fill: var(--cloud-ink); }
+.annual-cloud-word:focus-visible text { stroke: var(--foreground); stroke-width: 1.5px; }
+.annual-cloud-word:hover text { opacity: .72; }
+.annual-cloud-hover { position: absolute; z-index: 5; transform: translate(-50%, -100%); pointer-events: none; }
 .annual-cloud-tooltip { display: flex; width: 132px; flex-direction: column; align-items: flex-start; gap: 5px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); color: var(--card-foreground); box-shadow: 0 12px 28px color-mix(in oklab, var(--foreground) 16%, transparent); }
 .annual-cloud-tooltip-rank { color: var(--muted-foreground); font-size: 10px; }
 .annual-cloud-tooltip-word { color: var(--muted-foreground); font-size: 13px; }
