@@ -121,10 +121,16 @@ pub fn load_moments_from_path(
         let Some(timeline) = timeline_re.find(&content).map(|value| value.as_str()) else {
             continue;
         };
-        let timestamp = crate::wechat::parse::xml_value(&content, "createTime")
+        let xml_timestamp = crate::wechat::parse::xml_value(&content, "createTime")
             .or_else(|| crate::wechat::parse::xml_value(timeline, "createTime"))
-            .and_then(|value| value.trim().parse::<i64>().ok())
-            .unwrap_or(table_time);
+            .and_then(|value| value.trim().parse::<i64>().ok());
+        // Alpha/WeFlow filter years strictly by the XML createTime. A table
+        // timestamp is not the post time (it can be a cache/sync time).
+        let timestamp = if year != 0 {
+            xml_timestamp.unwrap_or(0)
+        } else {
+            xml_timestamp.unwrap_or(table_time)
+        };
         let timestamp = if timestamp > 1_000_000_000_000 { timestamp / 1000 } else { timestamp };
         if timestamp <= 0 {
             continue;
@@ -358,6 +364,25 @@ mod tests {
     }
 
     #[test]
+    fn ignores_rows_without_xml_create_time_for_year_reports() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sns = dir.path().join("sns");
+        fs::create_dir_all(&sns).unwrap();
+        let db = rusqlite::Connection::open(sns.join("sns.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE SnsTimeLine (tid INTEGER PRIMARY KEY, user_name TEXT, content TEXT, create_time INTEGER);
+             INSERT INTO SnsTimeLine VALUES (100, 'me', '<TimelineObject><createTime>1760000000</createTime><contentStyle>1</contentStyle></TimelineObject>', 1760000000);
+             INSERT INTO SnsTimeLine VALUES (101, 'me', '<TimelineObject><contentStyle>1</contentStyle></TimelineObject>', 1760000000);
+             INSERT INTO SnsTimeLine VALUES (102, 'me', '<TimelineObject><createTime>1730000000</createTime><contentStyle>2</contentStyle></TimelineObject>', 1730000000);",
+        )
+        .unwrap();
+        drop(db);
+        let stats = load_moments(Some(dir.path()), None, None, true, Some("me"), 2025).expect("moments");
+        assert_eq!(stats.posts, 1);
+        assert_eq!(stats.post_types.get("图片"), Some(&1));
+    }
+
+    #[test]
     fn reads_incoming_notification_likes() {
         let dir = tempfile::TempDir::new().unwrap();
         let sns = dir.path().join("sns");
@@ -442,6 +467,73 @@ mod tests {
     }
 }
 
+fn debug_rows(
+    path: &Path,
+    key: Option<&[u8; 32]>,
+    plaintext: bool,
+    self_username: Option<&str>,
+) -> Result<serde_json::Value> {
+    let db = Db::open(path, key, plaintext)?;
+    let tables = db.tables()?;
+    let Some(table) = tables.iter().find(|table| table.eq_ignore_ascii_case("SnsTimeLine") || table.to_ascii_lowercase().contains("snstimeline")) else {
+        return Ok(serde_json::json!({"error": "SnsTimeLine not found", "tables": tables}));
+    };
+    let columns = db.columns(table)?;
+    let has = |name: &str| columns.iter().any(|column| column.eq_ignore_ascii_case(name));
+    let tid_col = ["tid", "Tid", "ID"].iter().find(|name| has(name)).copied();
+    let user_col = ["user_name", "userName", "username"].iter().find(|name| has(name)).copied();
+    let content_col = ["content", "Content"].iter().find(|name| has(name)).copied();
+    let time_col = ["create_time", "createTime", "createtime"].iter().find(|name| has(name)).copied();
+    let Some(content_col) = content_col else { return Ok(serde_json::json!({"error":"content column missing"})) };
+    let mut fields = Vec::new();
+    let mut ti = None;
+    if let Some(c) = tid_col { ti = Some(fields.len()); fields.push(crate::db::quote_ident(c)); }
+    let ui = fields.len();
+    if let Some(c) = user_col { fields.push(crate::db::quote_ident(c)); } else { fields.push("''".into()); }
+    let ci = fields.len();
+    fields.push(crate::db::quote_ident(content_col));
+    let timei = time_col.map(|c| { let i = fields.len(); fields.push(crate::db::quote_ident(c)); i });
+    let sql = format!("SELECT {} FROM {}", fields.join(", "), crate::db::quote_ident(table));
+    let mut stmt = db.conn().prepare(&sql)?;
+    let mut rows = stmt.query([])?;
+    let timeline_re = Regex::new(r"(?is)<TimelineObject\b.*?</TimelineObject>")?;
+    let like_re = Regex::new(r"(?is)<(?:LikeUserList|likeUserList|likeList|like_user_list)\b.*?</(?:LikeUserList|likeUserList|likeList|like_user_list)>")?;
+    let username_re = Regex::new(r"(?is)<username\b[^>]*>(.*?)</username>")?;
+    let self_id = self_username.unwrap_or("").to_lowercase();
+    let mut total = 0usize;
+    let mut items = Vec::new();
+    while let Ok(Some(row)) = rows.next() {
+        total += 1;
+        let author = row_text(&row, ui);
+        if !self_id.is_empty() && author.trim().to_lowercase() != self_id {
+            continue;
+        }
+        let content = row_content(&row, ci);
+        let Some(timeline) = timeline_re.find(&content).map(|m| m.as_str()) else { continue };
+        let xml_time = crate::wechat::parse::xml_value(&content, "createTime")
+            .or_else(|| crate::wechat::parse::xml_value(timeline, "createTime"))
+            .and_then(|v| v.trim().parse::<i64>().ok());
+        let style = crate::wechat::parse::xml_value(&content, "contentStyle")
+            .or_else(|| crate::wechat::parse::xml_value(timeline, "contentStyle"));
+        let like_count = like_re.find(&content).map(|block| username_re.captures_iter(block.as_str()).count()).unwrap_or(0);
+        items.push(serde_json::json!({
+            "tid": ti.and_then(|i| row_i64(&row, i)),
+            "author": author,
+            "xmlCreateTime": xml_time,
+            "tableTime": timei.and_then(|i| row_i64(&row, i)),
+            "contentStyle": style,
+            "likeCount": like_count,
+            "contentLength": content.len(),
+            "contentStart": content.chars().take(80).collect::<String>(),
+        }));
+    }
+    let messages = tables.iter().find(|t| t.to_ascii_lowercase().contains("snsmessage")).and_then(|t| {
+        let sql = format!("SELECT COUNT(*) FROM {}", crate::db::quote_ident(t));
+        db.conn().query_row(&sql, [], |r| r.get::<_, i64>(0)).ok()
+    });
+    Ok(serde_json::json!({"totalRows": total, "selfPosts": items, "messageRows": messages}))
+}
+
 pub fn run(options: &crate::cli::ValidatedCli, layout: &crate::wechat::discover::Layout) -> Result<()> {
     let path = moments_db_path(layout.account_root.as_deref(), layout.db_storage.as_deref())
         .context("sns.db not found; make sure the WeChat account has moments data")?;
@@ -472,7 +564,7 @@ pub fn run(options: &crate::cli::ValidatedCli, layout: &crate::wechat::discover:
     };
     let mut post_types = stats.post_types.iter().collect::<Vec<_>>();
     post_types.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "status": "ok",
         "year": options.report_year,
         "posts": stats.posts,
@@ -482,6 +574,9 @@ pub fn run(options: &crate::cli::ValidatedCli, layout: &crate::wechat::discover:
         "topLikers": ranked(&stats.top_likers, 10).into_iter().map(|(username, count)| serde_json::json!({"username": username, "displayName": display(&username), "count": count})).collect::<Vec<_>>(),
         "topLikedAuthors": ranked(&stats.top_liked_authors, 10).into_iter().map(|(username, count)| serde_json::json!({"username": username, "displayName": display(&username), "count": count})).collect::<Vec<_>>(),
     });
+    if options.debug {
+        payload["debug"] = debug_rows(&path, options.key.as_ref(), options.plaintext, self_username.as_deref())?;
+    }
     if let Some(dir) = &options.output_dir {
         std::fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
         let output = dir.join("moments.json");
