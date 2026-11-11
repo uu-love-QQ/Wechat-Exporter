@@ -16,7 +16,6 @@ pub struct ExportContext<'a> {
     pub exported_at_ms: i64,
     pub include_media: bool,
     pub avatar_path: Option<String>,
-    pub raw_backup: Option<&'a RawBackup>,
 }
 
 impl<'a> ExportContext<'a> {
@@ -745,10 +744,14 @@ fn raw_sql_value(value: &RawSqlValue) -> rusqlite::types::Value {
     }
 }
 
-fn write_sqlite_raw(context: &ExportContext<'_>, connection: &rusqlite::Connection) -> Result<()> {
-    let Some(raw) = context.raw_backup else {
-        return Ok(());
-    };
+/// Write the standalone `backup.db` used by `conversation --export --backup`.
+pub fn write_backup_database(
+    raw: &RawBackup,
+    conversation_id: &str,
+    path: &Path,
+) -> Result<()> {
+    let connection = rusqlite::Connection::open(path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
     connection.execute_batch(
         "CREATE TABLE wcdb_meta (
             conversation_id TEXT PRIMARY KEY, table_name TEXT, shard_path TEXT,
@@ -768,7 +771,7 @@ fn write_sqlite_raw(context: &ExportContext<'_>, connection: &rusqlite::Connecti
         "INSERT INTO wcdb_meta (conversation_id,table_name,shard_path,table_sql,session_json)
          VALUES (?1,?2,?3,?4,?5)",
         rusqlite::params![
-            context.conversation.id,
+            conversation_id,
             raw.table,
             raw.shard.to_string_lossy(),
             raw.table_sql,
@@ -906,7 +909,6 @@ fn write_sqlite(context: &ExportContext<'_>, path: &Path) -> Result<()> {
         }
         transaction.commit()?;
     }
-    write_sqlite_raw(context, &connection)?;
     Ok(())
 }
 

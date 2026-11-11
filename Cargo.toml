@@ -1,6 +1,6 @@
 [package]
 name = "wechat-exporter"
-version = "0.18.51"
+version = "0.18.52"
 edition = "2021"
 description = "WeChat 4.x local database decryptor and multi-format chat exporter"
 license = "MIT"
@@ -38,6 +38,7 @@ silk-codec = "0.3"
 tempfile = "3"
 thiserror = "2"
 ureq = "2.10"
+zip = { version = "4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 [profile.release]
 opt-level = 2
 lto = "thin"

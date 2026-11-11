@@ -239,7 +239,7 @@ wechat-exporter conversation --export --key <64位Hex密钥> \
 | `-k, --keep-output` | 保留临时输出目录 |
 | `--report` | 生成可视化分析报告 `conversation.report.html` |
 | `--upload` | 导出完成后按配置自动上传到 WebDAV |
-| `--backup` | 在 SQLite 导出中写入 WCDB 原始字段；配合 `recovery` 按会话写回微信数据库 |
+| `--backup` | 生成 `backup.zip`：`backup.db` + HTML + 图片/语音/表情等媒体，配合 `recovery` 写回微信数据库 |
 | `--silent` | 不打印进度条，仅保留最终结果/错误 |
 | `--debug` | 详细调试输出 |
 
@@ -384,22 +384,33 @@ wechat-exporter decrypt --key <64位Hex密钥> \
 #### 1. 按会话备份原始 WCDB 行（推荐）
 
 ```bash
-# 只备份某个会话；--backup 自动使用 sqlite 格式并写入原始字段
+# 只备份某个会话；自动生成 backup.zip（内部含 backup.db、conversation.html、media/）
 wechat-exporter conversation --export --backup \
   --key <64位Hex密钥> --conversation-id wxid_xxx \
   --output-dir /path/to/backup
 
-# 关闭微信后，把该会话缺失的消息写回原始加密库
-wechat-exporter recovery --input /path/to/backup \
+# 关闭微信后，从压缩包把该会话缺失的消息写回原始加密库
+wechat-exporter recovery --input /path/to/backup/backup.zip \
   --target-database /path/to/db_storage --key <64位Hex密钥> --force
 ```
 
-- 备份文件为 `conversation.sqlite`，其中 `wcdb_messages` 保存 `local_id`、
+压缩包内容：
+
+- `backup.db`：`wcdb_meta`、`wcdb_messages`、`wcdb_name2id`，保存 `local_id`、
   `server_id`、`local_type`、`sort_seq`、`real_sender_id`、`message_content`、
-  `compress_content`、`packed_info_data` 等原始字段；
-- 可重复传入 `-c` 或使用 `--start-time-ms` / `--end-time-ms` 只备份部分消息；
-- 恢复按 `local_id` / `server_id` 检查，仅插入目标中不存在的消息，保留其他会话
-  和已有新消息；目标消息表不存在时会用备份中的建表 SQL 创建；
+  `compress_content`、`packed_info_data`、`WCDB_CT_*` 等原始字段；
+- `conversation.html`：可直接打开的离线 HTML 记录；
+- `media/`：图片、语音、表情、视频、文件等已解密媒体；
+- `manifest.json`：会话、消息数、媒体统计。
+
+`--backup` 只生成压缩包，不会修改普通 `--format sqlite` 的 `conversation.sqlite`
+导出。可重复传入 `-c` 或使用 `--start-time-ms` / `--end-time-ms` 只备份部分消息；
+多个会话会分别生成 `backup-<会话>.zip`。
+
+恢复行为：
+
+- 从 zip 中读取 `backup.db`，按 `local_id` / `server_id` 只插入目标中不存在的消息；
+- 保留其他会话和已有新消息；目标消息表不存在时使用备份建表 SQL 创建；
 - 恢复前自动备份目标数据库，返回 JSON 包含 `inserted` / `skipped` 数量；
 - `--force` 是写回微信数据库的必需确认开关；建议先退出微信。
 

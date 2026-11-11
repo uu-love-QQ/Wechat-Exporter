@@ -259,7 +259,7 @@ pub struct ExportArgs {
     )]
     pub conversation_ids: Vec<String>,
 
-    /// 导出格式 (可重复传入，或传入 'all'，支持: json, markdown, chatlab-json, chatlab-jsonl, html, txt, xlsx, arkme-json, sql, sqlite, weclone；--backup 会自动加入 sqlite)
+    /// 导出格式 (可重复传入，或传入 'all'，支持: json, markdown, chatlab-json, chatlab-jsonl, html, txt, xlsx, arkme-json, sql, sqlite, weclone)
     #[arg(
         long = "format",
         short = 'f',
@@ -312,8 +312,8 @@ pub struct ExportArgs {
     #[arg(long = "upload", action = ArgAction::SetTrue, help_heading = "导出")]
     pub upload: bool,
 
-    /// 在 SQLite 导出中写入 WCDB 原始字段，供 recovery 按会话部分恢复
-    #[arg(long = "backup", action = ArgAction::SetTrue, help_heading = "导出")]
+    /// 生成 backup.zip：包含 backup.db、HTML、图片/语音/表情等媒体；仅选定会话/时间范围
+    #[arg(long = "backup", action = ArgAction::SetTrue, help_heading = "备份")]
     pub backup: bool,
 
     /// 不打印进度条
@@ -575,7 +575,7 @@ pub struct BackupArgs {
 
 #[derive(Args, Debug)]
 pub struct RecoveryArgs {
-    /// decrypt 生成的普通 SQLite 备份文件或目录
+    /// backup.zip，或 decrypt 生成的普通 SQLite 备份文件/目录
     #[arg(
         long = "input",
         visible_alias = "backup",
@@ -964,15 +964,11 @@ fn validate_export_args(args: ExportArgs) -> Result<ValidatedCli> {
             bail!("export time range is inverted");
         }
     }
-    let mut formats = if args.backup && args.formats.is_empty() {
-        vec![Format::Sqlite]
-    } else {
-        parse_formats(&args.formats)?
-    };
-    if args.backup && !formats.contains(&Format::Sqlite) {
-        formats.push(Format::Sqlite);
-    }
+    let formats = parse_formats(&args.formats)?;
     let image_key = parse_image_key(args.image_key.as_deref())?;
+    if args.backup && args.output_dir.is_none() {
+        bail!("--backup requires --output-dir");
+    }
     if (!args.formats.is_empty()
         || !args.conversation_ids.is_empty()
         || args.start_time_ms.is_some()

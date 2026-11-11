@@ -326,7 +326,6 @@ fn run_offline(options: &ValidatedCli) -> Result<()> {
                 exported_at_ms,
                 include_media: options.include_media,
                 avatar_path: None,
-                raw_backup: None,
             };
             let mut documents = serde_json::Map::new();
             for format in &formats {
@@ -559,6 +558,14 @@ fn run_restore(options: &ValidatedCli) -> Result<()> {
         .recovery_input
         .as_deref()
         .context("recovery input path is missing")?;
+    if input.is_file()
+        && input
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("zip"))
+    {
+        return run_restore_archive(options);
+    }
     let mut databases = Vec::new();
     if input.is_file() {
         let extension = input.extension().and_then(|value| value.to_str()).unwrap_or("");
@@ -827,13 +834,11 @@ fn find_target_shard(
     table: &str,
     key: &[u8; 32],
 ) -> Result<Option<PathBuf>> {
-    let direct = if preferred.is_absolute() {
-        preferred.to_path_buf()
-    } else {
-        target_root.join(preferred)
-    };
-    if direct.is_file() {
-        return Ok(Some(direct));
+    if !preferred.is_absolute() {
+        let direct = target_root.join(preferred);
+        if direct.is_file() {
+            return Ok(Some(direct));
+        }
     }
     let mut databases = Vec::new();
     collect_database_files(target_root, &mut databases)?;
@@ -1102,10 +1107,12 @@ fn run_restore_partial(options: &ValidatedCli) -> Result<()> {
         backups.push(input.to_path_buf());
     } else {
         for entry in walk_files(input)? {
+            let name = entry.file_name().and_then(|value| value.to_str()).unwrap_or("");
             if entry
                 .extension()
                 .and_then(|value| value.to_str())
                 .is_some_and(|value| value.eq_ignore_ascii_case("sqlite"))
+                || name.eq_ignore_ascii_case("backup.db")
             {
                 backups.push(entry);
             }
@@ -1172,4 +1179,47 @@ fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(out)
+}
+
+
+fn run_restore_archive(options: &ValidatedCli) -> Result<()> {
+    let archive_path = options
+        .recovery_input
+        .as_deref()
+        .context("recovery input path is missing")?;
+    let file = std::fs::File::open(archive_path)
+        .with_context(|| format!("failed to open {}", archive_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .with_context(|| format!("failed to read zip archive {}", archive_path.display()))?;
+    let staging = tempfile::tempdir().context("failed to create archive extraction directory")?;
+    let mut has_backup = false;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let Some(relative) = entry.enclosed_name() else {
+            bail!("archive contains an unsafe path: {}", entry.name());
+        };
+        let destination = staging.path().join(&relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&destination)?;
+            continue;
+        }
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut output = std::fs::File::create(&destination)?;
+        std::io::copy(&mut entry, &mut output)?;
+        if relative
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("backup.db"))
+        {
+            has_backup = true;
+        }
+    }
+    if !has_backup {
+        bail!("archive {} contains no backup.db", archive_path.display());
+    }
+    let mut extracted = options.clone();
+    extracted.recovery_input = Some(staging.path().to_path_buf());
+    run_restore_partial(&extracted)
 }

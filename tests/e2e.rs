@@ -210,6 +210,14 @@ fn exports_all_formats_and_media() {
         )
         .unwrap();
     assert_eq!(stored, "hello group");
+    let raw_tables: i64 = sqlite
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='wcdb_meta'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(raw_tables, 0);
 }
 
 #[test]
@@ -599,9 +607,10 @@ fn detects_databases_subcommand() {
 }
 
 #[test]
-fn backs_up_and_restores_one_conversation_raw_rows() {
+fn backs_up_and_restores_one_conversation_archive() {
+    use std::io::{Read, Write};
     let (temp, source) = fixture();
-    let backup = temp.path().join("raw-backup");
+    let backup = temp.path().join("backup-output");
     let (code, _, stderr) = run_with_key(&[
         "conversation",
         "--export",
@@ -614,7 +623,23 @@ fn backs_up_and_restores_one_conversation_raw_rows() {
         backup.to_str().unwrap(),
     ]);
     assert_eq!(code, 0, "stderr={stderr}");
-    let backup_db = rusqlite::Connection::open(backup.join("conversation.sqlite")).unwrap();
+    let archive_path = backup.join("backup.zip");
+    let mut archive = zip::ZipArchive::new(fs::File::open(&archive_path).unwrap()).unwrap();
+    let names: Vec<String> = (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().to_string())
+        .collect();
+    assert!(names.iter().any(|name| name == "backup.db"));
+    assert!(names.iter().any(|name| name == "conversation.html"));
+    assert!(names.iter().any(|name| name.starts_with("media/")));
+    let mut backup_bytes = Vec::new();
+    archive
+        .by_name("backup.db")
+        .unwrap()
+        .read_to_end(&mut backup_bytes)
+        .unwrap();
+    let work = temp.path().join("backup-db");
+    fs::write(&work, &backup_bytes).unwrap();
+    let backup_db = rusqlite::Connection::open(&work).unwrap();
     let raw: Vec<rusqlite::types::Value> = {
         let mut statement = backup_db
             .prepare(
@@ -629,17 +654,37 @@ fn backs_up_and_restores_one_conversation_raw_rows() {
         let row = rows.next().unwrap().unwrap();
         (0..18).map(|index| row.get(index).unwrap()).collect()
     };
+    drop(backup_db);
     let mut raw = raw;
     raw[0] = rusqlite::types::Value::Integer(99);
     raw[1] = rusqlite::types::Value::Integer(9999);
     raw[12] = rusqlite::types::Value::Blob(b"PARTIAL_RESTORE".to_vec());
-    let placeholders = (1..=18).map(|index| format!("?{index}")).collect::<Vec<_>>().join(",");
+    let backup_db = rusqlite::Connection::open(&work).unwrap();
+    let placeholders = (1..=18)
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(",");
     backup_db
         .execute(
             &format!("INSERT INTO wcdb_messages VALUES ({placeholders})"),
             rusqlite::params_from_iter(raw),
         )
         .unwrap();
+    drop(backup_db);
+
+    let modified_archive = temp.path().join("modified.zip");
+    let mut writer = zip::ZipWriter::new(fs::File::create(&modified_archive).unwrap());
+    writer
+        .start_file(
+            "backup.db",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated),
+        )
+        .unwrap();
+    writer
+        .write_all(&fs::read(&work).unwrap())
+        .unwrap();
+    writer.finish().unwrap();
 
     let target_root = temp.path().join("partial-target");
     fs::create_dir_all(&target_root).unwrap();
@@ -648,7 +693,7 @@ fn backs_up_and_restores_one_conversation_raw_rows() {
     let (code, stdout, stderr) = run_with_key(&[
         "recovery",
         "--input",
-        backup.to_str().unwrap(),
+        modified_archive.to_str().unwrap(),
         "--target-database",
         target.to_str().unwrap(),
         "--force",

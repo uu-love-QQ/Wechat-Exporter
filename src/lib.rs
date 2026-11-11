@@ -16,7 +16,7 @@ pub mod wechat;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cli::{Cli, ContactKind, Mode, ValidatedCli};
@@ -626,6 +626,205 @@ fn download_avatar(url: &str, conversation_dir: &std::path::Path) -> Option<std:
     Some(path)
 }
 
+fn write_zip_directory(zip_path: &Path, root: &Path) -> Result<()> {
+    use std::io::{Read, Write};
+    let file = std::fs::File::create(zip_path)
+        .with_context(|| format!("failed to create {}", zip_path.display()))?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let mut entries = std::fs::read_dir(&directory)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            let name = relative.to_string_lossy().replace('\\', "/");
+            writer
+                .start_file(name, options)
+                .with_context(|| format!("failed to add {} to archive", relative.display()))?;
+            let mut input = std::fs::File::open(&path)?;
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let read = input.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                writer.write_all(&buffer[..read])?;
+            }
+        }
+    }
+    writer.finish()?;
+    Ok(())
+}
+
+fn run_export_backup(
+    options: &ValidatedCli,
+    layout: &wechat::discover::Layout,
+    store: &Store,
+    contacts: &HashMap<String, wechat::model::Contact>,
+    selected: &[Conversation],
+    self_username: Option<&str>,
+    account_id: Option<&str>,
+    output_dir: &Path,
+    self_name: &str,
+) -> Result<()> {
+    let media_index = wechat::media::MediaIndex::build(layout.account_root.as_deref());
+    let voice_index = layout.db_storage.as_deref().map(|db_storage| {
+        wechat::voice::VoiceIndex::build(
+            db_storage,
+            options.key.as_ref(),
+            options.plaintext,
+            options.debug,
+        )
+    });
+    let exported_at_ms = now_ms();
+    let mut archives = Vec::new();
+    for conversation in selected {
+        let mut messages = store.load_messages(
+            &conversation.id,
+            self_username,
+            contacts,
+            options.start_time_ms,
+            options.end_time_ms,
+        )?;
+        if messages.is_empty() {
+            continue;
+        }
+        let staging = tempfile::tempdir().context("failed to create backup staging directory")?;
+        let raw = store
+            .raw_backup(&conversation.id, options.start_time_ms, options.end_time_ms)?
+            .context("selected conversation has no raw WCDB rows")?;
+        let mut raw = raw;
+        if let Some(root) = &layout.db_storage {
+            raw.shard = raw
+                .shard
+                .strip_prefix(root)
+                .unwrap_or(&raw.shard)
+                .to_path_buf();
+        }
+        raw.session = wechat::session::raw_session(
+            layout.session_db.as_deref(),
+            options.key.as_ref(),
+            options.plaintext,
+            &conversation.id,
+        )?;
+        let backup_db = staging.path().join("backup.db");
+        export::write_backup_database(&raw, &conversation.id, &backup_db)?;
+        let attachment_total = messages.iter().filter(|message| message.media.is_some()).count();
+        let media = wechat::media::export_media(
+            &mut messages,
+            &media_index,
+            staging.path(),
+            options.image_key,
+            account_id.unwrap_or(""),
+            options.debug,
+            &conversation.id,
+            voice_index.as_ref(),
+            None,
+        );
+        let avatar_path = contacts.get(&conversation.id).and_then(|contact| {
+            let url = contact.avatar_url.trim();
+            if url.is_empty() {
+                None
+            } else {
+                download_avatar(url, staging.path()).map(|path| {
+                    path.strip_prefix(staging.path())
+                        .unwrap_or(path.as_path())
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                })
+            }
+        });
+        let context = ExportContext {
+            conversation,
+            messages: &messages,
+            self_username,
+            self_name: self_name.to_string(),
+            exported_at_ms,
+            include_media: true,
+            avatar_path,
+        };
+        export::write_conversation(&context, staging.path(), &[cli::Format::Html], false)?;
+        let manifest = serde_json::json!({
+            "schema": "wechat.backup.v1",
+            "generator": util::GENERATOR,
+            "created_at": exported_at_ms / 1000,
+            "conversation": {
+                "id": conversation.id,
+                "name": conversation.name,
+                "type": if conversation.is_group { "group" } else { "private" },
+            },
+            "messages": messages.len(),
+            "attachments": attachment_total,
+            "media": {
+                "saved": media.saved,
+                "failed": media.failed,
+                "failures": media.failures,
+            },
+            "files": ["backup.db", "conversation.html", "manifest.json", "media/"],
+        });
+        std::fs::write(
+            staging.path().join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest)?,
+        )?;
+        let archive_name = if selected.len() == 1 {
+            "backup.zip".to_string()
+        } else {
+            format!("backup-{}.zip", conversation.folder_name())
+        };
+        let archive_path = output_dir.join(&archive_name);
+        if archive_path.exists() {
+            bail!("backup archive already exists: {}", archive_path.display());
+        }
+        write_zip_directory(&archive_path, staging.path())?;
+        archives.push(serde_json::json!({
+            "conversation_id": conversation.id,
+            "conversation_name": conversation.name,
+            "archive": archive_path,
+            "messages": messages.len(),
+            "attachments": attachment_total,
+            "media": {
+                "saved": media.saved,
+                "failed": media.failed,
+            },
+            "files": ["backup.db", "conversation.html", "manifest.json", "media/"],
+        }));
+    }
+    if archives.is_empty() {
+        bail!("no readable conversation returned");
+    }
+    let upload = if options.upload {
+        let mut progress = Progress::new(options.silent);
+        progress.set_phase("上传 WebDAV 备份");
+        let summary = backup::upload_directory(output_dir, &mut progress)
+            .with_context(|| format!("backup archive created at {} but WebDAV upload failed", output_dir.display()))?;
+        progress.finish();
+        println!("[+] WebDAV 备份完成: {} ({} 个文件)", summary.remote, summary.files);
+        Some(serde_json::json!({
+            "remote": summary.remote,
+            "files": summary.files,
+        }))
+    } else {
+        None
+    };
+    let result = serde_json::json!({
+        "schema": util::SCHEMA,
+        "generator": util::GENERATOR,
+        "account_id": account_id,
+        "output_directory": output_dir,
+        "archives": archives,
+        "upload": upload,
+    });
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
 fn run_export(
     options: &ValidatedCli,
     layout: &wechat::discover::Layout,
@@ -660,6 +859,19 @@ fn run_export(
         .filter(|value| !value.is_empty())
         .or_else(|| self_username.map(str::to_string))
         .unwrap_or_default();
+    if options.backup {
+        return run_export_backup(
+            options,
+            layout,
+            store,
+            contacts,
+            &selected,
+            self_username,
+            account_id,
+            &output_dir,
+            &self_name,
+        );
+    }
     let media_index = if options.include_media {
         Some(wechat::media::MediaIndex::build(
             layout.account_root.as_deref(),
@@ -755,37 +967,6 @@ fn run_export(
         } else {
             None
         };
-        let raw_backup = if options.backup {
-            store
-                .raw_backup(
-                    &conversation.id,
-                    options.start_time_ms,
-                    options.end_time_ms,
-                )?
-                .map(|mut raw| {
-                    if let Some(root) = &layout.db_storage {
-                        raw.shard = raw
-                            .shard
-                            .strip_prefix(root)
-                            .unwrap_or(&raw.shard)
-                            .to_path_buf();
-                    }
-                    raw
-                })
-        } else {
-            None
-        };
-        let raw_backup = if let Some(mut raw) = raw_backup {
-            raw.session = wechat::session::raw_session(
-                layout.session_db.as_deref(),
-                options.key.as_ref(),
-                options.plaintext,
-                &conversation.id,
-            )?;
-            Some(raw)
-        } else {
-            None
-        };
         let context = ExportContext {
             conversation,
             messages: &messages,
@@ -794,7 +975,6 @@ fn run_export(
             exported_at_ms,
             include_media: options.include_media,
             avatar_path,
-            raw_backup: raw_backup.as_ref(),
         };
         progress.set_phase(format!(
             "写入会话 {}/{} · {}",
