@@ -83,6 +83,7 @@ txt           conversation.txt
 xlsx          conversation.xlsx
 arkme-json    conversation.arkme.json
 sql           conversation.sql
+sqlite        conversation.sqlite
 weclone       conversation.weclone.csv
 ```
 
@@ -174,7 +175,9 @@ wechat/shards.rs    Name2Id maps, Msg_ row loading, zstd, dedup, ordering
 wechat/parse.rs     local_type and appmsg/XML content parsing
 wechat/build.rs     sender, direction, display-name enrichment
 wechat/media.rs     media index, .dat decryption, copying
-export/mod.rs       ten format writers + report
+decrypt.rs          SQLCipher -> plaintext SQLite export
+recovery.rs         restore exports from conversation.sqlite backups
+export/mod.rs       eleven format writers + report
 ```
 
 The integration fixture (`src/bin/make_fixture.rs`) builds an encrypted

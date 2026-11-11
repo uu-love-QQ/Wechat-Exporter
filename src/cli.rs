@@ -19,7 +19,7 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
   2. 完整解码：支持普通文本、群聊发件人、图片、语音、视频、表情、名片、位置、
               引用回复、文件附件、微信转账、微信小程序、接龙、系统撤回、拍一拍
   3. 媒体提取：按需解密 .dat 图片（传统异或/V1固定AES/V2动态AES）及附件
-  4. 10 种导出格式：
+  4. 11 种导出格式：
      - json          (完整结构化 JSON，含会话元数据)
      - markdown      (排版美观的 Markdown 聊天记录)
      - chatlab-json  (ChatLab 标准交换格式 v0.0.2 JSON)
@@ -29,6 +29,7 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
      - xlsx          (标准 Excel 表格文件)
      - arkme-json    (包含独立发件人索引与群成员列表的紧凑 JSON)
      - sql           (包含创建表与全部 INSERT 语句的标准 SQL 文件)
+     - sqlite        (标准 SQLite 数据库，适合备份与恢复)
      - weclone       (标准 WeClone 带 BOM CSV 格式)
 
 【使用方式】
@@ -42,6 +43,8 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
   report  生成私聊/群聊/双人/年度分析报告
   moments 分析朋友圈发帖、收赞、点赞与好友排行
   favorite 获取微信收藏列表
+  decrypt  解密数据库到指定目录
+  recovery 从 SQLite 导出备份恢复会话
   backup  配置 WebDAV 自动备份
   upgrade 检查并安装新版本
 
@@ -75,6 +78,10 @@ pub enum Command {
     Moments(MomentsArgs),
     /// 获取微信收藏列表
     Favorite(FavoriteArgs),
+    /// 将加密数据库解密为普通 SQLite 到指定目录
+    Decrypt(DecryptArgs),
+    /// 从 SQLite 导出备份恢复会话
+    Recovery(RecoveryArgs),
     /// 检查并安装新版本
     Upgrade(UpgradeArgs),
     /// 配置或测试备份提供商
@@ -106,7 +113,11 @@ pub struct CommonArgs {
     pub key_file: Option<PathBuf>,
 
     /// 手动指定当前微信登录用户账号 wxid
-    #[arg(long = "self-username", value_name = "WXID", help_heading = "数据库与密钥")]
+    #[arg(
+        long = "self-username",
+        value_name = "WXID",
+        help_heading = "数据库与密钥"
+    )]
     pub self_username: Option<String>,
 
     /// 将数据库作为普通未加密的 SQLite 数据库打开
@@ -176,7 +187,12 @@ pub struct ContactArgs {
     pub common: CommonArgs,
 
     /// 按 ID、昵称、备注或别名过滤
-    #[arg(short = 'q', long = "query", value_name = "TEXT", help_heading = "查询")]
+    #[arg(
+        short = 'q',
+        long = "query",
+        value_name = "TEXT",
+        help_heading = "查询"
+    )]
     pub query: Option<String>,
 
     /// 联系人类型
@@ -184,7 +200,12 @@ pub struct ContactArgs {
     pub kind: ContactKind,
 
     /// 单页数量 (1..1000，缺省 50)
-    #[arg(long = "page-size", short = 'p', value_name = "N", help_heading = "分页")]
+    #[arg(
+        long = "page-size",
+        short = 'p',
+        value_name = "N",
+        help_heading = "分页"
+    )]
     pub page_size: Option<u32>,
 
     /// 分页游标 (上一页返回的 next_cursor)
@@ -238,7 +259,7 @@ pub struct ExportArgs {
     )]
     pub conversation_ids: Vec<String>,
 
-    /// 导出格式 (可重复传入，或传入 'all'，支持: json, markdown, chatlab-json, chatlab-jsonl, html, txt, xlsx, arkme-json, sql, weclone)
+    /// 导出格式 (可重复传入，或传入 'all'，支持: json, markdown, chatlab-json, chatlab-jsonl, html, txt, xlsx, arkme-json, sql, sqlite, weclone)
     #[arg(
         long = "format",
         short = 'f',
@@ -287,9 +308,9 @@ pub struct ExportArgs {
     #[arg(long = "report", action = ArgAction::SetTrue, help_heading = "导出")]
     pub report: bool,
 
-    /// 导出完成后自动上传到已配置的 WebDAV 备份
-    #[arg(long = "backup", action = ArgAction::SetTrue, help_heading = "导出")]
-    pub backup: bool,
+    /// 导出完成后自动上传到已配置的 WebDAV
+    #[arg(long = "upload", action = ArgAction::SetTrue, help_heading = "导出")]
+    pub upload: bool,
 
     /// 不打印进度条
     #[arg(long = "silent", action = ArgAction::SetTrue, help_heading = "其他")]
@@ -306,11 +327,21 @@ pub struct ConversationArgs {
     pub export_mode: bool,
 
     /// 按会话名称、备注、昵称或 ID 过滤会话
-    #[arg(short = 'q', long = "query", value_name = "TEXT", help_heading = "查询")]
+    #[arg(
+        short = 'q',
+        long = "query",
+        value_name = "TEXT",
+        help_heading = "查询"
+    )]
     pub query: Option<String>,
 
     /// 单页会话数量 (范围 1..1000，缺省 50)
-    #[arg(long = "page-size", short = 'p', value_name = "N", help_heading = "分页")]
+    #[arg(
+        long = "page-size",
+        short = 'p',
+        value_name = "N",
+        help_heading = "分页"
+    )]
     pub page_size: Option<u32>,
 
     /// 分页游标 (Base64 编码，上一页返回的 next_cursor)
@@ -350,7 +381,12 @@ pub struct ReportArgs {
     pub output_dir: PathBuf,
 
     /// group/dual 报告指定会话 ID
-    #[arg(long = "conversation-id", short = 'c', value_name = "ID", help_heading = "报告")]
+    #[arg(
+        long = "conversation-id",
+        short = 'c',
+        value_name = "ID",
+        help_heading = "报告"
+    )]
     pub conversation_id: Option<String>,
 
     /// group/dual/annual 报告年份；缺省或 0 表示全部历史
@@ -397,6 +433,26 @@ pub enum FavoriteType {
 }
 
 #[derive(Args, Debug)]
+pub struct DecryptArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// 解密后的普通 SQLite 输出目录
+    #[arg(
+        long = "output-dir",
+        short = 'o',
+        value_name = "DIR",
+        required = true,
+        help_heading = "解密"
+    )]
+    pub output_dir: PathBuf,
+
+    /// 覆盖已存在的目标数据库
+    #[arg(long = "force", action = ArgAction::SetTrue, help_heading = "解密")]
+    pub force: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct FavoriteArgs {
     #[command(flatten)]
     pub common: CommonArgs,
@@ -406,7 +462,12 @@ pub struct FavoriteArgs {
     pub kind: FavoriteType,
 
     /// 搜索收藏内容、来源或聊天名
-    #[arg(short = 'q', long = "query", value_name = "TEXT", help_heading = "收藏")]
+    #[arg(
+        short = 'q',
+        long = "query",
+        value_name = "TEXT",
+        help_heading = "收藏"
+    )]
     pub query: Option<String>,
 
     /// 单页数量 (1..1000，缺省 50)
@@ -422,7 +483,12 @@ pub struct FavoriteArgs {
     pub full: bool,
 
     /// 导出收藏清单与每条原始内容到该目录
-    #[arg(long = "output-dir", short = 'o', value_name = "DIR", help_heading = "收藏")]
+    #[arg(
+        long = "output-dir",
+        short = 'o',
+        value_name = "DIR",
+        help_heading = "收藏"
+    )]
     pub output_dir: Option<PathBuf>,
 }
 
@@ -436,7 +502,12 @@ pub struct MomentsArgs {
     pub year: Option<i32>,
 
     /// 将朋友圈统计写入该目录下的 moments.json；缺省直接打印 JSON
-    #[arg(long = "output-dir", short = 'o', value_name = "DIR", help_heading = "朋友圈")]
+    #[arg(
+        long = "output-dir",
+        short = 'o',
+        value_name = "DIR",
+        help_heading = "朋友圈"
+    )]
     pub output_dir: Option<PathBuf>,
 
     /// 输出朋友圈时间线（JSON timeline 数组）
@@ -484,7 +555,11 @@ pub struct WebdavArgs {
     #[arg(long = "password", value_name = "PASS")]
     pub password: String,
     /// 远端目录，缺省 wechat-exports
-    #[arg(long = "remote-path", value_name = "PATH", default_value = "wechat-exports")]
+    #[arg(
+        long = "remote-path",
+        value_name = "PATH",
+        default_value = "wechat-exports"
+    )]
     pub remote_path: String,
 }
 
@@ -492,6 +567,37 @@ pub struct WebdavArgs {
 pub struct BackupArgs {
     #[command(subcommand)]
     pub command: BackupCommand,
+}
+
+#[derive(Args, Debug)]
+pub struct RecoveryArgs {
+    /// conversation.sqlite 备份文件或包含备份的目录
+    #[arg(
+        long = "input",
+        short = 'i',
+        value_name = "PATH",
+        required = true,
+        help_heading = "恢复"
+    )]
+    pub input: PathBuf,
+
+    /// 恢复后的输出目录 (必须尚不存在)
+    #[arg(
+        long = "output-dir",
+        short = 'o',
+        value_name = "DIR",
+        required = true,
+        help_heading = "恢复"
+    )]
+    pub output_dir: PathBuf,
+
+    /// 恢复输出格式 (可重复传入，或传入 'all'，缺省 json)
+    #[arg(long = "format", short = 'f', value_name = "NAME", action = ArgAction::Append, help_heading = "恢复")]
+    pub formats: Vec<String>,
+
+    /// 同时复制备份中的 media/ 附件
+    #[arg(long = "include-media", short = 'm', action = ArgAction::SetTrue, help_heading = "恢复")]
+    pub include_media: bool,
 }
 
 #[derive(Args, Debug)]
@@ -516,6 +622,7 @@ pub enum Format {
     Xlsx,
     ArkmeJson,
     Sql,
+    Sqlite,
     Weclone,
 }
 
@@ -531,6 +638,7 @@ impl Format {
             Format::Xlsx,
             Format::ArkmeJson,
             Format::Sql,
+            Format::Sqlite,
             Format::Weclone,
         ]
     }
@@ -546,9 +654,10 @@ impl Format {
             "xlsx" => Format::Xlsx,
             "arkme-json" => Format::ArkmeJson,
             "sql" => Format::Sql,
+            "sqlite" => Format::Sqlite,
             "weclone" => Format::Weclone,
             _ => bail!(
-                "export format must be json, markdown, chatlab-json, chatlab-jsonl, html, txt, xlsx, arkme-json, sql, or weclone"
+                "export format must be json, markdown, chatlab-json, chatlab-jsonl, html, txt, xlsx, arkme-json, sql, sqlite, or weclone"
             ),
         })
     }
@@ -564,6 +673,7 @@ impl Format {
             Format::Xlsx => "xlsx",
             Format::ArkmeJson => "arkme-json",
             Format::Sql => "sql",
+            Format::Sqlite => "sqlite",
             Format::Weclone => "weclone",
         }
     }
@@ -579,6 +689,7 @@ impl Format {
             Format::Xlsx => "conversation.xlsx",
             Format::ArkmeJson => "conversation.arkme.json",
             Format::Sql => "conversation.sql",
+            Format::Sqlite => "conversation.sqlite",
             Format::Weclone => "conversation.weclone.csv",
         }
     }
@@ -595,6 +706,8 @@ pub enum Mode {
     Report(ReportKind),
     Moments,
     Favorites(FavoriteType),
+    Decrypt,
+    Recovery,
     Upgrade(String, Option<String>),
     Backup(BackupCommand),
 }
@@ -628,9 +741,11 @@ pub struct ValidatedCli {
     pub favorite_type: FavoriteType,
     pub favorite_full: bool,
     pub favorite_offset: u32,
+    pub force: bool,
+    pub recovery_input: Option<PathBuf>,
     pub from_json: Option<PathBuf>,
     pub silent: bool,
-    pub backup: bool,
+    pub upload: bool,
 }
 
 struct CommonValidated {
@@ -702,9 +817,11 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         favorite_type: FavoriteType::All,
         favorite_full: false,
         favorite_offset: 0,
+        force: false,
+        recovery_input: None,
         from_json: None,
         silent: false,
-        backup: false,
+        upload: false,
     }
 }
 
@@ -722,7 +839,10 @@ fn resolve_source_database(source: Option<PathBuf>) -> Result<PathBuf> {
         None => {
             let candidates = crate::wechat::discover::auto_detect_candidates();
             if candidates.is_empty() {
-                bail!("{}", crate::wechat::discover::format_scanned_roots_message());
+                bail!(
+                    "{}",
+                    crate::wechat::discover::format_scanned_roots_message()
+                );
             }
             let selected = &candidates[0];
             eprintln!(
@@ -792,68 +912,64 @@ fn parse_formats(values: &[String]) -> Result<Vec<Format>> {
 }
 
 fn validate_export_args(args: ExportArgs) -> Result<ValidatedCli> {
-
-                for id in &args.conversation_ids {
-                    if id.is_empty() || id.len() > 1024 || id.chars().any(char::is_control) {
-                        bail!("conversation ID must be nonempty, at most 1024 bytes, and contain no control characters");
-                    }
-                }
-                if args.start_time_ms.is_some_and(|value| value <= 0) {
-                    bail!("export time must be a positive int64 decimal value");
-                }
-                if args.end_time_ms.is_some_and(|value| value <= 0) {
-                    bail!("export time must be a positive int64 decimal value");
-                }
-                if let (Some(start), Some(end)) = (args.start_time_ms, args.end_time_ms) {
-                    if start > end {
-                        bail!("export time range is inverted");
-                    }
-                }
-                let formats = parse_formats(&args.formats)?;
-                let image_key = parse_image_key(args.image_key.as_deref())?;
-                if (!args.formats.is_empty()
-                    || !args.conversation_ids.is_empty()
-                    || args.start_time_ms.is_some()
-                    || args.end_time_ms.is_some())
-                    && args.output_dir.is_none()
-                    && !args.keep_output
-                {
-                    bail!("--format requires --output-dir or --keep-output");
-                }
-                if !args.conversation_ids.is_empty()
-                    && args.output_dir.is_none()
-                    && !args.keep_output
-                {
-                    bail!("--conversation-id requires --output-dir or --keep-output");
-                }
-                if let Some(dir) = &args.output_dir {
-                    if !dir.is_absolute() {
-                        bail!("output directory must be an absolute path");
-                    }
-                    if let Some(parent) = dir.parent() {
-                        if !parent.exists() {
-                            bail!("output directory parent does not exist");
-                        }
-                    }
-                    if dir.is_file() {
-                        bail!("output directory is an existing file, not a directory");
-                    }
-                }
-                let common = args.common.validate()?;
-                let mut options = validated(common, Mode::Export);
-                options.formats = formats;
-                options.conversation_ids = args.conversation_ids;
-                options.start_time_ms = args.start_time_ms;
-                options.end_time_ms = args.end_time_ms;
-                options.include_media = args.include_media;
-                options.keep_output = args.keep_output;
-                options.output_dir = args.output_dir;
-                options.image_key = image_key;
-                options.report = args.report;
-                options.silent = args.silent;
-                options.backup = args.backup;
-                Ok(options)
+    for id in &args.conversation_ids {
+        if id.is_empty() || id.len() > 1024 || id.chars().any(char::is_control) {
+            bail!("conversation ID must be nonempty, at most 1024 bytes, and contain no control characters");
+        }
+    }
+    if args.start_time_ms.is_some_and(|value| value <= 0) {
+        bail!("export time must be a positive int64 decimal value");
+    }
+    if args.end_time_ms.is_some_and(|value| value <= 0) {
+        bail!("export time must be a positive int64 decimal value");
+    }
+    if let (Some(start), Some(end)) = (args.start_time_ms, args.end_time_ms) {
+        if start > end {
+            bail!("export time range is inverted");
+        }
+    }
+    let formats = parse_formats(&args.formats)?;
+    let image_key = parse_image_key(args.image_key.as_deref())?;
+    if (!args.formats.is_empty()
+        || !args.conversation_ids.is_empty()
+        || args.start_time_ms.is_some()
+        || args.end_time_ms.is_some())
+        && args.output_dir.is_none()
+        && !args.keep_output
+    {
+        bail!("--format requires --output-dir or --keep-output");
+    }
+    if !args.conversation_ids.is_empty() && args.output_dir.is_none() && !args.keep_output {
+        bail!("--conversation-id requires --output-dir or --keep-output");
+    }
+    if let Some(dir) = &args.output_dir {
+        if !dir.is_absolute() {
+            bail!("output directory must be an absolute path");
+        }
+        if let Some(parent) = dir.parent() {
+            if !parent.exists() {
+                bail!("output directory parent does not exist");
             }
+        }
+        if dir.is_file() {
+            bail!("output directory is an existing file, not a directory");
+        }
+    }
+    let common = args.common.validate()?;
+    let mut options = validated(common, Mode::Export);
+    options.formats = formats;
+    options.conversation_ids = args.conversation_ids;
+    options.start_time_ms = args.start_time_ms;
+    options.end_time_ms = args.end_time_ms;
+    options.include_media = args.include_media;
+    options.keep_output = args.keep_output;
+    options.output_dir = args.output_dir;
+    options.image_key = image_key;
+    options.report = args.report;
+    options.silent = args.silent;
+    options.upload = args.upload;
+    Ok(options)
+}
 
 impl Cli {
     pub fn validate(self) -> Result<ValidatedCli> {
@@ -895,9 +1011,11 @@ impl Command {
                 favorite_type: FavoriteType::All,
                 favorite_full: false,
                 favorite_offset: 0,
+                force: false,
+                recovery_input: None,
                 from_json: None,
                 silent: false,
-                backup: false,
+                upload: false,
             }),
             Command::Init(args) => {
                 let common = args.common.validate()?;
@@ -921,10 +1039,7 @@ impl Command {
                 Ok(options)
             }
             Command::Search(args) => {
-                if args.query.is_empty()
-                    || args.query.contains('\0')
-                    || args.query.len() > 512
-                {
+                if args.query.is_empty() || args.query.contains('\0') || args.query.len() > 512 {
                     bail!("search text must be nonempty, contain no NUL, and be at most 512 UTF-8 bytes");
                 }
                 let common = args.common.validate()?;
@@ -951,7 +1066,7 @@ impl Command {
                         || args.export.include_media
                         || args.export.keep_output
                         || args.export.report
-                        || args.export.backup;
+                        || args.export.upload;
                     if has_export_option {
                         bail!("export options require --export");
                     }
@@ -1007,6 +1122,24 @@ impl Command {
                 options.moments_user = args.user.map(|value| value.trim().to_string());
                 Ok(options)
             }
+            Command::Decrypt(args) => {
+                if !args.output_dir.is_absolute() {
+                    bail!("decrypt output directory must be an absolute path");
+                }
+                if let Some(parent) = args.output_dir.parent() {
+                    if !parent.exists() {
+                        bail!("decrypt output directory parent does not exist");
+                    }
+                }
+                if args.output_dir.is_file() {
+                    bail!("decrypt output directory is an existing file, not a directory");
+                }
+                let common = args.common.validate()?;
+                let mut options = validated(common, Mode::Decrypt);
+                options.output_dir = Some(args.output_dir);
+                options.force = args.force;
+                Ok(options)
+            }
             Command::Favorite(args) => {
                 if let Some(dir) = &args.output_dir {
                     if !dir.is_absolute() {
@@ -1052,9 +1185,65 @@ impl Command {
                 options.silent = false;
                 Ok(options)
             }
+            Command::Recovery(args) => {
+                if !args.input.exists() {
+                    bail!("recovery input does not exist: {}", args.input.display());
+                }
+                if !args.output_dir.is_absolute() {
+                    bail!("recovery output directory must be an absolute path");
+                }
+                if let Some(parent) = args.output_dir.parent() {
+                    if !parent.exists() {
+                        bail!("recovery output directory parent does not exist");
+                    }
+                }
+                if args.output_dir.is_file() {
+                    bail!("recovery output directory is an existing file, not a directory");
+                }
+                let formats = if args.formats.is_empty() {
+                    vec![Format::Json]
+                } else {
+                    parse_formats(&args.formats)?
+                };
+                Ok(ValidatedCli {
+                    source_database: PathBuf::from("."),
+                    mode: Mode::Recovery,
+                    formats,
+                    conversation_ids: Vec::new(),
+                    start_time_ms: None,
+                    end_time_ms: None,
+                    page_size: 50,
+                    cursor: None,
+                    list_query: None,
+                    ascending: false,
+                    include_media: args.include_media,
+                    keep_output: false,
+                    output_dir: Some(args.output_dir),
+                    self_username: None,
+                    image_key: None,
+                    key: None,
+                    plaintext: false,
+                    debug: false,
+                    report: false,
+                    report_year: 0,
+                    moments_posts: false,
+                    moments_limit: 50,
+                    moments_offset: 0,
+                    moments_user: None,
+                    favorite_type: FavoriteType::All,
+                    favorite_full: false,
+                    favorite_offset: 0,
+                    force: false,
+                    recovery_input: Some(args.input),
+                    from_json: None,
+                    silent: false,
+                    upload: false,
+                })
+            }
             Command::Upgrade(args) => {
                 let version = args.version.trim();
-                if version.is_empty() || version.len() > 64 || version.contains(char::is_whitespace) {
+                if version.is_empty() || version.len() > 64 || version.contains(char::is_whitespace)
+                {
                     bail!("upgrade version must be a nonempty tag without whitespace");
                 }
                 if let Some(prefix) = &args.prefix {
@@ -1069,7 +1258,10 @@ impl Command {
                     plaintext: true,
                     debug: false,
                 };
-                let mut options = validated(common, Mode::Upgrade(version.to_string(), args.prefix.clone()));
+                let mut options = validated(
+                    common,
+                    Mode::Upgrade(version.to_string(), args.prefix.clone()),
+                );
                 options.silent = false;
                 Ok(options)
             }
@@ -1098,18 +1290,24 @@ impl Command {
                 match args.kind {
                     ReportKind::Private | ReportKind::Annual => {
                         if args.conversation_id.is_some() {
-                            bail!("{} report does not accept --conversation-id", match args.kind {
-                                ReportKind::Private => "private",
-                                _ => "annual",
-                            });
+                            bail!(
+                                "{} report does not accept --conversation-id",
+                                match args.kind {
+                                    ReportKind::Private => "private",
+                                    _ => "annual",
+                                }
+                            );
                         }
                     }
                     ReportKind::Group | ReportKind::Dual => {
                         if args.conversation_id.is_none() && args.from_json.is_none() {
-                            bail!("{} report requires --conversation-id", match args.kind {
-                                ReportKind::Group => "group",
-                                _ => "dual",
-                            });
+                            bail!(
+                                "{} report requires --conversation-id",
+                                match args.kind {
+                                    ReportKind::Group => "group",
+                                    _ => "dual",
+                                }
+                            );
                         }
                     }
                 }

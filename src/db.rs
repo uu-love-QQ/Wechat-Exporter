@@ -20,6 +20,16 @@ fn open_connection(path: &Path, read_only: bool) -> Result<Connection> {
         .with_context(|| format!("failed to open database {}", path.display()))
 }
 
+fn open_connection_create(path: &Path) -> Result<Connection> {
+    Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("failed to open database {}", path.display()))
+}
+
 fn check_connection(conn: &Connection) -> Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
     conn.execute_batch("PRAGMA cipher_memory_security = OFF;")?;
@@ -83,9 +93,6 @@ pub fn verify_db_page1(enc_key: &[u8; 32], page1: &[u8]) -> bool {
     }
 }
 
-
-
-
 /// Extract 32-byte masks encoded as four `48 BA <imm64>` (movabs rdx, imm64)
 /// groups separated by 3-byte instructions, followed by `48 85 C0`.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -119,9 +126,8 @@ fn extract_internal_db_key_masks(image: &[u8]) -> Vec<[u8; 32]> {
                     if p4 + 21 > image.len() || image[p4] != 0x48 || image[p4 + 1] != 0xBA {
                         continue;
                     }
-                    let tail_ok = (0..8).any(|k| {
-                        image[p4 + 13 + k..p4 + 16 + k] == [0x48, 0x85, 0xC0]
-                    });
+                    let tail_ok =
+                        (0..8).any(|k| image[p4 + 13 + k..p4 + 16 + k] == [0x48, 0x85, 0xC0]);
                     if !tail_ok {
                         continue;
                     }
@@ -255,7 +261,6 @@ fn verify_all(
     });
     result.into_inner().unwrap()
 }
-
 
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn msvc_string32_pointer(data: &[u8]) -> Option<u64> {
@@ -615,11 +620,7 @@ pub fn scan_master_passphrase_alpha(page1: &[u8]) -> Option<[u8; 32]> {
             let image = match std::fs::read(&dll_path) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    eprintln!(
-                        "[!] 无法读取 Weixin.dll {}: {}",
-                        dll_path.display(),
-                        error
-                    );
+                    eprintln!("[!] 无法读取 Weixin.dll {}: {}", dll_path.display(), error);
                     continue;
                 }
             };
@@ -685,9 +686,8 @@ pub fn scan_master_passphrase_alpha(page1: &[u8]) -> Option<[u8; 32]> {
 const WINDOWS_CONFIG_CIPHER_NAME: &[u8] = b"com.Tencent.WCDB.Config.Cipher";
 #[cfg(target_os = "windows")]
 const WINDOWS_CONFIG_XOR_MASK: &[u8; 32] = &[
-    0xd2, 0xc7, 0x44, 0x24, 0x58, 0x02, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x50, 0x48,
-    0x8b, 0x45, 0x00, 0x48, 0x84, 0x4c, 0x24, 0x48, 0x48, 0x89, 0x44, 0x25, 0x40, 0x48, 0x58,
-    0x4c, 0x24,
+    0xd2, 0xc7, 0x44, 0x24, 0x58, 0x02, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x50, 0x48, 0x8b,
+    0x45, 0x00, 0x48, 0x84, 0x4c, 0x24, 0x48, 0x48, 0x89, 0x44, 0x25, 0x40, 0x48, 0x58, 0x4c, 0x24,
 ];
 
 #[cfg(target_os = "windows")]
@@ -883,10 +883,15 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
                         chunk.as_mut_ptr() as *mut c_void,
                         to_read,
                         &mut bytes_read,
-                    ) != 0 && bytes_read >= WINDOWS_CONFIG_CIPHER_NAME.len() {
+                    ) != 0
+                        && bytes_read >= WINDOWS_CONFIG_CIPHER_NAME.len()
+                    {
                         let slice = &chunk[..bytes_read];
                         let mut pos = 0;
-                        while let Some(rel) = slice[pos..].windows(WINDOWS_CONFIG_CIPHER_NAME.len()).position(|w| w == WINDOWS_CONFIG_CIPHER_NAME) {
+                        while let Some(rel) = slice[pos..]
+                            .windows(WINDOWS_CONFIG_CIPHER_NAME.len())
+                            .position(|w| w == WINDOWS_CONFIG_CIPHER_NAME)
+                        {
                             let match_addr = base + reg_offset + pos + rel;
                             needle_addresses.push(match_addr);
                             pos += rel + WINDOWS_CONFIG_CIPHER_NAME.len();
@@ -897,12 +902,16 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
             }
 
             if !needle_addresses.is_empty() {
-                eprintln!("[i] 发现 {} 个 Config.Cipher 对象标记，正在解析密钥链...", needle_addresses.len());
+                eprintln!(
+                    "[i] 发现 {} 个 Config.Cipher 对象标记，正在解析密钥链...",
+                    needle_addresses.len()
+                );
                 for &needle_addr in &needle_addresses {
                     // Pattern is [addr (8 bytes LE), len (8 bytes LE == 30)]
                     let mut pattern = [0u8; 16];
                     pattern[..8].copy_from_slice(&(needle_addr as u64).to_le_bytes());
-                    pattern[8..16].copy_from_slice(&(WINDOWS_CONFIG_CIPHER_NAME.len() as u64).to_le_bytes());
+                    pattern[8..16]
+                        .copy_from_slice(&(WINDOWS_CONFIG_CIPHER_NAME.len() as u64).to_le_bytes());
 
                     for &(base, size) in &readable_regions {
                         let mut reg_offset = 0usize;
@@ -915,44 +924,107 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
                                 chunk.as_mut_ptr() as *mut c_void,
                                 to_read,
                                 &mut bytes_read,
-                            ) != 0 && bytes_read >= 16 {
+                            ) != 0
+                                && bytes_read >= 16
+                            {
                                 let slice = &chunk[..bytes_read];
                                 let mut pos = 0;
-                                while let Some(rel) = slice[pos..].windows(16).position(|w| w == pattern) {
+                                while let Some(rel) =
+                                    slice[pos..].windows(16).position(|w| w == pattern)
+                                {
                                     let qaddr = base + reg_offset + pos + rel;
                                     let node_base = qaddr.saturating_sub(0x10);
                                     let mut node = [0u8; 0x50];
                                     let mut nr = 0usize;
-                                    if ReadProcessMemory(handle, node_base as *const c_void, node.as_mut_ptr() as *mut c_void, 0x50, &mut nr) != 0 && nr >= 0x40 {
-                                        let config_ptr = u64::from_le_bytes(node[0x28..0x30].try_into().unwrap_or([0; 8])) as usize;
+                                    if ReadProcessMemory(
+                                        handle,
+                                        node_base as *const c_void,
+                                        node.as_mut_ptr() as *mut c_void,
+                                        0x50,
+                                        &mut nr,
+                                    ) != 0
+                                        && nr >= 0x40
+                                    {
+                                        let config_ptr = u64::from_le_bytes(
+                                            node[0x28..0x30].try_into().unwrap_or([0; 8]),
+                                        )
+                                            as usize;
                                         if config_ptr >= 0x10000 && config_ptr < 0x7FFF_FFFF_0000 {
                                             let mut obj = [0u8; 0x28];
                                             let mut obr = 0usize;
-                                            if ReadProcessMemory(handle, (config_ptr + 0x88) as *const c_void, obj.as_mut_ptr() as *mut c_void, 0x28, &mut obr) != 0 && obr >= 0x18 {
-                                                let data_ptr = u64::from_le_bytes(obj[0x8..0x10].try_into().unwrap_or([0; 8])) as usize;
-                                                let data_len = u64::from_le_bytes(obj[0x10..0x18].try_into().unwrap_or([0; 8])) as usize;
-                                                if data_len > 0 && data_len <= 1024 && data_ptr >= 0x10000 && data_ptr < 0x7FFF_FFFF_0000 {
+                                            if ReadProcessMemory(
+                                                handle,
+                                                (config_ptr + 0x88) as *const c_void,
+                                                obj.as_mut_ptr() as *mut c_void,
+                                                0x28,
+                                                &mut obr,
+                                            ) != 0
+                                                && obr >= 0x18
+                                            {
+                                                let data_ptr = u64::from_le_bytes(
+                                                    obj[0x8..0x10].try_into().unwrap_or([0; 8]),
+                                                )
+                                                    as usize;
+                                                let data_len = u64::from_le_bytes(
+                                                    obj[0x10..0x18].try_into().unwrap_or([0; 8]),
+                                                )
+                                                    as usize;
+                                                if data_len > 0
+                                                    && data_len <= 1024
+                                                    && data_ptr >= 0x10000
+                                                    && data_ptr < 0x7FFF_FFFF_0000
+                                                {
                                                     let mut blob = vec![0u8; data_len];
                                                     let mut bbr = 0usize;
-                                                    if ReadProcessMemory(handle, data_ptr as *const c_void, blob.as_mut_ptr() as *mut c_void, data_len, &mut bbr) != 0 && bbr == data_len {
+                                                    if ReadProcessMemory(
+                                                        handle,
+                                                        data_ptr as *const c_void,
+                                                        blob.as_mut_ptr() as *mut c_void,
+                                                        data_len,
+                                                        &mut bbr,
+                                                    ) != 0
+                                                        && bbr == data_len
+                                                    {
                                                         // XOR decrypt blob with WINDOWS_CONFIG_XOR_MASK
                                                         for k in 0..blob.len() {
-                                                            blob[k] ^= WINDOWS_CONFIG_XOR_MASK[k % 32];
+                                                            blob[k] ^=
+                                                                WINDOWS_CONFIG_XOR_MASK[k % 32];
                                                         }
                                                         // Search for x'<hex>' in decrypted blob
                                                         let mut bpos = 0;
-                                                        while let Some(brel) = blob[bpos..].windows(2).position(|w| w == b"x'" || w == b"X'") {
+                                                        while let Some(brel) = blob[bpos..]
+                                                            .windows(2)
+                                                            .position(|w| w == b"x'" || w == b"X'")
+                                                        {
                                                             let mstart = bpos + brel + 2;
                                                             let rem = &blob[mstart..];
-                                                            let hlen = rem.iter().take_while(|b| b.is_ascii_hexdigit()).count();
-                                                            if (hlen == 64 || hlen == 96) && rem.get(hlen) == Some(&b'\'') {
-                                                                if let Ok(hex_str) = std::str::from_utf8(&rem[..64]) {
-                                                                    if let Ok(kbytes) = hex::decode(hex_str) {
+                                                            let hlen = rem
+                                                                .iter()
+                                                                .take_while(|b| {
+                                                                    b.is_ascii_hexdigit()
+                                                                })
+                                                                .count();
+                                                            if (hlen == 64 || hlen == 96)
+                                                                && rem.get(hlen) == Some(&b'\'')
+                                                            {
+                                                                if let Ok(hex_str) =
+                                                                    std::str::from_utf8(&rem[..64])
+                                                                {
+                                                                    if let Ok(kbytes) =
+                                                                        hex::decode(hex_str)
+                                                                    {
                                                                         if kbytes.len() == 32 {
-                                                                            let mut karr = [0u8; 32];
-                                                                            karr.copy_from_slice(&kbytes);
+                                                                            let mut karr =
+                                                                                [0u8; 32];
+                                                                            karr.copy_from_slice(
+                                                                                &kbytes,
+                                                                            );
                                                                             let derived = derive_wechat_db_key(&karr, &salt);
-                                                                            if verify_db_page1(&derived, p1) || verify_db_page1(&karr, p1) {
+                                                                            if verify_db_page1(
+                                                                                &derived, p1,
+                                                                            ) || verify_db_page1(
+                                                                                &karr, p1,
+                                                                            ) {
                                                                                 eprintln!(
                                                                                     "[+] 成功通过 Config.Cipher 算法从微信进程 (PID: {}) 提取出数据库密钥: x'{}'!",
                                                                                     pid, hex::encode(karr)
@@ -992,7 +1064,9 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
                         chunk.as_mut_ptr() as *mut c_void,
                         to_read,
                         &mut bytes_read,
-                    ) != 0 && bytes_read >= 48 {
+                    ) != 0
+                        && bytes_read >= 48
+                    {
                         let slice = &chunk[..bytes_read];
                         let mut start = 0usize;
                         while start + 16 <= slice.len() {
@@ -1003,7 +1077,9 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
                                 for off in BEFORE {
                                     if i >= off && i - off + 32 <= slice.len() {
                                         let cand_bytes = &slice[i - off..i - off + 32];
-                                        if cand_bytes.iter().any(|&b| b != 0) && !cand_bytes.iter().all(|&b| b == cand_bytes[0]) {
+                                        if cand_bytes.iter().any(|&b| b != 0)
+                                            && !cand_bytes.iter().all(|&b| b == cand_bytes[0])
+                                        {
                                             let mut karr = [0u8; 32];
                                             karr.copy_from_slice(cand_bytes);
                                             if verify_db_page1(&karr, p1) {
@@ -1021,7 +1097,9 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
                                     let kstart = i + 16 + off;
                                     if kstart + 32 <= slice.len() {
                                         let cand_bytes = &slice[kstart..kstart + 32];
-                                        if cand_bytes.iter().any(|&b| b != 0) && !cand_bytes.iter().all(|&b| b == cand_bytes[0]) {
+                                        if cand_bytes.iter().any(|&b| b != 0)
+                                            && !cand_bytes.iter().all(|&b| b == cand_bytes[0])
+                                        {
                                             let mut karr = [0u8; 32];
                                             karr.copy_from_slice(cand_bytes);
                                             if verify_db_page1(&karr, p1) {
@@ -1057,22 +1135,34 @@ pub fn auto_scan_wechat_key_from_process(page1: Option<&[u8]>) -> Option<[u8; 32
                         chunk.as_mut_ptr() as *mut c_void,
                         to_read,
                         &mut bytes_read,
-                    ) != 0 && bytes_read >= 68 {
+                    ) != 0
+                        && bytes_read >= 68
+                    {
                         let slice = &chunk[..bytes_read];
                         let mut cursor = 0;
-                        while let Some(rel) = slice[cursor..].windows(2).position(|w| w == b"x'" || w == b"X'") {
+                        while let Some(rel) = slice[cursor..]
+                            .windows(2)
+                            .position(|w| w == b"x'" || w == b"X'")
+                        {
                             let match_start = cursor + rel + 2;
                             let remaining = &slice[match_start..];
-                            let hex_len = remaining.iter().take_while(|b| b.is_ascii_hexdigit()).count();
+                            let hex_len = remaining
+                                .iter()
+                                .take_while(|b| b.is_ascii_hexdigit())
+                                .count();
 
-                            if (hex_len == 64 || hex_len == 96) && remaining.get(hex_len) == Some(&b'\'') {
+                            if (hex_len == 64 || hex_len == 96)
+                                && remaining.get(hex_len) == Some(&b'\'')
+                            {
                                 if let Ok(hex_str) = std::str::from_utf8(&remaining[..64]) {
                                     if let Ok(key_bytes) = hex::decode(hex_str) {
                                         if key_bytes.len() == 32 {
                                             let mut key_arr = [0u8; 32];
                                             key_arr.copy_from_slice(&key_bytes);
                                             let derived = derive_wechat_db_key(&key_arr, &salt);
-                                            if verify_db_page1(&derived, p1) || verify_db_page1(&key_arr, p1) {
+                                            if verify_db_page1(&derived, p1)
+                                                || verify_db_page1(&key_arr, p1)
+                                            {
                                                 eprintln!(
                                                     "[+] 成功从运行中的微信进程 (PID: {}) 内存匹配到数据库密钥!",
                                                     pid
@@ -1137,7 +1227,11 @@ impl Db {
                     let mut file = std::fs::File::open(path)?;
                     let mut page1 = [0u8; 4096];
                     let read_bytes = file.read(&mut page1).unwrap_or(0);
-                    let p1_ref = if read_bytes >= 4096 { Some(&page1[..]) } else { None };
+                    let p1_ref = if read_bytes >= 4096 {
+                        Some(&page1[..])
+                    } else {
+                        None
+                    };
 
                     if let Some(scanned_key) = auto_scan_wechat_key_from_process(p1_ref) {
                         Self::try_open_keyed(path, &scanned_key).map_err(|e| {
@@ -1178,7 +1272,27 @@ impl Db {
         Ok(Db { conn })
     }
 
+    /// Open a database for exporting a plaintext copy. This opens the source
+    /// read-write only for the temporary staging copy used by decrypt.
+    pub fn open_for_decrypt(path: &Path, key: Option<&[u8; 32]>, plaintext: bool) -> Result<Db> {
+        if plaintext {
+            let conn = open_connection_create(path)?;
+            conn.busy_timeout(std::time::Duration::from_secs(2))?;
+            conn.execute_batch("PRAGMA cipher_memory_security = OFF;")?;
+            conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+            return Ok(Db { conn });
+        }
+        let key = key.context("database key is required")?;
+        Self::try_open_keyed_mode(path, key, false)
+    }
+
     fn try_open_keyed(path: &Path, key: &[u8; 32]) -> Result<Db> {
+        Self::try_open_keyed_mode(path, key, true)
+    }
+
+    fn try_open_keyed_mode(path: &Path, key: &[u8; 32], read_only: bool) -> Result<Db> {
         use std::io::Read;
         let mut file = std::fs::File::open(path)?;
         let mut page1 = [0u8; 4096];
@@ -1212,13 +1326,13 @@ impl Db {
         };
 
         // Try opening with the resolved key
-        if let Ok(db) = Self::try_open_with_hex(path, &hex::encode(final_key)) {
+        if let Ok(db) = Self::try_open_with_hex_mode(path, &hex::encode(final_key), read_only) {
             return Ok(db);
         }
 
         // If the derived attempt failed and differed from input key, try raw input key as fallback
         if final_key != *key {
-            if let Ok(db) = Self::try_open_with_hex(path, &hex::encode(key)) {
+            if let Ok(db) = Self::try_open_with_hex_mode(path, &hex::encode(key), read_only) {
                 return Ok(db);
             }
         }
@@ -1226,7 +1340,7 @@ impl Db {
         bail!("database key verification failed for {}", path.display())
     }
 
-    fn try_open_with_hex(path: &Path, hex_key: &str) -> Result<Db> {
+    fn try_open_with_hex_mode(path: &Path, hex_key: &str, read_only: bool) -> Result<Db> {
         let check = |conn: &Connection| -> Result<()> {
             conn.busy_timeout(std::time::Duration::from_secs(2))?;
             conn.execute_batch(&format!(
@@ -1237,15 +1351,40 @@ impl Db {
                 row.get::<_, i64>(0)
             })
             .context("SQLCipher key check failed")?;
-            conn.execute_batch("PRAGMA query_only = ON;")?;
+            if read_only {
+                conn.execute_batch("PRAGMA query_only = ON;")?;
+            }
             Ok(())
         };
-        let conn = open_checked(path, check)?;
+        let conn = if read_only {
+            open_checked(path, check)?
+        } else {
+            let conn = open_connection_create(path)?;
+            check(&conn)?;
+            conn
+        };
         Ok(Db { conn })
     }
 
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Export the open (possibly encrypted) database into a plaintext SQLite file.
+    pub fn decrypt_to(&self, target: &Path) -> Result<()> {
+        if target.exists() {
+            bail!("target database already exists: {}", target.display());
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let quoted = target.to_string_lossy().replace('\'', "''");
+        self.conn
+            .execute_batch(&format!(
+                "ATTACH DATABASE '{quoted}' AS plaintext KEY ''; SELECT sqlcipher_export('plaintext'); DETACH DATABASE plaintext;"
+            ))
+            .with_context(|| format!("failed to decrypt database to {}", target.display()))?;
+        Ok(())
     }
 
     pub fn tables(&self) -> Result<Vec<String>> {
@@ -1384,12 +1523,11 @@ mod tests {
 
     #[test]
     fn alpha_candidate_filter_accepts_known_passphrase() {
-        let passphrase: [u8; 32] = hex::decode(
-            "22f2af8d4301484db4defe2fe89a972417944e0538a44fb3a7213db93149c36e",
-        )
-        .unwrap()
-        .try_into()
-        .unwrap();
+        let passphrase: [u8; 32] =
+            hex::decode("22f2af8d4301484db4defe2fe89a972417944e0538a44fb3a7213db93149c36e")
+                .unwrap()
+                .try_into()
+                .unwrap();
         assert!(alpha_candidate_filter(&passphrase));
         let mut wrong = passphrase;
         wrong[6] = 0x00;
@@ -1405,53 +1543,56 @@ mod tests {
     }
 }
 
-    #[test]
-    fn opens_wechat_pbkdf2_derived_database() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("wechat_sim.db");
-        let master_passphrase: [u8; 32] = hex::decode(
-            "22f2af8d4301484db4defe2fe89a972417944e0538a44fb3a7213db93149c36e",
-        )
-        .unwrap()
-        .try_into()
-        .unwrap();
-        let salt = [0x77u8; 16];
+#[test]
+fn opens_wechat_pbkdf2_derived_database() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("wechat_sim.db");
+    let master_passphrase: [u8; 32] =
+        hex::decode("22f2af8d4301484db4defe2fe89a972417944e0538a44fb3a7213db93149c36e")
+            .unwrap()
+            .try_into()
+            .unwrap();
+    let salt = [0x77u8; 16];
 
-        // 1. Simulate WeChat WCDB database creation:
-        // WeChat derives enc_key from master_passphrase + salt using PBKDF2
-        let enc_key = derive_wechat_db_key(&master_passphrase, &salt);
-        {
-            let conn = Connection::open(&path).unwrap();
-            // In SQLCipher raw key mode: pass key + salt in x'...'
-            let hex_key_salt = format!("{}{}", hex::encode(enc_key), hex::encode(salt));
-            conn.execute_batch(&format!("PRAGMA key = \"x'{hex_key_salt}'\";"))
+    // 1. Simulate WeChat WCDB database creation:
+    // WeChat derives enc_key from master_passphrase + salt using PBKDF2
+    let enc_key = derive_wechat_db_key(&master_passphrase, &salt);
+    {
+        let conn = Connection::open(&path).unwrap();
+        // In SQLCipher raw key mode: pass key + salt in x'...'
+        let hex_key_salt = format!("{}{}", hex::encode(enc_key), hex::encode(salt));
+        conn.execute_batch(&format!("PRAGMA key = \"x'{hex_key_salt}'\";"))
+            .unwrap();
+        conn.execute_batch("CREATE TABLE messages (id INTEGER PRIMARY KEY, text TEXT); INSERT INTO messages VALUES(1, 'secret message');")
                 .unwrap();
-            conn.execute_batch("CREATE TABLE messages (id INTEGER PRIMARY KEY, text TEXT); INSERT INTO messages VALUES(1, 'secret message');")
-                .unwrap();
-        }
-
-        // 2. Open using Db::open with ONLY the master passphrase!
-        let db = Db::open(&path, Some(&master_passphrase), false).expect("must open with master passphrase");
-        assert_eq!(db.count("messages").unwrap(), 1);
-
-        // 3. The Alpha scanner finds an obfuscated candidate and XORs it with a
-        //    Weixin.dll mask before PBKDF2 verification.
-        let mut page1 = [0u8; 4096];
-        {
-            use std::io::Read;
-            std::fs::File::open(&path)
-                .unwrap()
-                .read_exact(&mut page1)
-                .unwrap();
-        }
-        let mask = [0x3Cu8; 32];
-        let mut candidate = [0u8; 32];
-        for i in 0..32 {
-            candidate[i] = master_passphrase[i] ^ mask[i];
-        }
-        assert_eq!(
-            verify_all(&[candidate], &[mask], &salt, &page1),
-            Some(master_passphrase)
-        );
-        assert_eq!(verify_all(&[candidate], &[[0xA5u8; 32]], &salt, &page1), None);
     }
+
+    // 2. Open using Db::open with ONLY the master passphrase!
+    let db =
+        Db::open(&path, Some(&master_passphrase), false).expect("must open with master passphrase");
+    assert_eq!(db.count("messages").unwrap(), 1);
+
+    // 3. The Alpha scanner finds an obfuscated candidate and XORs it with a
+    //    Weixin.dll mask before PBKDF2 verification.
+    let mut page1 = [0u8; 4096];
+    {
+        use std::io::Read;
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_exact(&mut page1)
+            .unwrap();
+    }
+    let mask = [0x3Cu8; 32];
+    let mut candidate = [0u8; 32];
+    for i in 0..32 {
+        candidate[i] = master_passphrase[i] ^ mask[i];
+    }
+    assert_eq!(
+        verify_all(&[candidate], &[mask], &salt, &page1),
+        Some(master_passphrase)
+    );
+    assert_eq!(
+        verify_all(&[candidate], &[[0xA5u8; 32]], &salt, &page1),
+        None
+    );
+}

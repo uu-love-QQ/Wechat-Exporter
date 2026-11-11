@@ -51,7 +51,7 @@ pub struct Conversation {
     pub message_count: i64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct MediaRef {
     pub md5: String,
     pub candidate_md5s: Vec<String>,
@@ -75,7 +75,7 @@ pub struct MessageSource {
     pub notes: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum MediaKind {
     #[default]
     Image,
@@ -108,7 +108,7 @@ impl MediaKind {
 }
 
 /// A quoted message embedded in a reply (`<refermsg>`).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct QuoteRef {
     pub server_id: Option<i64>,
     pub sender: String,
@@ -119,7 +119,7 @@ pub struct QuoteRef {
     pub reply: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct ChatRecordItem {
     pub data_type: Option<i64>,
     pub text: String,
@@ -127,7 +127,7 @@ pub struct ChatRecordItem {
     pub time: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct ChatRecord {
     pub title: String,
     pub desc: String,

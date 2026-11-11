@@ -40,7 +40,10 @@ fn run_with_key(args: &[&str]) -> (i32, String, String) {
 }
 
 fn embedded_report(html: &str) -> Value {
-    assert!(!html.contains("__REPORT_DATA__"), "report template placeholder left behind");
+    assert!(
+        !html.contains("__REPORT_DATA__"),
+        "report template placeholder left behind"
+    );
     let marker = "id=\"report-data\" type=\"application/json\">";
     let start = html.find(marker).expect("report data island") + marker.len();
     let end = html[start..].find("</script>").expect("report data end") + start;
@@ -62,7 +65,9 @@ fn lists_conversations() {
     let conversations = value["conversations"].as_array().expect("array");
     assert!(conversations.iter().any(|item| item["id"] == GROUP));
     assert!(conversations.iter().any(|item| item["id"] == ALICE));
-    assert!(!conversations.iter().any(|item| item["id"] == "wxid_testuser"));
+    assert!(!conversations
+        .iter()
+        .any(|item| item["id"] == "wxid_testuser"));
     assert_eq!(value["account_id"], "wxid_testuser");
 }
 
@@ -94,6 +99,7 @@ fn exports_all_formats_and_media() {
         "conversation.xlsx",
         "conversation.arkme.json",
         "conversation.sql",
+        "conversation.sqlite",
         "conversation.weclone.csv",
     ] {
         assert!(output.join(name).exists(), "missing {name}");
@@ -103,16 +109,16 @@ fn exports_all_formats_and_media() {
         serde_json::from_slice(&fs::read(output.join("conversation.json")).unwrap()).unwrap();
     let messages = json["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 11);
-    assert!(messages.iter().any(|message| message["content"] == "hello group"));
+    assert!(messages
+        .iter()
+        .any(|message| message["content"] == "hello group"));
     assert!(messages
         .iter()
         .any(|message| message["content"] == "compressed hello"));
-    assert!(messages
-        .iter()
-        .any(|message| message["content"]
-            .as_str()
-            .unwrap()
-            .contains("original text")));
+    assert!(messages.iter().any(|message| message["content"]
+        .as_str()
+        .unwrap()
+        .contains("original text")));
     assert!(messages.iter().any(|message| message["fromMe"] == true));
     assert!(messages.iter().any(|message| message["fromMe"] == false));
     assert!(messages.iter().any(|message| message["media"]["path"]
@@ -136,9 +142,15 @@ fn exports_all_formats_and_media() {
     assert!(missing["media"].get("path").is_none());
     assert_eq!(missing["media"]["status"], "missing");
     let markdown = fs::read_to_string(output.join("conversation.md")).unwrap();
-    assert!(markdown.contains("文件: report.html (未索引，空缺)"), "{markdown}");
+    assert!(
+        markdown.contains("文件: report.html (未索引，空缺)"),
+        "{markdown}"
+    );
     let html = fs::read_to_string(output.join("conversation.html")).unwrap();
-    assert!(!html.contains("__CHAT_DATA__"), "template placeholder left behind");
+    assert!(
+        !html.contains("__CHAT_DATA__"),
+        "template placeholder left behind"
+    );
     let marker = "id=\"chat-data\" type=\"application/json\">";
     let start = html.find(marker).expect("chat data island") + marker.len();
     let end = html[start..].find("</script>").expect("data end") + start;
@@ -163,15 +175,116 @@ fn exports_all_formats_and_media() {
         .find(|message| message["quote"]["sender"] == "Ghost")
         .expect("missing quote");
     assert!(lost["quote"]["target"].is_null(), "missing quote target");
-    assert!(messages.iter().all(|message| message.get("source").is_none()));
+    assert!(messages
+        .iter()
+        .all(|message| message.get("source").is_none()));
     let report: Value =
         serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
     assert_eq!(report["conversations"][0]["message_count"], 11);
     assert!(report["conversations"][0]["start_time"].as_i64().unwrap() > 0);
-    assert!(report["conversations"][0]["end_time"].as_i64().unwrap() >= report["conversations"][0]["start_time"].as_i64().unwrap());
+    assert!(
+        report["conversations"][0]["end_time"].as_i64().unwrap()
+            >= report["conversations"][0]["start_time"].as_i64().unwrap()
+    );
     assert!(report["start_time"].as_i64().unwrap() > 0);
     assert!(report["end_time"].as_i64().unwrap() >= report["start_time"].as_i64().unwrap());
-    assert!(report["conversations"][0]["media"]["saved"].as_u64().unwrap() >= 1);
+    assert!(
+        report["conversations"][0]["media"]["saved"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    let sqlite = rusqlite::Connection::open(output.join("conversation.sqlite")).unwrap();
+    assert_eq!(
+        sqlite
+            .query_row("SELECT count(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        11
+    );
+    let stored: String = sqlite
+        .query_row(
+            "SELECT content FROM messages WHERE content = 'hello group'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, "hello group");
+}
+
+#[test]
+fn recovers_from_sqlite_backup() {
+    let (temp, source) = fixture();
+    let backup = temp.path().join("sqlite-backup");
+    let (code, _, stderr) = run_with_key(&[
+        "conversation",
+        "--export",
+        "--source-database",
+        source.to_str().unwrap(),
+        "--conversation-id",
+        GROUP,
+        "--format",
+        "sqlite",
+        "--output-dir",
+        backup.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let recovered = temp.path().join("recovered");
+    let output = Command::new(env!("CARGO_BIN_EXE_wechat-exporter"))
+        .args([
+            "recovery",
+            "--input",
+            backup.to_str().unwrap(),
+            "--output-dir",
+            recovered.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("run recovery");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value =
+        serde_json::from_slice(&fs::read(recovered.join("recovery-report.json")).unwrap()).unwrap();
+    assert_eq!(report["recovered"].as_array().unwrap().len(), 1);
+    let folder = report["recovered"][0]["output"].as_str().unwrap();
+    let json: Value =
+        serde_json::from_slice(&fs::read(PathBuf::from(folder).join("conversation.json")).unwrap())
+            .unwrap();
+    assert_eq!(json["session"]["id"], GROUP);
+    assert_eq!(json["messages"].as_array().unwrap().len(), 11);
+}
+
+#[test]
+fn decrypts_databases_to_plaintext() {
+    let (temp, source) = fixture();
+    let output = temp.path().join("decrypted");
+    let (code, stdout, stderr) = run_with_key(&[
+        "decrypt",
+        "--source-database",
+        source.to_str().unwrap(),
+        "--output-dir",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    let value: Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(value["failed"].as_array().unwrap().len(), 0);
+    assert!(output.join("session/session.db").exists());
+    let connection = rusqlite::Connection::open(output.join("session/session.db")).unwrap();
+    let tables: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(tables > 0);
+    let header = fs::read(output.join("message/message_0.db")).unwrap();
+    assert!(header.starts_with(b"SQLite format 3\0"));
 }
 
 #[test]
@@ -245,7 +358,10 @@ fn exports_visual_report() {
     assert!(data["words"]["me"].as_array().unwrap().len() > 0);
     let exported: Value =
         serde_json::from_slice(&fs::read(output.join("export-report.json")).unwrap()).unwrap();
-    assert_eq!(exported["conversations"][0]["documents"]["report"], "conversation.report.html");
+    assert_eq!(
+        exported["conversations"][0]["documents"]["report"],
+        "conversation.report.html"
+    );
 }
 
 #[test]
@@ -268,7 +384,11 @@ fn configures_and_clears_webdav_backup() {
         ])
         .output()
         .expect("configure backup");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(temp.path().join(".wechat-exporter-backup.json").exists());
 
     let output = Command::new(binary)
@@ -294,10 +414,30 @@ fn configures_and_clears_webdav_backup() {
 fn generates_four_report_types() {
     let (temp, source) = fixture();
     let cases = [
-        ("private", Vec::<&str>::new(), "private-report.html", "friends"),
-        ("group", vec!["--conversation-id", GROUP], "group-report.html", "members"),
-        ("annual", vec!["--year", "2023"], "annual-report.html", "groups"),
-        ("dual", vec!["--conversation-id", ALICE], "dual-report.html", "ratio"),
+        (
+            "private",
+            Vec::<&str>::new(),
+            "private-report.html",
+            "friends",
+        ),
+        (
+            "group",
+            vec!["--conversation-id", GROUP],
+            "group-report.html",
+            "members",
+        ),
+        (
+            "annual",
+            vec!["--year", "2023"],
+            "annual-report.html",
+            "groups",
+        ),
+        (
+            "dual",
+            vec!["--conversation-id", ALICE],
+            "dual-report.html",
+            "ratio",
+        ),
     ];
     for (kind, extra, file, needle) in cases {
         let dir = temp.path().join(format!("report-{kind}"));
@@ -417,7 +557,8 @@ fn exported_chatlab_matches_spec_shape() {
     ]);
     assert_eq!(code, 0, "stderr={stderr}");
     let value: Value =
-        serde_json::from_slice(&fs::read(output.join("conversation.chatlab.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(output.join("conversation.chatlab.json")).unwrap())
+            .unwrap();
     assert_eq!(value["chatlab"]["version"], "0.0.2");
     assert_eq!(value["meta"]["platform"], "wechat");
     assert_eq!(value["meta"]["type"], "group");

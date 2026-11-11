@@ -1,15 +1,17 @@
+pub mod backup;
 pub mod cli;
+pub mod config;
 pub mod db;
+mod decrypt;
 pub mod export;
 pub mod favorites;
 mod moments;
-mod report;
 pub mod progress;
+mod recovery;
+mod report;
 pub mod upgrade;
-pub mod backup;
 pub mod util;
 pub mod wechat;
-pub mod config;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -18,8 +20,8 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cli::{Cli, ContactKind, Mode, ValidatedCli};
-use progress::Progress;
 use export::ExportContext;
+use progress::Progress;
 use wechat::conversations::{build_conversations, select_conversations};
 use wechat::discover::{auto_detect_candidates, discover, format_scanned_roots_message};
 use wechat::model::Conversation;
@@ -77,7 +79,7 @@ fn print_welcome_help() {
 3. 全文关键词搜索（支持检索 zstd 压缩的聊天记录）：
    wechat-exporter search "合同" --key <64位Hex密钥> --ascending
 
-4. 导出指定聊天为全部 10 种格式并提取媒体图片/视频：
+4. 导出指定聊天为全部 11 种格式并提取媒体图片/视频：
    wechat-exporter conversation --export --key <64位Hex密钥> --conversation-id "123456789@chatroom" \
      --format all --include-media --output-dir "/path/to/backup"
 
@@ -126,7 +128,10 @@ fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result
             None => None,
         };
         let p2 = if p1.is_none() {
-            layout.message_dbs.first().and_then(|p| std::fs::read(p).ok())
+            layout
+                .message_dbs
+                .first()
+                .and_then(|p| std::fs::read(p).ok())
         } else {
             None
         };
@@ -135,7 +140,9 @@ fn run_init(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result
     }
 
     let Some(raw_key) = db_key else {
-        anyhow::bail!("无法从 Weixin.exe 提取主通行码，请确保微信正在运行且已登录，或通过 --key 手动指定");
+        anyhow::bail!(
+            "无法从 Weixin.exe 提取主通行码，请确保微信正在运行且已登录，或通过 --key 手动指定"
+        );
     };
     let key_hex = hex::encode(raw_key);
     println!("[+] 主通行码就绪: {}", key_hex);
@@ -208,6 +215,10 @@ pub fn run() -> Result<()> {
         return backup::run(action);
     }
 
+    if matches!(options.mode, Mode::Recovery) {
+        return recovery::run(&options);
+    }
+
     if let Mode::Report(kind) = &options.mode {
         if let Some(path) = &options.from_json {
             return report::run_from_json(*kind, &options, path);
@@ -227,7 +238,10 @@ pub fn run() -> Result<()> {
     // Auto-load config if key is not passed on command line
     let search_roots = [
         options.source_database.as_path(),
-        layout.account_root.as_deref().unwrap_or(options.source_database.as_path()),
+        layout
+            .account_root
+            .as_deref()
+            .unwrap_or(options.source_database.as_path()),
     ];
     if let Some(cfg) = config::ExporterConfig::load(&search_roots) {
         if options.key.is_none() {
@@ -264,6 +278,9 @@ pub fn run() -> Result<()> {
     if matches!(&options.mode, Mode::Favorites(_)) {
         return favorites::run(&options, &layout);
     }
+    if matches!(&options.mode, Mode::Decrypt) {
+        return decrypt::run(&options, &layout);
+    }
 
     let store = Store::open(&layout.message_dbs, options.key.as_ref(), options.plaintext)?;
     let contacts = wechat::contact::load_contacts(
@@ -286,19 +303,25 @@ pub fn run() -> Result<()> {
     if let Some(self_id) = &self_username {
         conversations.retain(|conversation| &conversation.id != self_id);
     }
-    let account_id = self_username
-        .clone()
-        .or_else(|| {
-            layout
-                .account_root
-                .as_ref()
-                .and_then(|root| root.file_name())
-                .and_then(|name| name.to_str())
-                .map(util::clean_account_id)
-        });
+    let account_id = self_username.clone().or_else(|| {
+        layout
+            .account_root
+            .as_ref()
+            .and_then(|root| root.file_name())
+            .and_then(|name| name.to_str())
+            .map(util::clean_account_id)
+    });
 
     match &options.mode {
-        Mode::DetectDatabases | Mode::Init | Mode::Upgrade(_, _) | Mode::Backup(_) | Mode::Moments | Mode::Contacts(_) | Mode::Favorites(_) => unreachable!(),
+        Mode::DetectDatabases
+        | Mode::Init
+        | Mode::Upgrade(_, _)
+        | Mode::Backup(_)
+        | Mode::Moments
+        | Mode::Contacts(_)
+        | Mode::Favorites(_)
+        | Mode::Decrypt
+        | Mode::Recovery => unreachable!(),
         Mode::List => run_list(&options, &conversations, account_id.as_deref()),
         Mode::Search(query) => run_search(
             &options,
@@ -335,8 +358,12 @@ pub fn run() -> Result<()> {
 }
 
 fn run_contacts(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Result<()> {
-    let path = layout.contact_db.as_deref().context("contact.db not found")?;
-    let contacts = wechat::contact::load_contacts(Some(path), options.key.as_ref(), options.plaintext);
+    let path = layout
+        .contact_db
+        .as_deref()
+        .context("contact.db not found")?;
+    let contacts =
+        wechat::contact::load_contacts(Some(path), options.key.as_ref(), options.plaintext);
     if contacts.is_empty() {
         bail!("no contacts loaded from {}", path.display());
     }
@@ -351,17 +378,23 @@ fn run_contacts(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Re
             ContactKind::All => true,
             ContactKind::Friend => contact.kind == "friend",
             ContactKind::Group => contact.kind == "group",
-            ContactKind::Official => contact.kind == "official"
-                && contact.official_account_kind.as_deref() != Some("service"),
-            ContactKind::Service => contact.kind == "official"
-                && contact.official_account_kind.as_deref() == Some("service"),
+            ContactKind::Official => {
+                contact.kind == "official"
+                    && contact.official_account_kind.as_deref() != Some("service")
+            }
+            ContactKind::Service => {
+                contact.kind == "official"
+                    && contact.official_account_kind.as_deref() == Some("service")
+            }
             ContactKind::Enterprise => contact.is_enterprise && !contact.is_group,
             ContactKind::EnterpriseGroup => contact.is_enterprise && contact.is_group,
             ContactKind::Former => contact.is_former_friend,
             ContactKind::Blocked => contact.is_blocked,
         })
         .filter(|contact| {
-            let Some(query) = query.as_deref() else { return true };
+            let Some(query) = query.as_deref() else {
+                return true;
+            };
             [
                 contact.username.as_str(),
                 contact.nickname.as_str(),
@@ -373,41 +406,56 @@ fn run_contacts(options: &ValidatedCli, layout: &wechat::discover::Layout) -> Re
             .contains(query)
         })
         .collect();
-    rows.sort_by(|a, b| a.display_name().to_lowercase().cmp(&b.display_name().to_lowercase()).then(a.username.cmp(&b.username)));
+    rows.sort_by(|a, b| {
+        a.display_name()
+            .to_lowercase()
+            .cmp(&b.display_name().to_lowercase())
+            .then(a.username.cmp(&b.username))
+    });
     let offset = match &options.cursor {
         Some(cursor) => util::decode_cursor("contact", cursor)?.2,
         None => 0,
     } as usize;
     let page_size = options.page_size as usize;
     let end = offset.saturating_add(page_size).min(rows.len());
-    let page = if offset < rows.len() { &rows[offset..end] } else { &[] };
+    let page = if offset < rows.len() {
+        &rows[offset..end]
+    } else {
+        &[]
+    };
     let next_cursor = if end < rows.len() {
         Some(util::encode_cursor("contact", 0, "", end as u64))
     } else {
         None
     };
-    let account_id = options
-        .self_username
-        .clone()
-        .or_else(|| layout.account_root.as_ref().and_then(|root| root.file_name()).and_then(|name| name.to_str()).map(util::clean_account_id));
+    let account_id = options.self_username.clone().or_else(|| {
+        layout
+            .account_root
+            .as_ref()
+            .and_then(|root| root.file_name())
+            .and_then(|name| name.to_str())
+            .map(util::clean_account_id)
+    });
     let items = page
         .iter()
-        .map(|contact| serde_json::json!({
-            "id": contact.username,
-            "username": contact.username,
-            "nickname": contact.nickname,
-            "remark": contact.remark,
-            "alias": contact.alias,
-            "displayName": contact.display_name(),
-            "kind": contact.kind,
-            "isGroup": contact.is_group,
-            "isEnterprise": contact.is_enterprise,
-            "isBlocked": contact.is_blocked,
-            "isFormerFriend": contact.is_former_friend,
-            "officialAccountKind": contact.official_account_kind,
-            "officialAccountType": contact.official_account_type,
-            "avatarUrl": contact.avatar_url,
-        }))
+        .map(|contact| {
+            serde_json::json!({
+                "id": contact.username,
+                "username": contact.username,
+                "nickname": contact.nickname,
+                "remark": contact.remark,
+                "alias": contact.alias,
+                "displayName": contact.display_name(),
+                "kind": contact.kind,
+                "isGroup": contact.is_group,
+                "isEnterprise": contact.is_enterprise,
+                "isBlocked": contact.is_blocked,
+                "isFormerFriend": contact.is_former_friend,
+                "officialAccountKind": contact.official_account_kind,
+                "officialAccountType": contact.official_account_type,
+                "avatarUrl": contact.avatar_url,
+            })
+        })
         .collect::<Vec<_>>();
     let value = serde_json::json!({
         "schema": util::SCHEMA,
@@ -613,7 +661,9 @@ fn run_export(
         .or_else(|| self_username.map(str::to_string))
         .unwrap_or_default();
     let media_index = if options.include_media {
-        Some(wechat::media::MediaIndex::build(layout.account_root.as_deref()))
+        Some(wechat::media::MediaIndex::build(
+            layout.account_root.as_deref(),
+        ))
     } else {
         None
     };
@@ -644,7 +694,10 @@ fn run_export(
         if messages.is_empty() {
             continue;
         }
-        let attachment_total = messages.iter().filter(|message| message.media.is_some()).count();
+        let attachment_total = messages
+            .iter()
+            .filter(|message| message.media.is_some())
+            .count();
         progress.set_phase(format!(
             "导出会话 {}/{} · {}",
             conversation_index + 1,
@@ -660,10 +713,11 @@ fn run_export(
         std::fs::create_dir_all(&conversation_dir)
             .with_context(|| format!("failed to create {}", conversation_dir.display()))?;
         let media = if let (Some(index), true) = (media_index.as_ref(), options.include_media) {
-            let mut on_media = |done: usize, total: usize, attachment_done: usize, attachment_total: usize| {
-                progress.messages(done, total);
-                progress.attachments(attachment_done, attachment_total);
-            };
+            let mut on_media =
+                |done: usize, total: usize, attachment_done: usize, attachment_total: usize| {
+                    progress.messages(done, total);
+                    progress.attachments(attachment_done, attachment_total);
+                };
             let outcome = wechat::media::export_media(
                 &mut messages,
                 index,
@@ -680,23 +734,24 @@ fn run_export(
         } else {
             None
         };
-        let wants_html = options.formats.iter().any(|format| *format == cli::Format::Html);
+        let wants_html = options
+            .formats
+            .iter()
+            .any(|format| *format == cli::Format::Html);
         let avatar_path = if options.include_media && wants_html {
-            contacts
-                .get(&conversation.id)
-                .and_then(|contact| {
-                    let url = contact.avatar_url.trim();
-                    if url.is_empty() {
-                        None
-                    } else {
-                        download_avatar(url, &conversation_dir).map(|path| {
-                            path.strip_prefix(&conversation_dir)
-                                .unwrap_or(path.as_path())
-                                .to_string_lossy()
-                                .replace('\\', "/")
-                        })
-                    }
-                })
+            contacts.get(&conversation.id).and_then(|contact| {
+                let url = contact.avatar_url.trim();
+                if url.is_empty() {
+                    None
+                } else {
+                    download_avatar(url, &conversation_dir).map(|path| {
+                        path.strip_prefix(&conversation_dir)
+                            .unwrap_or(path.as_path())
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    })
+                }
+            })
         } else {
             None
         };
@@ -734,8 +789,16 @@ fn run_export(
                 (name.clone(), serde_json::json!(relative))
             })
             .collect();
-        let start_time = messages.iter().map(|message| message.create_time).min().unwrap_or(0);
-        let end_time = messages.iter().map(|message| message.create_time).max().unwrap_or(0);
+        let start_time = messages
+            .iter()
+            .map(|message| message.create_time)
+            .min()
+            .unwrap_or(0);
+        let end_time = messages
+            .iter()
+            .map(|message| message.create_time)
+            .max()
+            .unwrap_or(0);
         overall_start = overall_start.min(start_time);
         overall_end = overall_end.max(end_time);
         let mut entry = serde_json::json!({
@@ -771,21 +834,36 @@ fn run_export(
         exported_at_ms,
         &options.formats,
         &report_conversations,
-        if overall_start == i64::MAX { 0 } else { overall_start },
-        if overall_end == i64::MIN { 0 } else { overall_end },
+        if overall_start == i64::MAX {
+            0
+        } else {
+            overall_start
+        },
+        if overall_end == i64::MIN {
+            0
+        } else {
+            overall_end
+        },
     )?;
-    let backup_summary = if options.backup {
+    let upload_summary = if options.upload {
         progress.set_phase("上传 WebDAV 备份");
         Some(
-            backup::upload_directory(&output_dir, &mut progress)
-                .with_context(|| format!("export completed at {} but WebDAV backup failed", output_dir.display()))?,
+            backup::upload_directory(&output_dir, &mut progress).with_context(|| {
+                format!(
+                    "export completed at {} but WebDAV upload failed",
+                    output_dir.display()
+                )
+            })?,
         )
     } else {
         None
     };
     progress.finish();
-    if let Some(summary) = &backup_summary {
-        println!("[+] WebDAV 备份完成: {} ({} 个文件)", summary.remote, summary.files);
+    if let Some(summary) = &upload_summary {
+        println!(
+            "[+] WebDAV 备份完成: {} ({} 个文件)",
+            summary.remote, summary.files
+        );
     }
     let result = serde_json::json!({
         "schema": util::SCHEMA,
@@ -800,7 +878,7 @@ fn run_export(
         "formats": options.formats.iter().map(|format| format.name()).collect::<Vec<_>>(),
         "keep_output": options.keep_output,
         "output_dir_explicit": options.output_dir.is_some(),
-        "backup": backup_summary.as_ref().map(|summary| serde_json::json!({
+        "upload": upload_summary.as_ref().map(|summary| serde_json::json!({
             "remote": summary.remote,
             "files": summary.files,
         })),

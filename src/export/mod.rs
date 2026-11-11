@@ -32,7 +32,7 @@ impl<'a> ExportContext<'a> {
     }
 }
 
-fn write_format(context: &ExportContext<'_>, format: Format, path: &Path) -> Result<()> {
+pub(crate) fn write_format(context: &ExportContext<'_>, format: Format, path: &Path) -> Result<()> {
     match format {
         Format::Json => write_json(context, path)?,
         Format::Markdown => write_markdown(context, path)?,
@@ -43,6 +43,7 @@ fn write_format(context: &ExportContext<'_>, format: Format, path: &Path) -> Res
         Format::Xlsx => write_xlsx(context, path)?,
         Format::ArkmeJson => write_arkme_json(context, path)?,
         Format::Sql => write_sql(context, path)?,
+        Format::Sqlite => write_sqlite(context, path)?,
         Format::Weclone => write_weclone(context, path)?,
     }
     Ok(())
@@ -71,7 +72,11 @@ pub fn write_conversation(
             }
             handles
                 .into_iter()
-                .map(|handle| handle.join().unwrap_or_else(|_| Err(anyhow::anyhow!("export worker panicked"))))
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("export worker panicked")))
+                })
                 .collect::<Result<Vec<_>>>()
         })?;
         for (format, path) in results {
@@ -138,10 +143,13 @@ pub fn message_json(message: &ExportMessage, include_media: bool) -> Value {
     }
     object.insert("sender".into(), Value::Object(sender));
     if let Some(subtype) = message.app_subtype {
-        object.insert("app".into(), json!({
-            "type": subtype,
-            "kind": app_kind(subtype),
-        }));
+        object.insert(
+            "app".into(),
+            json!({
+                "type": subtype,
+                "kind": app_kind(subtype),
+            }),
+        );
     }
     if !message.source.notes.is_empty() {
         object.insert("source".into(), json!(message.source.notes));
@@ -335,7 +343,10 @@ fn write_chatlab_json(context: &ExportContext<'_>, path: &Path, jsonl: bool) -> 
             output.push('\n');
         }
         for message in context.messages {
-            let mut object = chatlab_message(message).as_object().cloned().unwrap_or_default();
+            let mut object = chatlab_message(message)
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
             object.insert("_type".into(), json!("message"));
             output.push_str(&serde_json::to_string(&Value::Object(object))?);
             output.push('\n');
@@ -365,20 +376,19 @@ fn write_arkme_json(context: &ExportContext<'_>, path: &Path) -> Result<()> {
             message.sender_id.clone()
         };
         *counts.entry(id.clone()).or_insert(0) += 1;
-        sender_profiles
-            .entry(id.clone())
-            .or_insert_with(|| {
-                (
-                    message.sender_name.clone(),
-                    message.nickname.clone(),
-                    message.remark.clone(),
-                    message.alias.clone(),
-                )
-            });
+        sender_profiles.entry(id.clone()).or_insert_with(|| {
+            (
+                message.sender_name.clone(),
+                message.nickname.clone(),
+                message.remark.clone(),
+                message.alias.clone(),
+            )
+        });
         if !sender_ids.contains_key(&id) {
             let sender_id = (senders.len() + 1) as i64;
             sender_ids.insert(id.clone(), sender_id);
-            let (display, nickname, remark, alias) = sender_profiles.get(&id).cloned().unwrap_or_default();
+            let (display, nickname, remark, alias) =
+                sender_profiles.get(&id).cloned().unwrap_or_default();
             let mut sender = Map::new();
             sender.insert("senderID".into(), json!(sender_id));
             sender.insert("accountId".into(), json!(id));
@@ -433,7 +443,10 @@ fn write_arkme_json(context: &ExportContext<'_>, path: &Path) -> Result<()> {
                 member.insert("remark".into(), json!(remark));
                 member.insert("alias".into(), json!(alias));
                 member.insert("isFriend".into(), json!(false));
-                member.insert("messageCount".into(), json!(counts.get(id).copied().unwrap_or(0)));
+                member.insert(
+                    "messageCount".into(),
+                    json!(counts.get(id).copied().unwrap_or(0)),
+                );
                 Value::Object(member)
             })
             .collect();
@@ -474,7 +487,11 @@ fn write_markdown(context: &ExportContext<'_>, path: &Path) -> Result<()> {
             out.push_str(&format!("![媒体]({path})\n\n"));
         } else if let Some(media) = &message.media {
             if !media.file_name.is_empty() {
-                out.push_str(&format!("*[{}: {} (未索引，空缺)]*\n\n", media.kind.label(), media.file_name));
+                out.push_str(&format!(
+                    "*[{}: {} (未索引，空缺)]*\n\n",
+                    media.kind.label(),
+                    media.file_name
+                ));
             } else {
                 out.push_str(&format!("*[{}: 未索引，空缺]*\n\n", media.kind.label()));
             }
@@ -513,7 +530,11 @@ fn write_sql(context: &ExportContext<'_>, path: &Path) -> Result<()> {
     );
     let session = crate::util::escape_sql_string(&context.conversation.id);
     for message in context.messages {
-        let media_type = message.media.as_ref().map(|media| media.kind.as_str()).unwrap_or("");
+        let media_type = message
+            .media
+            .as_ref()
+            .map(|media| media.kind.as_str())
+            .unwrap_or("");
         let media_path = message.media_path.as_deref().unwrap_or("");
         out.push_str(&format!(
             "INSERT INTO weflow_messages (session_id, local_id, message_id, create_time, sender, is_send, local_type, media_type, content, media_path) VALUES ('{}', '{}', '{}', {}, '{}', {}, {}, '{}', '{}', '{}');\n",
@@ -549,7 +570,8 @@ fn weclone_type(message: &ExportMessage) -> &'static str {
 }
 
 fn write_weclone(context: &ExportContext<'_>, path: &Path) -> Result<()> {
-    let mut out = String::from("\u{FEFF}id,MsgSvrID,type_name,is_sender,talker,msg,src,CreateTime\r\n");
+    let mut out =
+        String::from("\u{FEFF}id,MsgSvrID,type_name,is_sender,talker,msg,src,CreateTime\r\n");
     for message in context.messages {
         let src = message
             .media_path
@@ -571,7 +593,11 @@ fn write_weclone(context: &ExportContext<'_>, path: &Path) -> Result<()> {
                 .platform_message_id()
                 .unwrap_or_else(|| message.local_id.to_string()),
             weclone_type(message).to_string(),
-            if message.is_send { "1".to_string() } else { "0".to_string() },
+            if message.is_send {
+                "1".to_string()
+            } else {
+                "0".to_string()
+            },
             talker,
             message.content.clone(),
             src,
@@ -596,9 +622,13 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
     let mut by_server: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut by_local: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for previous in context.messages {
-        by_local.entry(previous.local_id.to_string()).or_insert(previous.index);
+        by_local
+            .entry(previous.local_id.to_string())
+            .or_insert(previous.index);
         if previous.server_id > 0 {
-            by_server.entry(previous.server_id.to_string()).or_insert(previous.index);
+            by_server
+                .entry(previous.server_id.to_string())
+                .or_insert(previous.index);
         }
     }
 
@@ -624,10 +654,7 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
             };
             let target = quote.server_id.and_then(|id| {
                 let key = id.to_string();
-                by_server
-                    .get(&key)
-                    .or_else(|| by_local.get(&key))
-                    .copied()
+                by_server.get(&key).or_else(|| by_local.get(&key)).copied()
             });
             serde_json::json!({
                 "sender": quote.sender,
@@ -707,6 +734,100 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
     fs::write(path, html).with_context(|| format!("failed to write {}", path.display()))
 }
 
+fn write_sqlite(context: &ExportContext<'_>, path: &Path) -> Result<()> {
+    let connection = rusqlite::Connection::open(path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    let session = serde_json::to_string(&session_json(context))?;
+    connection.execute_batch(
+        "CREATE TABLE session (
+            id TEXT PRIMARY KEY, name TEXT, nickname TEXT, remark TEXT, alias TEXT,
+            kind TEXT, last_time INTEGER, message_count INTEGER, raw_json TEXT
+        );
+        CREATE TABLE messages (
+            id INTEGER, platform_id TEXT, time INTEGER, time_text TEXT,
+            type TEXT, type_code INTEGER, content TEXT, from_me INTEGER,
+            sender_id TEXT, sender_name TEXT, nickname TEXT, remark TEXT, alias TEXT,
+            media_kind TEXT, media_path TEXT, media_md5 TEXT, media_name TEXT,
+            quote_json TEXT, record_json TEXT, raw_json TEXT
+        );
+        CREATE INDEX messages_time ON messages(time);
+        CREATE INDEX messages_sender ON messages(sender_id);",
+    )?;
+    connection.execute(
+        "INSERT INTO session (id,name,nickname,remark,alias,kind,last_time,message_count,raw_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        rusqlite::params![
+            context.conversation.id,
+            context.conversation.name,
+            context.conversation.nickname,
+            context.conversation.remark,
+            context.conversation.alias,
+            if context.group() { "group" } else { "private" },
+            context.conversation.last_timestamp,
+            context.messages.len() as i64,
+            session,
+        ],
+    )?;
+    {
+        let mut insert = connection.prepare(
+            "INSERT INTO messages
+             (id,platform_id,time,time_text,type,type_code,content,from_me,sender_id,sender_name,
+              nickname,remark,alias,media_kind,media_path,media_md5,media_name,quote_json,record_json,raw_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+        )?;
+        let transaction = connection.unchecked_transaction()?;
+        for message in context.messages {
+            let raw = serde_json::to_string(&message_json(message, context.include_media))?;
+            let quote = message
+                .quote
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
+            let record = message
+                .record
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
+            let (media_kind, media_path, media_md5, media_name) = message
+                .media
+                .as_ref()
+                .map(|media| {
+                    (
+                        media.kind.as_str().to_string(),
+                        message.media_path.clone().unwrap_or_default(),
+                        media.md5.clone(),
+                        media.file_name.clone(),
+                    )
+                })
+                .unwrap_or_default();
+            insert.execute(rusqlite::params![
+                message.local_id,
+                message.platform_message_id().unwrap_or_default(),
+                message.create_time,
+                format_timestamp(message.create_time),
+                message.type_name,
+                message.base_type,
+                message.content,
+                message.is_send as i64,
+                message.sender_id,
+                message.sender_name,
+                message.nickname,
+                message.remark,
+                message.alias,
+                media_kind,
+                media_path,
+                media_md5,
+                media_name,
+                quote,
+                record,
+                raw,
+            ])?;
+        }
+        transaction.commit()?;
+    }
+    Ok(())
+}
+
 fn write_xlsx(context: &ExportContext<'_>, path: &Path) -> Result<()> {
     use rust_xlsxwriter::{Format as XlsxFormat, Workbook};
     let mut workbook = Workbook::new();
@@ -776,14 +897,58 @@ fn add_cjk_run(run: &str, words: &mut BTreeMap<String, usize>) {
     let chars: Vec<char> = run.chars().collect();
     if chars.len() == 1 {
         let value = chars[0].to_string();
-        if !matches!(chars[0], '的' | '了' | '是' | '我' | '你' | '他' | '在' | '有' | '和' | '就' | '不' | '也' | '都' | '说' | '要' | '这' | '那' | '啊' | '吧' | '呢' | '吗' | '哦' | '嗯' | '个' | '上' | '下') {
+        if !matches!(
+            chars[0],
+            '的' | '了'
+                | '是'
+                | '我'
+                | '你'
+                | '他'
+                | '在'
+                | '有'
+                | '和'
+                | '就'
+                | '不'
+                | '也'
+                | '都'
+                | '说'
+                | '要'
+                | '这'
+                | '那'
+                | '啊'
+                | '吧'
+                | '呢'
+                | '吗'
+                | '哦'
+                | '嗯'
+                | '个'
+                | '上'
+                | '下'
+        ) {
             *words.entry(value).or_default() += 1;
         }
         return;
     }
     for pair in chars.windows(2) {
         let word: String = pair.iter().collect();
-        if !matches!(word.as_str(), "我们" | "你们" | "他们" | "她们" | "它们" | "一个" | "就是" | "然后" | "但是" | "因为" | "所以" | "如果" | "还是" | "已经" | "自己") {
+        if !matches!(
+            word.as_str(),
+            "我们"
+                | "你们"
+                | "他们"
+                | "她们"
+                | "它们"
+                | "一个"
+                | "就是"
+                | "然后"
+                | "但是"
+                | "因为"
+                | "所以"
+                | "如果"
+                | "还是"
+                | "已经"
+                | "自己"
+        ) {
             *words.entry(word).or_default() += 1;
         }
     }
@@ -801,7 +966,10 @@ pub(crate) fn collect_words(text: &str, words: &mut BTreeMap<String, usize>) {
     let flush_ascii = |run: &mut String, words: &mut BTreeMap<String, usize>| {
         let value = run.to_ascii_lowercase();
         run.clear();
-        if value.len() >= 2 && !value.contains("http") && !value.chars().all(|ch| ch.is_ascii_digit()) {
+        if value.len() >= 2
+            && !value.contains("http")
+            && !value.chars().all(|ch| ch.is_ascii_digit())
+        {
             *words.entry(value).or_default() += 1;
         }
     };
@@ -858,7 +1026,9 @@ mod analytics_tests {
     fn extracts_chinese_conversation_bigrams() {
         let mut words = BTreeMap::new();
         collect_words("好的，收到。什么？现在没有，不是可以哈哈", &mut words);
-        for word in ["好的", "收到", "什么", "现在", "没有", "不是", "可以", "哈哈"] {
+        for word in [
+            "好的", "收到", "什么", "现在", "没有", "不是", "可以", "哈哈",
+        ] {
             assert!(words.contains_key(word), "missing {word}: {words:?}");
         }
     }

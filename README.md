@@ -202,7 +202,7 @@ wechat-exporter search "关键词" --source-database /path/to/db_storage --page-
 
 ### conversation
 
-缺省列出会话；加 `--export` 导出指定会话，`--format all` 生成全部 10 种格式。
+缺省列出会话；加 `--export` 导出指定会话，`--format all` 生成全部 11 种格式。
 
 ```bash
 wechat-exporter conversation --key <64位Hex密钥> --page-size 20
@@ -238,7 +238,7 @@ wechat-exporter conversation --export --key <64位Hex密钥> \
 | `-o, --output-dir <DIR>` | 绝对路径输出目录，必须尚不存在 |
 | `-k, --keep-output` | 保留临时输出目录 |
 | `--report` | 生成可视化分析报告 `conversation.report.html` |
-| `--backup` | 导出完成后按配置自动上传到 WebDAV |
+| `--upload` | 导出完成后按配置自动上传到 WebDAV |
 | `--silent` | 不打印进度条，仅保留最终结果/错误 |
 | `--debug` | 详细调试输出 |
 
@@ -361,9 +361,38 @@ wechat-exporter moments --year 2026 --posts --limit 50 --offset 0
 - `--user`：按作者 WXID 或昵称过滤；
 - 每条时间线包含作者、时间、正文、媒体 URL、点赞用户和头像 URL。
 
+### decrypt
+
+把 `db_storage` 下的 SQLCipher 数据库逐库转为普通 SQLite，目录结构保持不变：
+
+```bash
+wechat-exporter decrypt --key <64位Hex密钥> \
+  --source-database /path/to/db_storage --output-dir /path/to/decrypted
+```
+
+- 输出为可直接用 `sqlite3` / DB Browser 打开的标准 SQLite 文件；
+- 源数据库不会被修改，转换在临时副本上完成；
+- 目标文件已存在时默认失败，加 `--force` 覆盖；
+- 只处理 `.db` 文件，并保留 `contact/`、`message/`、`session/` 等相对路径。
+
+### recovery
+
+从 `conversation --export --format sqlite` 生成的 `conversation.sqlite` 备份恢复会话，
+无需微信数据库、密钥或网络：
+
+```bash
+wechat-exporter recovery --input /path/to/sqlite-backup \
+  --output-dir /path/to/recovered --format json --format html
+```
+
+- `--input` 可以是单个 `conversation.sqlite` 或包含多个备份的目录；
+- 默认输出 `conversation.json`，可用 `-f all` 恢复全部格式；
+- 备份中如包含 `media/`，加 `--include-media` 一并复制并保留媒体路径；
+- 输出目录必须尚不存在；根目录会写入 `recovery-report.json` 汇总恢复结果。
+
 ### backup
 
-配置 WebDAV 后，`conversation --export --backup` 会把整个输出目录上传到
+配置 WebDAV 后，`conversation --export --upload` 会把整个输出目录上传到
 `<url>/<remote_path>/<输出目录名>/`。
 
 ```bash
@@ -379,7 +408,7 @@ wechat-exporter backup clear   # 删除配置
 # 导出后自动备份
 wechat-exporter conversation --export --key <64位Hex> \
   --conversation-id 123456789@chatroom --format all --include-media \
-  --output-dir /path/to/out --backup
+  --output-dir /path/to/out --upload
 ```
 
 上传包含 HTML、报告、JSON、媒体文件等全部输出；目录不存在时自动
