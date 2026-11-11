@@ -1925,7 +1925,45 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
 
 #[cfg(test)]
 mod report_filter_tests {
-    use super::is_word_text;
+    use super::{is_report_content_message, is_word_text};
+    use crate::wechat::model::{ExportMessage, MessageSource};
+
+    fn test_message(type_name: &str, base_type: i64, app_subtype: Option<i64>) -> ExportMessage {
+        ExportMessage {
+            index: 1,
+            local_id: 1,
+            server_id: 1,
+            create_time: 1,
+            sender_id: String::new(),
+            sender_name: String::new(),
+            nickname: String::new(),
+            remark: String::new(),
+            alias: String::new(),
+            is_send: false,
+            local_type: base_type,
+            base_type,
+            type_name: type_name.to_string(),
+            content: String::new(),
+            source: MessageSource::default(),
+            app_subtype,
+            media: None,
+            media_path: None,
+            quote: None,
+            record: None,
+        }
+    }
+
+    #[test]
+    fn report_keeps_quotes_articles_and_video_channels() {
+        for (name, subtype) in [("引用消息", 57), ("公众号文章", 5), ("视频号", 51)] {
+            assert!(
+                is_report_content_message(&test_message(name, 49, Some(subtype))),
+                "{name} should be report content"
+            );
+        }
+        assert!(!is_report_content_message(&test_message("拍一拍", 49, Some(62))));
+        assert!(!is_report_content_message(&test_message("系统消息", 10000, None)));
+    }
 
     #[test]
     fn rejects_metadata_and_code_tokens() {
