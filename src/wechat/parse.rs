@@ -161,10 +161,17 @@ fn app_type(xml: &str, fallback_sub: i64) -> Option<i64> {
 fn type_name_for_app(subtype: Option<i64>, content: &str) -> Option<&'static str> {
     match subtype {
         Some(3) => Some("音乐消息"),
-        Some(5) | Some(49) => Some("链接消息"),
+        Some(5) | Some(49) => {
+            if content.contains("mp.weixin.qq.com") || content.contains("<sourceusername>gh_") {
+                Some("公众号文章")
+            } else {
+                Some("链接消息")
+            }
+        }
         Some(6) => Some("文件消息"),
         Some(19) => Some("聊天记录"),
         Some(33) | Some(36) => Some("小程序消息"),
+        Some(51) | Some(63) | Some(115) => Some("视频号"),
         Some(57) => Some("引用消息"),
         Some(87) => Some("群公告"),
         Some(2000) => Some("转账消息"),
@@ -602,9 +609,14 @@ pub fn parse_content(
     let body = body.trim_matches('\0').trim().to_string();
     let xml = normalize_xml(&body);
     let app_subtype = app_type(&xml, sub_type);
+    let has_pat_element = xml.contains("<pat>")
+        || xml.contains("<pat ")
+        || xml.contains("<pat\n")
+        || xml.contains("<pat\r")
+        || (xml.contains("<sysmsg") && xml.contains("type=\"pat\""));
     let is_pat = full_type == 266_287_972_401
         || app_subtype == Some(62)
-        || xml.contains("<pat")
+        || has_pat_element
         || body.starts_with("[拍一拍]");
 
     if is_pat {
@@ -776,9 +788,10 @@ pub fn parse_content(
             (text, None, false)
         }
         10000 | 10002 => (clean_system(&body), None, true),
-        _ if raw.trim_start().starts_with("<sysmsg")
-            || raw.contains("revokemsg")
-            || raw.contains("sysmsg") =>
+        _ if !xml.contains("<appmsg")
+            && (raw.trim_start().starts_with("<sysmsg")
+                || raw.contains("revokemsg")
+                || raw.contains("sysmsg")) =>
         {
             (clean_system(&body), None, true)
         }
@@ -859,6 +872,24 @@ mod tests {
         assert!(parsed.text.contains("reply"));
         assert!(parsed.media.is_none());
     }
+    #[test]
+    fn parses_quote_with_empty_pat_metadata() {
+        let quote = "<msg><appmsg><title>reply</title><type>57</type><refermsg><displayname>Alice</displayname><content>original</content></refermsg><patMsg><records><recordNum>0</recordNum></records></patMsg><appattach><totallen>0</totallen></appattach></appmsg></msg>";
+        let parsed = parse_content(quote, 49, 57, 244813135921);
+        assert_eq!(parsed.type_name, "引用消息");
+        assert_eq!(parsed.quote.unwrap().sender, "Alice");
+    }
+
+    #[test]
+    fn classifies_article_and_video_channel_with_pat_metadata() {
+        let article = "<msg><appmsg><title>Article</title><type>5</type><url>https://mp.weixin.qq.com/s/abc</url><sourceusername>gh_123</sourceusername><patMsg><records><recordNum>0</recordNum></records></patMsg></appmsg></msg>";
+        let parsed = parse_content(article, 49, 5, 21474836529);
+        assert_eq!(parsed.type_name, "公众号文章");
+        let video = "<msg><appmsg><title>Video</title><type>51</type><patMsg><records><recordNum>0</recordNum></records></patMsg></appmsg></msg>";
+        let parsed = parse_content(video, 49, 51, 219043332145);
+        assert_eq!(parsed.type_name, "视频号");
+    }
+
     #[test]
     fn parses_system_message() {
         let parsed = parse_content(
