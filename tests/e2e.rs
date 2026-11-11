@@ -379,7 +379,7 @@ fn help_scopes_options_to_subcommands() {
         .output()
         .expect("root help");
     let root = String::from_utf8_lossy(&root.stdout);
-    for command in ["init", "detect", "search", "conversation"] {
+    for command in ["init", "detect", "search", "conversation", "favorite"] {
         assert!(root.contains(command), "missing subcommand {command}");
     }
     assert!(!root.contains("--conversation-id"));

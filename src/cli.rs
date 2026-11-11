@@ -41,6 +41,7 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
   conversation  列出会话；--export 导出会话，可附带媒体
   report  生成私聊/群聊/双人/年度分析报告
   moments 分析朋友圈发帖、收赞、点赞与好友排行
+  favorite 获取微信收藏列表
   backup  配置 WebDAV 自动备份
   upgrade 检查并安装新版本
 
@@ -72,6 +73,8 @@ pub enum Command {
     Report(ReportArgs),
     /// 分析朋友圈：发帖类型、收到的赞、给出的赞与好友排行
     Moments(MomentsArgs),
+    /// 获取微信收藏列表
+    Favorite(FavoriteArgs),
     /// 检查并安装新版本
     Upgrade(UpgradeArgs),
     /// 配置或测试备份提供商
@@ -363,6 +366,50 @@ pub struct ReportArgs {
     pub silent: bool,
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FavoriteType {
+    /// 全部收藏
+    All,
+    /// 文本
+    Text,
+    /// 图片
+    Image,
+    /// 文章/链接
+    Article,
+    /// 名片
+    Card,
+    /// 视频
+    Video,
+    /// 其他
+    Other,
+}
+
+#[derive(Args, Debug)]
+pub struct FavoriteArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// 收藏类型
+    #[arg(long = "type", value_enum, default_value_t = FavoriteType::All, help_heading = "收藏")]
+    pub kind: FavoriteType,
+
+    /// 搜索收藏内容、来源或聊天名
+    #[arg(short = 'q', long = "query", value_name = "TEXT", help_heading = "收藏")]
+    pub query: Option<String>,
+
+    /// 单页数量 (1..1000，缺省 50)
+    #[arg(long = "limit", short = 'n', value_name = "N", help_heading = "收藏")]
+    pub limit: Option<u32>,
+
+    /// 分页偏移量
+    #[arg(long = "offset", value_name = "N", help_heading = "收藏")]
+    pub offset: Option<u32>,
+
+    /// 输出完整收藏内容（默认只输出预览）
+    #[arg(long = "full", action = ArgAction::SetTrue, help_heading = "收藏")]
+    pub full: bool,
+}
+
 #[derive(Args, Debug)]
 pub struct MomentsArgs {
     #[command(flatten)]
@@ -531,6 +578,7 @@ pub enum Mode {
     Init,
     Report(ReportKind),
     Moments,
+    Favorites(FavoriteType),
     Upgrade(String, Option<String>),
     Backup(BackupCommand),
 }
@@ -561,6 +609,9 @@ pub struct ValidatedCli {
     pub moments_limit: u32,
     pub moments_offset: u32,
     pub moments_user: Option<String>,
+    pub favorite_type: FavoriteType,
+    pub favorite_full: bool,
+    pub favorite_offset: u32,
     pub from_json: Option<PathBuf>,
     pub silent: bool,
     pub backup: bool,
@@ -632,6 +683,9 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         moments_limit: 50,
         moments_offset: 0,
         moments_user: None,
+        favorite_type: FavoriteType::All,
+        favorite_full: false,
+        favorite_offset: 0,
         from_json: None,
         silent: false,
         backup: false,
@@ -822,6 +876,9 @@ impl Command {
                 moments_limit: 50,
                 moments_offset: 0,
                 moments_user: None,
+                favorite_type: FavoriteType::All,
+                favorite_full: false,
+                favorite_offset: 0,
                 from_json: None,
                 silent: false,
                 backup: false,
@@ -932,6 +989,25 @@ impl Command {
                 options.moments_limit = limit;
                 options.moments_offset = args.offset.unwrap_or(0);
                 options.moments_user = args.user.map(|value| value.trim().to_string());
+                Ok(options)
+            }
+            Command::Favorite(args) => {
+                if let Some(query) = &args.query {
+                    if query.trim().is_empty() || query.contains('\0') || query.len() > 512 {
+                        bail!("favorite query must be nonempty, contain no NUL, and be at most 512 UTF-8 bytes");
+                    }
+                }
+                let limit = args.limit.unwrap_or(50);
+                if !(1..=1000).contains(&limit) {
+                    bail!("favorite limit must be 1..1000");
+                }
+                let common = args.common.validate()?;
+                let mut options = validated(common, Mode::Favorites(args.kind));
+                options.list_query = args.query.map(|query| query.trim().to_string());
+                options.page_size = limit;
+                options.favorite_offset = args.offset.unwrap_or(0);
+                options.favorite_full = args.full;
+                options.favorite_type = args.kind;
                 Ok(options)
             }
             Command::Backup(args) => {

@@ -242,6 +242,26 @@ wechat-exporter conversation --export --key <64位Hex密钥> \
 | `--silent` | 不打印进度条，仅保留最终结果/错误 |
 | `--debug` | 详细调试输出 |
 
+### favorite
+
+读取 `favorite/favorite.db` 的收藏列表，不依赖聊天数据库。
+
+```bash
+wechat-exporter favorite
+wechat-exporter favorite --type article
+wechat-exporter favorite -q 关键词 --limit 20 --offset 0
+wechat-exporter favorite --full
+```
+
+- `--type`：`all` / `text` / `image` / `article` / `card` / `video` / `other`；
+- `-q, --query`：搜索收藏内容、来源或聊天名；
+- `--limit/-n`：1–1000，缺省 50；
+- `--offset`：分页偏移；
+- `--full`：输出完整内容，而不只是预览；
+- 文件需要放在 `db_storage/favorite/favorite.db`，支持配置中的路径与密钥。
+
+输出包含收藏 ID、类型、时间、预览、来源、聊天名，文章类型额外包含 URL。
+
 ### report
 
 生成独立分析报告（HTML，自包含、离线）。所有 report 子命令都需要绝对路径

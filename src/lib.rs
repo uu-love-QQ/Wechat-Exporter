@@ -1,7 +1,8 @@
 pub mod cli;
 pub mod db;
 pub mod export;
-pub mod moments;
+pub mod favorites;
+mod moments;
 mod report;
 pub mod progress;
 pub mod upgrade;
@@ -260,6 +261,9 @@ pub fn run() -> Result<()> {
     if matches!(&options.mode, Mode::Contacts(_)) {
         return run_contacts(&options, &layout);
     }
+    if matches!(&options.mode, Mode::Favorites(_)) {
+        return favorites::run(&options, &layout);
+    }
 
     let store = Store::open(&layout.message_dbs, options.key.as_ref(), options.plaintext)?;
     let contacts = wechat::contact::load_contacts(
@@ -294,7 +298,7 @@ pub fn run() -> Result<()> {
         });
 
     match &options.mode {
-        Mode::DetectDatabases | Mode::Init | Mode::Upgrade(_, _) | Mode::Backup(_) | Mode::Moments | Mode::Contacts(_) => unreachable!(),
+        Mode::DetectDatabases | Mode::Init | Mode::Upgrade(_, _) | Mode::Backup(_) | Mode::Moments | Mode::Contacts(_) | Mode::Favorites(_) => unreachable!(),
         Mode::List => run_list(&options, &conversations, account_id.as_deref()),
         Mode::Search(query) => run_search(
             &options,

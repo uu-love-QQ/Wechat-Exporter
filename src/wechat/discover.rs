@@ -8,6 +8,7 @@ pub struct Layout {
     pub account_root: Option<PathBuf>,
     pub session_db: Option<PathBuf>,
     pub contact_db: Option<PathBuf>,
+    pub favorite_db: Option<PathBuf>,
     pub message_dbs: Vec<PathBuf>,
     /// `db_storage` root, used to locate the media database for voice payloads.
     pub db_storage: Option<PathBuf>,
@@ -465,6 +466,14 @@ pub fn discover(source: &Path) -> Result<Layout> {
             find_named_child(&db_storage, "contact.db", 3)
         }
     };
+    let favorite_db = {
+        let direct = db_storage.join("favorite").join("favorite.db");
+        if direct.is_file() {
+            Some(direct)
+        } else {
+            find_named_child(&db_storage, "favorite.db", 3)
+        }
+    };
 
     if message_dbs.is_empty() {
         bail!(
@@ -477,6 +486,7 @@ pub fn discover(source: &Path) -> Result<Layout> {
         account_root,
         session_db,
         contact_db,
+        favorite_db,
         message_dbs,
         db_storage: Some(db_storage),
     })
