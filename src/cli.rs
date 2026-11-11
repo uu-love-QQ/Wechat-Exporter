@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
@@ -44,7 +44,7 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
   moments 分析朋友圈发帖、收赞、点赞与好友排行
   favorite 获取微信收藏列表
   decrypt  解密数据库到指定目录
-  recovery 从 SQLite 导出备份恢复会话
+  recovery 恢复 SQLite 备份并写回微信数据库
   backup  配置 WebDAV 自动备份
   upgrade 检查并安装新版本
 
@@ -80,7 +80,7 @@ pub enum Command {
     Favorite(FavoriteArgs),
     /// 将加密数据库解密为普通 SQLite 到指定目录
     Decrypt(DecryptArgs),
-    /// 从 SQLite 导出备份恢复会话
+    /// 恢复 SQLite 备份并写回微信原始数据库
     Recovery(RecoveryArgs),
     /// 检查并安装新版本
     Upgrade(UpgradeArgs),
@@ -571,9 +571,10 @@ pub struct BackupArgs {
 
 #[derive(Args, Debug)]
 pub struct RecoveryArgs {
-    /// conversation.sqlite 备份文件或包含备份的目录
+    /// decrypt 生成的普通 SQLite 备份文件或目录
     #[arg(
         long = "input",
+        visible_alias = "backup",
         short = 'i',
         value_name = "PATH",
         required = true,
@@ -581,22 +582,47 @@ pub struct RecoveryArgs {
     )]
     pub input: PathBuf,
 
-    /// 恢复后的输出目录 (必须尚不存在)
+    /// 写回微信原始 db_storage；与 --output-dir 二选一
+    #[arg(
+        long = "target-database",
+        visible_alias = "source-database",
+        short = 't',
+        value_name = "DIR",
+        help_heading = "写回微信数据库"
+    )]
+    pub target_database: Option<PathBuf>,
+
+    /// 覆盖前写入备份的目标数据库确认开关
+    #[arg(long = "force", action = ArgAction::SetTrue, help_heading = "写回微信数据库")]
+    pub force: bool,
+
+    /// 写回前备份目标数据库的目录；缺省自动创建在 db_storage 同级的隐藏目录
+    #[arg(long = "backup-dir", value_name = "DIR", help_heading = "写回微信数据库")]
+    pub backup_dir: Option<PathBuf>,
+
+    /// 64 位 Hex 数据库密钥
+    #[arg(long = "key", short = 'K', value_name = "HEX", help_heading = "写回微信数据库")]
+    pub key: Option<String>,
+
+    /// 包含 64 位 Hex 数据库密钥的文件
+    #[arg(long = "key-file", value_name = "PATH", help_heading = "写回微信数据库")]
+    pub key_file: Option<PathBuf>,
+
+    /// 离线恢复输出目录 (必须尚不存在)；用于 conversation.sqlite 备份
     #[arg(
         long = "output-dir",
         short = 'o',
         value_name = "DIR",
-        required = true,
-        help_heading = "恢复"
+        help_heading = "离线恢复"
     )]
-    pub output_dir: PathBuf,
+    pub output_dir: Option<PathBuf>,
 
-    /// 恢复输出格式 (可重复传入，或传入 'all'，缺省 json)
-    #[arg(long = "format", short = 'f', value_name = "NAME", action = ArgAction::Append, help_heading = "恢复")]
+    /// 离线恢复输出格式 (可重复传入，或传入 'all'，缺省 json)
+    #[arg(long = "format", short = 'f', value_name = "NAME", action = ArgAction::Append, help_heading = "离线恢复")]
     pub formats: Vec<String>,
 
-    /// 同时复制备份中的 media/ 附件
-    #[arg(long = "include-media", short = 'm', action = ArgAction::SetTrue, help_heading = "恢复")]
+    /// 离线恢复时复制备份中的 media/ 附件
+    #[arg(long = "include-media", short = 'm', action = ArgAction::SetTrue, help_heading = "离线恢复")]
     pub include_media: bool,
 }
 
@@ -743,6 +769,8 @@ pub struct ValidatedCli {
     pub favorite_offset: u32,
     pub force: bool,
     pub recovery_input: Option<PathBuf>,
+    pub target_database: Option<PathBuf>,
+    pub backup_dir: Option<PathBuf>,
     pub from_json: Option<PathBuf>,
     pub silent: bool,
     pub upload: bool,
@@ -819,6 +847,8 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         favorite_offset: 0,
         force: false,
         recovery_input: None,
+        target_database: None,
+        backup_dir: None,
         from_json: None,
         silent: false,
         upload: false,
@@ -1013,6 +1043,8 @@ impl Command {
                 favorite_offset: 0,
                 force: false,
                 recovery_input: None,
+                target_database: None,
+                backup_dir: None,
                 from_json: None,
                 silent: false,
                 upload: false,
@@ -1189,15 +1221,92 @@ impl Command {
                 if !args.input.exists() {
                     bail!("recovery input does not exist: {}", args.input.display());
                 }
-                if !args.output_dir.is_absolute() {
+                if args.target_database.is_some() {
+                    if args.output_dir.is_some() {
+                        bail!("--target-database and --output-dir cannot be used together");
+                    }
+                    if !args.formats.is_empty() {
+                        bail!("--format is only valid for offline recovery");
+                    }
+                    if args.include_media {
+                        bail!("--include-media is only valid for offline recovery");
+                    }
+                    let target = args.target_database.as_ref().unwrap();
+                    if !target.exists() {
+                        bail!("target database does not exist: {}", target.display());
+                    }
+                    if !args.force {
+                        bail!("writing into the WeChat database requires --force");
+                    }
+                    if let Some(parent) = target.parent() {
+                        if !parent.exists() {
+                            bail!("target database parent does not exist");
+                        }
+                    }
+                    if let Some(dir) = &args.backup_dir {
+                        if !dir.is_absolute() {
+                            bail!("--backup-dir must be an absolute path");
+                        }
+                        if let Some(parent) = dir.parent() {
+                            if !parent.exists() {
+                                bail!("--backup-dir parent does not exist");
+                            }
+                        }
+                        if dir.exists() {
+                            bail!("--backup-dir already exists: {}", dir.display());
+                        }
+                    }
+                    let key = crate::util::read_key(args.key.as_deref(), args.key_file.as_deref())?
+                        .context("--key or --key-file is required when writing into the WeChat database")?;
+                    return Ok(ValidatedCli {
+                        source_database: PathBuf::from("."),
+                        mode: Mode::Recovery,
+                        formats: Vec::new(),
+                        conversation_ids: Vec::new(),
+                        start_time_ms: None,
+                        end_time_ms: None,
+                        page_size: 50,
+                        cursor: None,
+                        list_query: None,
+                        ascending: false,
+                        include_media: false,
+                        keep_output: false,
+                        output_dir: None,
+                        self_username: None,
+                        image_key: None,
+                        key: Some(key),
+                        plaintext: false,
+                        debug: false,
+                        report: false,
+                        report_year: 0,
+                        moments_posts: false,
+                        moments_limit: 50,
+                        moments_offset: 0,
+                        moments_user: None,
+                        favorite_type: FavoriteType::All,
+                        favorite_full: false,
+                        favorite_offset: 0,
+                        force: true,
+                        recovery_input: Some(args.input),
+                        target_database: args.target_database,
+                        backup_dir: args.backup_dir,
+                        from_json: None,
+                        silent: false,
+                        upload: false,
+                    });
+                }
+                let Some(output_dir) = args.output_dir else {
+                    bail!("recovery requires --target-database <db_storage> (write back to WeChat) or --output-dir <DIR> (offline export)");
+                };
+                if !output_dir.is_absolute() {
                     bail!("recovery output directory must be an absolute path");
                 }
-                if let Some(parent) = args.output_dir.parent() {
+                if let Some(parent) = output_dir.parent() {
                     if !parent.exists() {
                         bail!("recovery output directory parent does not exist");
                     }
                 }
-                if args.output_dir.is_file() {
+                if output_dir.is_file() {
                     bail!("recovery output directory is an existing file, not a directory");
                 }
                 let formats = if args.formats.is_empty() {
@@ -1218,7 +1327,7 @@ impl Command {
                     ascending: false,
                     include_media: args.include_media,
                     keep_output: false,
-                    output_dir: Some(args.output_dir),
+                    output_dir: Some(output_dir),
                     self_username: None,
                     image_key: None,
                     key: None,
@@ -1235,6 +1344,8 @@ impl Command {
                     favorite_offset: 0,
                     force: false,
                     recovery_input: Some(args.input),
+                    target_database: None,
+                    backup_dir: None,
                     from_json: None,
                     silent: false,
                     upload: false,

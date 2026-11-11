@@ -597,3 +597,74 @@ fn detects_databases_subcommand() {
     assert!(stdout.contains("正在检索本机所有 WeChat 4.x 数据库"));
     assert!(stdout.contains("wxid_testuser"));
 }
+
+#[test]
+fn restores_plaintext_backup_into_encrypted_target() {
+    let (temp, source) = fixture();
+    let backup = temp.path().join("decrypt-backup");
+    let (code, _, stderr) = run_with_key(&[
+        "decrypt",
+        "--source-database",
+        source.to_str().unwrap(),
+        "--output-dir",
+        backup.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let connection = rusqlite::Connection::open(backup.join("message/message_0.db")).unwrap();
+    connection
+        .execute(
+            "UPDATE Msg_9234c5fa4065f721b47403f393822c44 SET message_content='RESTORED_MARKER' WHERE local_id=1",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let target_root = temp.path().join("target");
+    fs::create_dir_all(&target_root).unwrap();
+    let target = target_root.join("db_storage");
+    copy_tree(&source, &target);
+    let (code, stdout, stderr) = run_with_key(&[
+        "recovery",
+        "--input",
+        backup.to_str().unwrap(),
+        "--target-database",
+        target.to_str().unwrap(),
+        "--force",
+    ]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["failed"].as_array().unwrap().len(), 0);
+
+    let verified = temp.path().join("verified");
+    let (code, _, stderr) = run_with_key(&[
+        "decrypt",
+        "--source-database",
+        target.to_str().unwrap(),
+        "--output-dir",
+        verified.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let connection = rusqlite::Connection::open(verified.join("message/message_0.db")).unwrap();
+    let content: String = connection
+        .query_row(
+            "SELECT message_content FROM Msg_9234c5fa4065f721b47403f393822c44 WHERE local_id=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(content, "RESTORED_MARKER");
+}
+
+fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
+    fs::create_dir_all(target).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let from = entry.path();
+        let to = target.join(entry.file_name());
+        if from.is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            fs::copy(&from, &to).unwrap();
+        }
+    }
+}

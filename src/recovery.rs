@@ -1,8 +1,10 @@
 use anyhow::{bail, Context, Result};
+use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use crate::cli::{Format, ValidatedCli};
+use crate::db::Db;
 use crate::export::{self, ExportContext};
 use crate::util;
 use crate::wechat::model::{
@@ -266,6 +268,13 @@ fn copy_dir(source: &Path, target: &Path) -> Result<()> {
 }
 
 pub fn run(options: &ValidatedCli) -> Result<()> {
+    if options.target_database.is_some() {
+        return run_restore(options);
+    }
+    run_offline(options)
+}
+
+fn run_offline(options: &ValidatedCli) -> Result<()> {
     let input = options
         .recovery_input
         .as_deref()
@@ -351,6 +360,293 @@ pub fn run(options: &ValidatedCli) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(&report)?);
     if !failed.is_empty() {
         bail!("{} backup(s) could not be recovered", failed.len());
+    }
+    Ok(())
+}
+
+
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn quote_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn schema_tables(connection: &rusqlite::Connection, schema: &str) -> Result<Vec<String>> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT name FROM {schema}.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ))?;
+    let mut rows = statement.query([])?;
+    let mut tables = Vec::new();
+    while let Some(row) = rows.next()? {
+        tables.push(row.get(0)?);
+    }
+    Ok(tables)
+}
+
+fn schema_columns(
+    connection: &rusqlite::Connection,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<String>> {
+    let mut statement = connection.prepare(&format!(
+        "PRAGMA {schema}.table_info({})",
+        quote_string(table)
+    ))?;
+    let mut rows = statement.query([])?;
+    let mut columns = Vec::new();
+    while let Some(row) = rows.next()? {
+        columns.push(row.get::<_, String>(1)?);
+    }
+    Ok(columns)
+}
+
+fn table_is_virtual(connection: &rusqlite::Connection, table: &str) -> Result<bool> {
+    let sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM backup.sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(sql
+        .as_deref()
+        .is_some_and(|sql| sql.to_ascii_uppercase().contains("VIRTUAL TABLE")))
+}
+
+fn collect_database_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    if root.is_file() {
+        out.push(root.to_path_buf());
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_database_files(&path, out)?;
+        } else if path.extension().and_then(|value| value.to_str()).is_some_and(|value| value.eq_ignore_ascii_case("db")) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn restore_one(
+    source: &Path,
+    target: &Path,
+    key: &[u8; 32],
+) -> Result<(usize, i64)> {
+    let db = Db::open_for_decrypt(target, Some(key), false)
+        .with_context(|| format!("failed to open target database {}", target.display()))?;
+    let connection = db.conn();
+    connection.execute_batch("PRAGMA foreign_keys=OFF;")?;
+    connection.execute_batch(&format!(
+        "ATTACH DATABASE {} AS backup KEY '';",
+        quote_string(&source.to_string_lossy())
+    ))?;
+    let result = (|| -> Result<(usize, i64)> {
+        let backup_tables = schema_tables(connection, "backup")?;
+        if backup_tables.is_empty() {
+            bail!("backup database has no tables: {}", source.display());
+        }
+        let target_tables = schema_tables(connection, "main")?;
+        let mut plans = Vec::new();
+        for table in &backup_tables {
+            if !target_tables.iter().any(|name| name == table) {
+                bail!("target database is missing table {table}");
+            }
+            if table_is_virtual(connection, table)? {
+                bail!("restoring virtual table {table} is not supported");
+            }
+            let backup_columns = schema_columns(connection, "backup", table)?;
+            let target_columns = schema_columns(connection, "main", table)?;
+            for column in &backup_columns {
+                if !target_columns.iter().any(|name| name == column) {
+                    bail!("target table {table} is missing column {column}");
+                }
+            }
+            plans.push((table.clone(), backup_columns));
+        }
+        connection.execute_batch("BEGIN IMMEDIATE;")?;
+        let mut rows_restored = 0i64;
+        for (table, columns) in &plans {
+            let quoted_columns = columns
+                .iter()
+                .map(|column| quote_ident(column))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let table_name = quote_ident(table);
+            connection.execute(&format!("DELETE FROM main.{table_name};"), [])?;
+            connection.execute(
+                &format!(
+                    "INSERT INTO main.{table_name} ({quoted_columns}) SELECT {quoted_columns} FROM backup.{table_name};"
+                ),
+                [],
+            )?;
+            let target_count: i64 = connection.query_row(
+                &format!("SELECT count(*) FROM main.{table_name}"),
+                [],
+                |row| row.get(0),
+            )?;
+            let backup_count: i64 = connection.query_row(
+                &format!("SELECT count(*) FROM backup.{table_name}"),
+                [],
+                |row| row.get(0),
+            )?;
+            if target_count != backup_count {
+                bail!("row count mismatch for {table}: target={target_count} backup={backup_count}");
+            }
+            rows_restored += target_count;
+        }
+        connection.execute_batch("COMMIT;")?;
+        Ok((plans.len(), rows_restored))
+    })();
+    if result.is_err() {
+        let _ = connection.execute_batch("ROLLBACK;");
+    }
+    let _ = connection.execute_batch("DETACH DATABASE backup;");
+    drop(db);
+    result
+}
+
+fn make_restore_backup(
+    target_root: &Path,
+    files: &[PathBuf],
+    requested: Option<&Path>,
+) -> Result<PathBuf> {
+    let backup_root = match requested {
+        Some(path) => path.to_path_buf(),
+        None => {
+            let parent = target_root.parent().unwrap_or(target_root);
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            let base = format!(".wechat-exporter-restore-{stamp}");
+            let mut candidate = parent.join(&base);
+            let mut index = 1u32;
+            while candidate.exists() {
+                candidate = parent.join(format!("{base}-{index}"));
+                index += 1;
+            }
+            candidate
+        }
+    };
+    std::fs::create_dir_all(&backup_root)?;
+    for target in files {
+        let relative = target.strip_prefix(target_root).unwrap_or(target);
+        let destination = backup_root.join(relative);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(target, &destination)
+            .with_context(|| format!("failed to back up {}", target.display()))?;
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = PathBuf::from(format!("{}{suffix}", target.display()));
+            if sidecar.is_file() {
+                let sidecar_destination = PathBuf::from(format!("{}{suffix}", destination.display()));
+                std::fs::copy(&sidecar, sidecar_destination)?;
+            }
+        }
+    }
+    Ok(backup_root)
+}
+
+fn run_restore(options: &ValidatedCli) -> Result<()> {
+    let input = options
+        .recovery_input
+        .as_deref()
+        .context("recovery input path is missing")?;
+    let target = options
+        .target_database
+        .as_deref()
+        .context("target database is missing")?;
+    let key = options.key.as_ref().context("database key is missing")?;
+    let layout = crate::wechat::discover::discover(target)?;
+    let target_root = layout
+        .db_storage
+        .context("target db_storage path is missing")?;
+    if !target_root.is_dir() {
+        bail!("target database is not a directory: {}", target_root.display());
+    }
+    if input.is_file()
+        && !input
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("db"))
+    {
+        bail!(
+            "recovery input must be a decrypt backup directory or .db file; conversation.sqlite is an offline export and is not a full database backup"
+        );
+    }
+    let input_root = if input.is_dir() {
+        input.to_path_buf()
+    } else {
+        input
+            .parent()
+            .context("recovery input has no parent directory")?
+            .to_path_buf()
+    };
+    let input_canonical = std::fs::canonicalize(&input_root).unwrap_or_else(|_| input_root.clone());
+    let target_canonical = std::fs::canonicalize(&target_root).unwrap_or_else(|_| target_root.clone());
+    if target_canonical.starts_with(&input_canonical) || input_canonical.starts_with(&target_canonical) {
+        bail!("recovery input and target db_storage must be different directories");
+    }
+    let mut sources = Vec::new();
+    collect_database_files(input, &mut sources)?;
+    sources.sort();
+    if sources.is_empty() {
+        bail!(
+            "recovery input contains no .db files; a decrypt backup is required (conversation.sqlite is an offline export, not a full database backup)"
+        );
+    }
+    let mut plans = Vec::new();
+    for source in sources {
+        let relative = source
+            .strip_prefix(&input_root)
+            .unwrap_or(&source)
+            .to_path_buf();
+        let target_path = target_root.join(&relative);
+        if !target_path.is_file() {
+            bail!(
+                "target database is missing for {} (expected {})",
+                relative.display(),
+                target_path.display()
+            );
+        }
+        plans.push((source, target_path));
+    }
+    let backup_root = make_restore_backup(
+        &target_root,
+        &plans.iter().map(|(_, target)| target.clone()).collect::<Vec<_>>(),
+        options.backup_dir.as_deref(),
+    )?;
+    let mut restored = Vec::new();
+    let mut failed = Vec::new();
+    for (source, target_path) in &plans {
+        match restore_one(source, target_path, key) {
+            Ok((tables, rows)) => restored.push(serde_json::json!({
+                "database": target_path.strip_prefix(&target_root).unwrap_or(target_path),
+                "target": target_path,
+                "tables": tables,
+                "rows": rows,
+            })),
+            Err(error) => failed.push(format!("{}: {error:#}", target_path.display())),
+        }
+    }
+    let report = serde_json::json!({
+        "schema": util::SCHEMA,
+        "generator": util::GENERATOR,
+        "input": input,
+        "target_database": target_root,
+        "target_backup": backup_root,
+        "restored": restored,
+        "failed": failed,
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if !failed.is_empty() {
+        bail!("{} database(s) could not be restored; target backup: {}", failed.len(), backup_root.display());
     }
     Ok(())
 }
