@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::ValidatedCli;
 use crate::db::Db;
+use crate::progress::Progress;
 use crate::wechat::discover::Layout;
 
 fn collect_databases(root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
@@ -89,10 +90,14 @@ pub fn run(options: &ValidatedCli, layout: &Layout) -> Result<()> {
     collect_databases(source, &mut databases)?;
     databases.sort();
     std::fs::create_dir_all(output)?;
+    let mut progress = Progress::new(options.silent);
+    progress.set_phase("解密数据库");
+    progress.steps(0, databases.len(), "");
     let mut decrypted = Vec::new();
     let mut failed = Vec::new();
-    for path in databases {
-        let relative = path.strip_prefix(source).unwrap_or(&path);
+    for (index, path) in databases.iter().enumerate() {
+        let relative = path.strip_prefix(source).unwrap_or(path);
+        progress.steps(index, databases.len(), relative.to_string_lossy());
         let target = output.join(relative);
         let result = if target.exists() && !options.force {
             Err(anyhow::anyhow!("target exists"))
@@ -110,6 +115,7 @@ pub fn run(options: &ValidatedCli, layout: &Layout) -> Result<()> {
             }
         }
     }
+    progress.finish();
     let value = serde_json::json!({
         "source": source,
         "output": output,

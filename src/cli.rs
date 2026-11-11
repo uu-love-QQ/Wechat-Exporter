@@ -454,6 +454,10 @@ pub struct DecryptArgs {
     /// 覆盖已存在的目标数据库
     #[arg(long = "force", action = ArgAction::SetTrue, help_heading = "解密")]
     pub force: bool,
+
+    /// 不打印进度条，仅保留最终 JSON
+    #[arg(long = "silent", action = ArgAction::SetTrue, help_heading = "其他")]
+    pub silent: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1182,6 +1186,7 @@ impl Command {
                 let mut options = validated(common, Mode::Decrypt);
                 options.output_dir = Some(args.output_dir);
                 options.force = args.force;
+                options.silent = args.silent;
                 Ok(options)
             }
             Command::Favorite(args) => {

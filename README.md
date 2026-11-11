@@ -374,7 +374,8 @@ wechat-exporter decrypt --key <64位Hex密钥> \
 - 输出为可直接用 `sqlite3` / DB Browser 打开的标准 SQLite 文件；
 - 源数据库不会被修改，转换在临时副本上完成；
 - 目标文件已存在时默认失败，加 `--force` 覆盖；
-- 只处理 `.db` 文件，并保留 `contact/`、`message/`、`session/` 等相对路径。
+- 只处理 `.db` 文件，并保留 `contact/`、`message/`、`session/` 等相对路径；
+- 交互终端下显示逐库进度；`--silent` 可关闭进度，保留最终 JSON。
 
 ### recovery
 
@@ -480,6 +481,11 @@ wechat-exporter upgrade --prefix https://ghfast.top/
 
 Windows 下会先下载新版，退出后由后台命令替换并重启；Linux 直接替换当前二进制。
 `--prefix` 只是 URL 前缀，不做域名固定；不检查 release 中是否存在其他附件。
+
+## WCDB 数据结构
+
+微信 4.x `db_storage` 的数据库清单、表结构、字段作用、zstd/加密/WAL/FTS
+等特殊处理，详见 [docs/WCDB.md](docs/WCDB.md)。
 
 ## 六、HTML 界面与引用跳转
 
