@@ -374,12 +374,24 @@ pub enum FavoriteType {
     Text,
     /// 图片
     Image,
-    /// 文章/链接
-    Article,
-    /// 名片
-    Card,
+    /// 语音
+    Voice,
     /// 视频
     Video,
+    /// 文章/链接
+    Article,
+    /// 文件
+    File,
+    /// 聊天记录
+    ChatRecord,
+    /// 位置
+    Location,
+    /// 笔记
+    Note,
+    /// 小程序
+    MiniProgram,
+    /// 名片
+    Card,
     /// 其他
     Other,
 }
@@ -408,6 +420,10 @@ pub struct FavoriteArgs {
     /// 输出完整收藏内容（默认只输出预览）
     #[arg(long = "full", action = ArgAction::SetTrue, help_heading = "收藏")]
     pub full: bool,
+
+    /// 导出收藏清单与每条原始内容到该目录
+    #[arg(long = "output-dir", short = 'o', value_name = "DIR", help_heading = "收藏")]
+    pub output_dir: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -992,6 +1008,19 @@ impl Command {
                 Ok(options)
             }
             Command::Favorite(args) => {
+                if let Some(dir) = &args.output_dir {
+                    if !dir.is_absolute() {
+                        bail!("favorite output directory must be an absolute path");
+                    }
+                    if let Some(parent) = dir.parent() {
+                        if !parent.exists() {
+                            bail!("favorite output directory parent does not exist");
+                        }
+                    }
+                    if dir.is_file() {
+                        bail!("favorite output directory is an existing file, not a directory");
+                    }
+                }
                 if let Some(query) = &args.query {
                     if query.trim().is_empty() || query.contains('\0') || query.len() > 512 {
                         bail!("favorite query must be nonempty, contain no NUL, and be at most 512 UTF-8 bytes");
@@ -1008,6 +1037,7 @@ impl Command {
                 options.favorite_offset = args.offset.unwrap_or(0);
                 options.favorite_full = args.full;
                 options.favorite_type = args.kind;
+                options.output_dir = args.output_dir;
                 Ok(options)
             }
             Command::Backup(args) => {

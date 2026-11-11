@@ -253,14 +253,28 @@ wechat-exporter favorite -q 关键词 --limit 20 --offset 0
 wechat-exporter favorite --full
 ```
 
-- `--type`：`all` / `text` / `image` / `article` / `card` / `video` / `other`；
+- `--type`：`all` / `text` / `image` / `voice` / `video` / `article` / `file` / `chat-record` / `location` / `note` / `mini-program` / `card` / `other`；
 - `-q, --query`：搜索收藏内容、来源或聊天名；
 - `--limit/-n`：1–1000，缺省 50；
 - `--offset`：分页偏移；
 - `--full`：输出完整内容，而不只是预览；
+- `-o, --output-dir`：导出收藏清单、每条原始 XML 和聊天记录 JSON；
 - 文件需要放在 `db_storage/favorite/favorite.db`，支持配置中的路径与密钥。
 
-输出包含收藏 ID、类型、时间、预览、来源、聊天名，文章类型额外包含 URL。
+输出包含收藏 ID、类型、时间、标题/描述、来源、聊天名；文章、语音、文件等类型还会输出 URL、时长、大小，聊天记录会解析出消息数组。
+
+导出示例：
+
+```bash
+wechat-exporter favorite --type voice -o /path/to/out
+wechat-exporter favorite --type chat-record -o /path/to/out
+```
+
+输出目录下会生成：
+
+- `favorites.json`：完整清单；
+- `favorites/<id>-<类型>.xml`：原始收藏 XML；
+- `favorites/<id>-聊天记录.json`：解析后的聊天记录消息。
 
 ### report
 

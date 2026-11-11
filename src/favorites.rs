@@ -11,9 +11,15 @@ fn type_code(kind: FavoriteType) -> Option<i64> {
         FavoriteType::All => None,
         FavoriteType::Text => Some(1),
         FavoriteType::Image => Some(2),
+        FavoriteType::Voice => Some(3),
+        FavoriteType::Video => Some(4),
         FavoriteType::Article => Some(5),
+        FavoriteType::File => Some(8),
+        FavoriteType::ChatRecord => Some(14),
+        FavoriteType::Location => Some(6),
+        FavoriteType::Note => Some(16),
+        FavoriteType::MiniProgram => Some(17),
         FavoriteType::Card => Some(19),
-        FavoriteType::Video => Some(20),
         FavoriteType::Other => None,
     }
 }
@@ -22,9 +28,15 @@ fn type_label(code: i64) -> &'static str {
     match code {
         1 => "文本",
         2 => "图片",
+        3 => "语音",
+        4 => "视频",
         5 => "文章",
+        6 => "位置",
+        8 => "文件",
+        14 => "聊天记录",
+        16 => "笔记",
+        17 => "小程序",
         19 => "名片",
-        20 => "视频",
         _ => "其他",
     }
 }
@@ -43,35 +55,6 @@ fn cell_i64(row: &rusqlite::Row<'_>, index: usize) -> i64 {
         Some(rusqlite::types::Value::Text(value)) => value.trim().parse().unwrap_or(0),
         _ => 0,
     }
-}
-
-fn favorite_preview(content: &str, full: bool) -> (String, Option<String>) {
-    let xml_value = |tag: &str| {
-        Regex::new(&format!(r"(?is)<{tag}\b[^>]*>(.*?)</{tag}>"))
-            .ok()
-            .and_then(|re| re.captures(content))
-            .and_then(|caps| caps.get(1))
-            .map(|m| crate::wechat::parse::unescape_xml(m.as_str()).trim().to_string())
-            .filter(|value| !value.is_empty())
-    };
-    let text = xml_value("title")
-        .or_else(|| xml_value("desc"))
-        .or_else(|| xml_value("content"))
-        .unwrap_or_else(|| content.trim().to_string());
-    let preview = if full {
-        text.clone()
-    } else {
-        let mut preview = text.chars().take(200).collect::<String>();
-        if text.chars().count() > 200 {
-            preview.push_str("...");
-        }
-        preview
-    };
-    let url = Regex::new(r#"https?://[^\s"'<>]+"#)
-        .ok()
-        .and_then(|re| re.find(content))
-        .map(|m| m.as_str().to_string());
-    (preview, url)
 }
 
 pub fn run(options: &ValidatedCli, layout: &Layout) -> Result<()> {
@@ -140,41 +123,191 @@ pub fn run(options: &ValidatedCli, layout: &Layout) -> Result<()> {
             .single()
             .map(|value| value.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_default();
-        let (preview, url) = favorite_preview(&content, options.favorite_full);
+        let details = favorite_details(&content, code);
+        let preview = if options.favorite_full {
+            details.description.clone()
+        } else {
+            let mut preview = details.description.chars().take(200).collect::<String>();
+            if details.description.chars().count() > 200 {
+                preview.push_str("...");
+            }
+            preview
+        };
         let mut item = serde_json::json!({
             "id": id_index.map(|index| cell_i64(&row, index)),
             "type": type_label(code),
             "typeNum": code,
             "timestamp": timestamp,
             "time": time,
+            "title": details.title,
+            "description": details.description,
             "preview": preview,
+            "url": details.url,
+            "thumb": details.thumb,
+            "duration": details.duration,
+            "fileSize": details.file_size,
+            "messages": details.messages,
             "from": from,
             "chat": chat,
         });
-        if let Some(url) = url {
-            item["url"] = serde_json::Value::String(url);
-        }
-        if options.favorite_full {
+        if options.favorite_full || options.output_dir.is_some() {
             item["content"] = serde_json::Value::String(content);
         }
         items.push(item);
     }
     items.sort_by(|a, b| b["timestamp"].as_i64().cmp(&a["timestamp"].as_i64()));
     let total = items.len();
-    let offset = options.favorite_offset as usize;
-    let limit = options.page_size as usize;
-    let page = items.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
-    let value = serde_json::json!({
-        "schema": crate::util::SCHEMA,
-        "generator": crate::util::GENERATOR,
-        "type": match options.favorite_type { FavoriteType::All => "all", FavoriteType::Text => "text", FavoriteType::Image => "image", FavoriteType::Article => "article", FavoriteType::Card => "card", FavoriteType::Video => "video", FavoriteType::Other => "other" },
-        "query": options.list_query,
-        "total": total,
-        "count": page.len(),
-        "items": page,
-    });
-    println!("{}", serde_json::to_string_pretty(&value)?);
+    if let Some(dir) = &options.output_dir {
+        std::fs::create_dir_all(dir)?;
+        let items_dir = dir.join("favorites");
+        std::fs::create_dir_all(&items_dir)?;
+        for item in &items {
+            let id = item["id"].as_i64().unwrap_or(0);
+            let type_name = item["type"].as_str().unwrap_or("item");
+            let content = item["content"].as_str().unwrap_or("");
+            let base = items_dir.join(format!("{id}-{type_name}"));
+            std::fs::write(base.with_extension("xml"), content)?;
+            if item["typeNum"].as_i64() == Some(14) {
+                std::fs::write(base.with_extension("json"), serde_json::to_string_pretty(&item["messages"])?)?;
+            }
+        }
+        let report = dir.join("favorites.json");
+        let value = serde_json::json!({
+            "schema": crate::util::SCHEMA,
+            "generator": crate::util::GENERATOR,
+            "total": total,
+            "items": items,
+        });
+        std::fs::write(&report, serde_json::to_string_pretty(&value)?)?;
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"favorites","report":report,"total":total}))?);
+    } else {
+        let offset = options.favorite_offset as usize;
+        let limit = options.page_size as usize;
+        let page = items.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
+        let value = serde_json::json!({
+            "schema": crate::util::SCHEMA,
+            "generator": crate::util::GENERATOR,
+            "type": favorite_type_name(options.favorite_type),
+            "query": options.list_query,
+            "total": total,
+            "count": page.len(),
+            "items": page,
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    }
     Ok(())
+}
+
+fn favorite_type_name(kind: FavoriteType) -> &'static str {
+    match kind {
+        FavoriteType::All => "all",
+        FavoriteType::Text => "text",
+        FavoriteType::Image => "image",
+        FavoriteType::Voice => "voice",
+        FavoriteType::Video => "video",
+        FavoriteType::Article => "article",
+        FavoriteType::File => "file",
+        FavoriteType::ChatRecord => "chat-record",
+        FavoriteType::Location => "location",
+        FavoriteType::Note => "note",
+        FavoriteType::MiniProgram => "mini-program",
+        FavoriteType::Card => "card",
+        FavoriteType::Other => "other",
+    }
+}
+
+#[derive(Default)]
+struct FavoriteDetails {
+    title: String,
+    description: String,
+    url: Option<String>,
+    thumb: Option<String>,
+    duration: Option<String>,
+    file_size: Option<String>,
+    messages: Vec<serde_json::Value>,
+}
+
+fn favorite_details(content: &str, code: i64) -> FavoriteDetails {
+    let field = |tag: &str| {
+        Regex::new(&format!(r"(?is)<{tag}\b[^>]*>(.*?)</{tag}>"))
+            .ok()
+            .and_then(|re| re.captures(content))
+            .and_then(|caps| caps.get(1))
+            .map(|m| crate::wechat::parse::unescape_xml(m.as_str()).trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let mut details = FavoriteDetails::default();
+    match code {
+        1 => {
+            details.title = field("title").unwrap_or_else(|| "文本笔记".into());
+            details.description = field("desc").or_else(|| field("content")).unwrap_or_else(|| content.trim().to_string());
+        }
+        2 => {
+            details.title = field("datatitle").unwrap_or_else(|| "收藏图片".into());
+            details.description = field("datadesc").unwrap_or_default();
+        }
+        3 => {
+            details.title = "语音消息".into();
+            details.description = field("datadesc").unwrap_or_else(|| "语音收藏".into());
+            details.duration = field("duration");
+            details.file_size = field("fullsize");
+        }
+        4 => {
+            details.title = field("datatitle").unwrap_or_else(|| "收藏视频".into());
+            details.description = field("datadesc").unwrap_or_default();
+        }
+        5 => {
+            details.title = field("pagetitle").unwrap_or_else(|| "收藏文章".into());
+            details.description = field("pagedesc").unwrap_or_default();
+            details.url = field("link").or_else(|| field("url"));
+            details.thumb = field("pagethumb_url").or_else(|| field("thumburl"));
+        }
+        6 => {
+            details.title = field("poiname").unwrap_or_else(|| "位置收藏".into());
+            details.description = field("poiaddress").or_else(|| field("label")).unwrap_or_default();
+        }
+        8 => {
+            details.title = field("datatitle").unwrap_or_else(|| "收藏文件".into());
+            details.description = field("datadesc").unwrap_or_default();
+            details.file_size = field("fullsize");
+        }
+        14 => {
+            if let Ok(re) = Regex::new(r"(?is)<dataitem[^>]*>(.*?)</dataitem>") {
+                for item in re.captures_iter(content) {
+                    let block = item.get(1).map(|m| m.as_str()).unwrap_or("");
+                    let desc = Regex::new(r"(?is)<datadesc[^>]*>(.*?)</datadesc>").ok().and_then(|r| r.captures(block)).and_then(|c| c.get(1)).map(|m| m.as_str()).unwrap_or("");
+                    let source = Regex::new(r"(?is)<datasrcname[^>]*>(.*?)</datasrcname>").ok().and_then(|r| r.captures(block)).and_then(|c| c.get(1)).map(|m| m.as_str()).unwrap_or("");
+                    let time = Regex::new(r"(?is)<datasrctime[^>]*>(.*?)</datasrctime>").ok().and_then(|r| r.captures(block)).and_then(|c| c.get(1)).map(|m| m.as_str()).unwrap_or("").to_string();
+                    let desc = crate::wechat::parse::unescape_xml(desc).trim().to_string();
+                    if desc.is_empty() { continue; }
+                    let source = crate::wechat::parse::unescape_xml(source).trim().to_string();
+                    details.messages.push(serde_json::json!({
+                        "source": source,
+                        "time": time,
+                        "text": desc,
+                    }));
+                }
+            }
+            details.title = format!("聊天记录 ({} 条消息)", details.messages.len());
+            details.description = details.messages.iter().map(|m| m["text"].as_str().unwrap_or("")).collect::<Vec<_>>().join("
+");
+        }
+        16 => {
+            details.title = field("datatitle").unwrap_or_else(|| "收藏笔记".into());
+            details.description = field("datadesc").unwrap_or_default();
+        }
+        17 => {
+            details.title = field("pagetitle").unwrap_or_else(|| "收藏小程序".into());
+            details.description = field("pagedesc").unwrap_or_default();
+            details.url = field("link").or_else(|| field("url"));
+        }
+        _ => {
+            details.title = field("title").or_else(|| field("datatitle")).or_else(|| field("pagetitle")).unwrap_or_default();
+            details.description = field("desc").or_else(|| field("datadesc")).or_else(|| field("pagedesc")).unwrap_or_else(|| content.trim().to_string());
+        }
+    }
+    details.thumb = details.thumb.or_else(|| field("thumburl")).filter(|url| url.starts_with("http"));
+    details
 }
 
 #[cfg(test)]
@@ -183,12 +316,12 @@ mod tests {
 
     #[test]
     fn extracts_favorite_title_preview_and_url() {
-        let (preview, url) = favorite_preview(
-            "<favitem><title>Article title</title><url>https://example.com/a</url></favitem>",
-            false,
+        let details = favorite_details(
+            "<favitem><pagetitle>Article title</pagetitle><link>https://example.com/a</link></favitem>",
+            5,
         );
-        assert_eq!(preview, "Article title");
-        assert_eq!(url.as_deref(), Some("https://example.com/a"));
+        assert_eq!(details.title, "Article title");
+        assert_eq!(details.url.as_deref(), Some("https://example.com/a"));
     }
 
     #[test]
@@ -196,8 +329,10 @@ mod tests {
         assert_eq!(type_label(1), "文本");
         assert_eq!(type_label(2), "图片");
         assert_eq!(type_label(5), "文章");
+        assert_eq!(type_label(3), "语音");
+        assert_eq!(type_label(4), "视频");
+        assert_eq!(type_label(14), "聊天记录");
         assert_eq!(type_label(19), "名片");
-        assert_eq!(type_label(20), "视频");
         assert_eq!(type_label(99), "其他");
     }
 }
