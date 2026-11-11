@@ -36,7 +36,6 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
 
   init    初始化配置并保存主密钥/图片密钥
   detect  检索本机微信数据库位置与账号
-  list    列出会话
   contact 列出、搜索联系人与群聊
   search  全文检索
   conversation  列出会话；--export 导出会话，可附带媒体
@@ -63,8 +62,6 @@ pub enum Command {
     Init(InitArgs),
     /// 自动检索并列出本机微信 4.x 数据库位置与账号
     Detect(DetectArgs),
-    /// 列出聊天会话 (ID、昵称、备注、最后活跃时间、消息数)
-    List(ListArgs),
     /// 列出、搜索联系人及群聊
     Contact(ContactArgs),
     /// 跨会话全文关键词检索 (支持 zstd 压缩内容)
@@ -146,29 +143,6 @@ pub struct DetectArgs {
     /// 开启详细调试输出
     #[arg(long = "debug", action = ArgAction::SetTrue, help_heading = "其他")]
     pub debug: bool,
-}
-
-#[derive(Args, Debug)]
-pub struct ListArgs {
-    #[command(flatten)]
-    pub common: CommonArgs,
-
-    /// 按会话名称、备注、昵称或 ID 过滤会话
-    #[arg(short = 'q', long = "query", value_name = "TEXT", help_heading = "查询")]
-    pub query: Option<String>,
-
-    /// 单页会话数量 (范围 1..1000，缺省 50)
-    #[arg(
-        long = "page-size",
-        short = 'p',
-        value_name = "N",
-        help_heading = "分页"
-    )]
-    pub page_size: Option<u32>,
-
-    /// 分页游标 (Base64 编码，上一页返回的 next_cursor)
-    #[arg(long = "cursor", value_name = "BASE64", help_heading = "分页")]
-    pub cursor: Option<String>,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -868,20 +842,6 @@ impl Command {
                 let common = args.common.validate()?;
                 let page_size = parse_page_size(args.page_size)?;
                 let mut options = validated(common, Mode::Contacts(args.kind));
-                options.list_query = args.query.map(|query| query.trim().to_string());
-                options.page_size = page_size;
-                options.cursor = args.cursor;
-                Ok(options)
-            }
-            Command::List(args) => {
-                if let Some(query) = &args.query {
-                    if query.trim().is_empty() || query.contains('\0') || query.len() > 512 {
-                        bail!("list query must be nonempty, contain no NUL, and be at most 512 UTF-8 bytes");
-                    }
-                }
-                let common = args.common.validate()?;
-                let page_size = parse_page_size(args.page_size)?;
-                let mut options = validated(common, Mode::List);
                 options.list_query = args.query.map(|query| query.trim().to_string());
                 options.page_size = page_size;
                 options.cursor = args.cursor;

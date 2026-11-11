@@ -51,7 +51,7 @@ fn embedded_report(html: &str) -> Value {
 fn lists_conversations() {
     let (_temp, source) = fixture();
     let (code, stdout, stderr) = run_with_key(&[
-        "list",
+        "conversation",
         "--source-database",
         source.to_str().unwrap(),
         "--page-size",
@@ -197,7 +197,7 @@ fn searches_across_shards() {
 fn list_query_filters_conversations() {
     let (_temp, source) = fixture();
     let (code, stdout, stderr) = run_with_key(&[
-        "list",
+        "conversation",
         "-q",
         "Alice",
         "--source-database",
@@ -379,21 +379,10 @@ fn help_scopes_options_to_subcommands() {
         .output()
         .expect("root help");
     let root = String::from_utf8_lossy(&root.stdout);
-    for command in ["init", "detect", "list", "search", "conversation"] {
+    for command in ["init", "detect", "search", "conversation"] {
         assert!(root.contains(command), "missing subcommand {command}");
     }
     assert!(!root.contains("--conversation-id"));
-
-    let list = Command::new(env!("CARGO_BIN_EXE_wechat-exporter"))
-        .args(["list", "--help"])
-        .output()
-        .expect("list help");
-    let list = String::from_utf8_lossy(&list.stdout);
-    assert!(list.contains("--page-size"));
-    assert!(list.contains("--query"));
-    assert!(!list.contains("--conversation-id"));
-    assert!(!list.contains("--output-dir"));
-    assert!(!list.contains("--format"));
 
     let export = Command::new(env!("CARGO_BIN_EXE_wechat-exporter"))
         .args(["conversation", "--help"])
@@ -447,7 +436,7 @@ fn auto_detects_database_and_lists() {
     let parent = source.parent().unwrap().parent().unwrap();
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wechat-exporter"));
     cmd.env("XWECHAT_FILES_DIR", parent)
-        .args(["list", "--key", KEY, "--page-size", "10"]);
+        .args(["conversation", "--key", KEY, "--page-size", "10"]);
     let output = cmd.output().expect("run alpha-cli auto-detect");
     assert_eq!(output.status.code().unwrap_or(-1), 0);
     let stdout = String::from_utf8_lossy(&output.stdout);

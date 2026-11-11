@@ -48,7 +48,7 @@ cargo build --target x86_64-pc-windows-gnu --release
 wechat-exporter detect
 
 # 自动选用最新活跃账号列出会话列表（无需输入路径）
-wechat-exporter list --key <64位Hex密钥>
+wechat-exporter conversation --key <64位Hex密钥>
 ```
 
 ---
@@ -91,7 +91,7 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
 .\wechat-exporter.exe detect
 
 # 2. 列出最近活跃会话（自动关联电脑管家迁移路径，传入主口令）
-.\wechat-exporter.exe list --key <64位Hex主通行码>
+.\wechat-exporter.exe conversation --key <64位Hex主通行码>
 
 # 3. 全文检索关键词
 .\wechat-exporter.exe search "合同" --key <64位Hex主通行码> --ascending
@@ -179,27 +179,6 @@ wechat-exporter contact --query 张 --kind friend --page-size 50
 - `--cursor`：上一页返回的 `next_cursor`；
 - 输出包含 `id`、昵称、备注、别名、显示名、类型、群聊/企业/黑名单/曾经好友标记、公众号类型、头像 URL。
 
-### list
-
-列出会话 ID、昵称、备注、最后活跃时间与消息数。
-
-```bash
-wechat-exporter list --key <64位Hex密钥> --page-size 20
-wechat-exporter list -q "关键词" --key <64位Hex密钥>
-wechat-exporter list --source-database /path/to/db_storage --cursor <BASE64>
-```
-
-| 参数 | 说明 |
-|---|---|
-| `-s, --source-database <PATH>` | 指定数据库路径；缺省自动检索 |
-| `-K, --key <HEX>` / `--key-file <PATH>` | 数据库密钥 |
-| `--self-username <WXID>` | 指定当前登录账号 |
-| `--plaintext` | 按未加密 SQLite 打开 |
-| `-q, --query <TEXT>` | 按会话名称、备注、昵称、别名或 ID 过滤会话 |
-| `-p, --page-size <N>` | 单页数量 1..1000，缺省 50 |
-| `--cursor <BASE64>` | 上一页返回的 `next_cursor`，用于继续翻页 |
-| `--debug` | 详细调试输出 |
-
 ### search
 
 跨会话全文检索，支持 zstd 压缩文本。
@@ -247,6 +226,10 @@ wechat-exporter conversation --export --key <64位Hex密钥> \
 | `-K, --key <HEX>` / `--key-file <PATH>` | 数据库密钥 |
 | `--self-username <WXID>` | 指定当前登录账号 |
 | `--plaintext` | 按未加密 SQLite 打开 |
+| `--export` | 执行导出；缺省只列出会话 |
+| `-q, --query <TEXT>` | 按会话名称、备注、昵称、别名或 ID 过滤 |
+| `-p, --page-size <N>` | 列表单页数量 1..1000，缺省 50 |
+| `--cursor <BASE64>` | 列表上一页返回的 `next_cursor` |
 | `--image-key <HEX>` | V2 `.dat` 图片 AES 密钥；缺省自动提取 |
 | `-c, --conversation-id <ID>` | 会话 ID，可重复指定 |
 | `-f, --format <NAME>` | 格式或 `all`，可重复指定 |
@@ -258,7 +241,6 @@ wechat-exporter conversation --export --key <64位Hex密钥> \
 | `--backup` | 导出完成后按配置自动上传到 WebDAV |
 | `--silent` | 不打印进度条，仅保留最终结果/错误 |
 | `--debug` | 详细调试输出 |
-| `--export` | 执行导出；缺省只列出会话 |
 
 ### report
 
@@ -311,7 +293,7 @@ wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json 
 导出格式、媒体附件、报告会话读取和 WebDAV 文件上传使用并行任务；
 SQLite 读取按 worker 独立打开只读连接，媒体落盘使用内容寻址并加写锁。
 
-`list` / `search` 返回的 `next_cursor` 是分页游标（Base64 编码的偏移量），
+`conversation` / `search` 返回的 `next_cursor` 是分页游标（Base64 编码的偏移量），
 不是密钥或错误码；把上一页返回的值原样传给 `--cursor` 即可继续下一页。
 
 `export-report.json` 的顶层和每个 `conversations[]` 条目都包含

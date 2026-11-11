@@ -71,7 +71,7 @@ fn print_welcome_help() {
    wechat-exporter detect
 
 2. 列出会话列表（缺省 --source-database 时自动使用最新活跃账号）：
-   wechat-exporter list --key <64位Hex密钥> --page-size 20
+   wechat-exporter conversation --key <64位Hex密钥> --page-size 20
 
 3. 全文关键词搜索（支持检索 zstd 压缩的聊天记录）：
    wechat-exporter search "合同" --key <64位Hex密钥> --ascending
@@ -107,7 +107,7 @@ fn run_detect_databases() -> Result<()> {
         println!("    数据库路径:     {}", c.db_storage.display());
         println!();
     }
-    println!("提示：执行 list 或 conversation 时，直接运行即可自动使用最新账号，");
+    println!("提示：执行 conversation 时，直接运行即可自动使用最新账号，");
     println!("      亦可通过 --source-database <数据库路径> 手动指定具体账号。");
     Ok(())
 }
