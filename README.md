@@ -102,14 +102,14 @@ Salt 邻接二进制扫描；`--key` / stdin 仅作为显式覆盖手段。
   --conversation-id "wxid_85da986onp4h22" `
   --format all `
   --include-media `
-  --output-dir "C:\Users\14744\Downloads\uuMovies\test"
+  --output-dir "C:\Users\你\Downloads\uuMovies\test"
 
 # 5. 全自动模式（微信登录在线时，无需提供路径与 key）：
 .\wechat-exporter.exe conversation --export `
   --conversation-id "wxid_85da986onp4h22" `
   --format all `
   --include-media `
-  --output-dir "C:\Users\14744\Downloads\uuMovies\test"
+  --output-dir "C:\Users\你\Downloads\uuMovies\test"
 ```
 
 ## 五、子命令与参数
@@ -495,6 +495,25 @@ python docs/examples/read_messages.py /path/to/decrypted wxid_xxx --limit 20
 ```
 
 示例依赖和完整说明见 [docs/examples/README.md](docs/examples/README.md)。
+
+按数据库拆分的详细文档：
+
+- [docs/databases/README.md](docs/databases/README.md)
+- [session](docs/databases/01-session.md)
+- [contact](docs/databases/02-contact.md)
+- [message](docs/databases/03-message.md)
+- [media](docs/databases/04-media.md)
+- [favorite](docs/databases/05-favorite.md)
+- [sns](docs/databases/06-sns.md)
+- [emoticon](docs/databases/07-emoticon.md)
+- [hardlink](docs/databases/08-hardlink.md)
+- [head_image](docs/databases/09-head-image.md)
+- [bizchat/chatbot](docs/databases/10-bizchat-chatbot.md)
+- [general](docs/databases/11-general.md)
+- [message_resource](docs/databases/12-message-resource.md)
+- [solitaire/third_app_icon](docs/databases/13-solitaire-third-app-icon.md)
+- [FTS](docs/databases/14-fts.md)
+- [内部表](docs/databases/15-internal-tables.md)
 
 ## 六、HTML 界面与引用跳转
 

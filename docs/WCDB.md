@@ -4,6 +4,31 @@
 > 表结构会随微信小版本、账号类型、是否启用某些功能而变化。
 > 文中“实际观察”表示已在本次 `out/` 数据中验证；“版本变体”表示不同版本可能出现。
 
+## 分册目录（更详细）
+
+总文档适合整体了解；每个数据库的完整字段、实际 DDL、Python 示例在分册中：
+
+| 分册 | 内容 |
+|---|---|
+| [README](databases/README.md) | 分册索引、环境、通用规则 |
+| [01-session.md](databases/01-session.md) | 会话、未读、草稿 |
+| [02-contact.md](databases/02-contact.md) | 联系人、群、群成员、标签、公众号 |
+| [03-message.md](databases/03-message.md) | 消息主表、Name2Id、内部表 |
+| [04-media.md](databases/04-media.md) | 语音、Silk、媒体索引 |
+| [05-favorite.md](databases/05-favorite.md) | 收藏、类型、XML、时间戳 |
+| [06-sns.md](databases/06-sns.md) | 朋友圈、点赞、评论 |
+| [07-emoticon.md](databases/07-emoticon.md) | 表情包、CDN、偏移 |
+| [08-hardlink.md](databases/08-hardlink.md) | 图片/视频/文件路径 |
+| [09-head-image.md](databases/09-head-image.md) | 头像缓存 |
+| [10-bizchat-chatbot.md](databases/10-bizchat-chatbot.md) | 企业微信、机器人 |
+| [11-general.md](databases/11-general.md) | 转账、红包、撤回、搜索 |
+| [12-message-resource.md](databases/12-message-resource.md) | 消息资源、媒体详情 |
+| [13-solitaire-third-app-icon.md](databases/13-solitaire-third-app-icon.md) | 群接龙、第三方图标 |
+| [14-fts.md](databases/14-fts.md) | FTS、MMFtsTokenizer、影子表 |
+| [15-internal-tables.md](databases/15-internal-tables.md) | 消息库内部表、非原生表 |
+
+---
+
 ## 新手先读：这套文档怎么用
 
 如果你完全不懂数据库，先记住三件事：
