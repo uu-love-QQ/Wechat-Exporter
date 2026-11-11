@@ -487,6 +487,15 @@ Windows 下会先下载新版，退出后由后台命令替换并重启；Linux 
 微信 4.x `db_storage` 的数据库清单、表结构、字段作用、zstd/加密/WAL/FTS
 等特殊处理，详见 [docs/WCDB.md](docs/WCDB.md)。
 
+文档包含零基础教程和可直接运行的 Python 示例：
+
+```bash
+python docs/examples/inspect_wcdb.py /path/to/decrypted
+python docs/examples/read_messages.py /path/to/decrypted wxid_xxx --limit 20
+```
+
+示例依赖和完整说明见 [docs/examples/README.md](docs/examples/README.md)。
+
 ## 六、HTML 界面与引用跳转
 
 HTML 导出由 `web/` 前端模板生成（Vite + React 19 + Tailwind v4 + shadcn/ui），
