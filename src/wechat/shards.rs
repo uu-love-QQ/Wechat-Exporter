@@ -9,6 +9,7 @@ use crate::db::{quote_ident, Db};
 use crate::util::{md5_hex, message_table_name};
 
 pub struct Shard {
+    pub path: PathBuf,
     pub db: Db,
     pub name2id: HashMap<i64, String>,
     pub user_by_table: HashMap<String, String>,
@@ -61,6 +62,7 @@ impl Shard {
             user_by_table.insert(message_table_name(user), user.clone());
         }
         Ok(Shard {
+            path: path.to_path_buf(),
             db,
             name2id,
             user_by_table,
@@ -74,6 +76,88 @@ impl Shard {
             .iter()
             .find(|name| name.eq_ignore_ascii_case(&wanted))
             .cloned()
+    }
+
+    pub fn raw_rows(&self, table: &str) -> Result<Vec<super::model::RawWcdbRow>> {
+        let columns = self.db.columns(table)?;
+        let has = |name: &str| {
+            columns
+                .iter()
+                .any(|column| column.eq_ignore_ascii_case(name))
+        };
+        let expr = |name: &str, fallback: &str| {
+            if has(name) {
+                quote_ident(name)
+            } else {
+                fallback.to_string()
+            }
+        };
+        let local_id = if has("local_id") {
+            "CAST(local_id AS INTEGER)".to_string()
+        } else {
+            "rowid".to_string()
+        };
+        let select = format!(
+            "SELECT {local_id}, CAST({server} AS INTEGER), CAST({local_type} AS INTEGER),              CAST({sort_seq} AS INTEGER), CAST({sender} AS INTEGER), CAST({create_time} AS INTEGER),              CAST({status} AS INTEGER), CAST({upload} AS INTEGER), CAST({download} AS INTEGER),              CAST({server_seq} AS INTEGER), CAST({origin} AS INTEGER),              {source}, {content}, {compress}, {packed},              CAST({ct_content} AS INTEGER), CAST({ct_source} AS INTEGER)              FROM {table} ORDER BY CAST({create_time} AS INTEGER), CAST({sort_seq} AS INTEGER), {local_id}",
+            local_id = local_id,
+            server = expr("server_id", "0"),
+            local_type = expr("local_type", "0"),
+            sort_seq = expr("sort_seq", "0"),
+            sender = expr("real_sender_id", "0"),
+            create_time = expr("create_time", "0"),
+            status = expr("status", "0"),
+            upload = expr("upload_status", "0"),
+            download = expr("download_status", "0"),
+            server_seq = expr("server_seq", "0"),
+            origin = expr("origin_source", "0"),
+            source = expr("source", "NULL"),
+            content = expr("message_content", "NULL"),
+            compress = expr("compress_content", "NULL"),
+            packed = expr("packed_info_data", "NULL"),
+            ct_content = expr("WCDB_CT_message_content", "0"),
+            ct_source = expr("WCDB_CT_source", "0"),
+            table = quote_ident(table),
+        );
+        let mut statement = self.db.conn().prepare(&select)?;
+        let rows = statement.query_map([], |row| {
+            let real_sender_id: i64 = row.get(4)?;
+            Ok(super::model::RawWcdbRow {
+                local_id: row.get(0)?,
+                server_id: row.get(1)?,
+                local_type: row.get(2)?,
+                sort_seq: row.get(3)?,
+                real_sender_id,
+                create_time: row.get(5)?,
+                status: row.get(6)?,
+                upload_status: row.get(7)?,
+                download_status: row.get(8)?,
+                server_seq: row.get(9)?,
+                origin_source: row.get(10)?,
+                source: raw_sql_value(row.get_ref(11)?),
+                message_content: raw_sql_value(row.get_ref(12)?),
+                compress_content: raw_sql_value(row.get_ref(13)?),
+                packed_info_data: raw_sql_value(row.get_ref(14)?),
+                wcdb_ct_message_content: row.get(15)?,
+                wcdb_ct_source: row.get(16)?,
+                sender_id: self.name2id.get(&real_sender_id).cloned().unwrap_or_default(),
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn table_sql(&self, table: &str) -> Option<String> {
+        self.db
+            .conn()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .ok()
     }
 
     pub fn count_table(&self, table: &str) -> i64 {
@@ -334,6 +418,40 @@ impl Store {
             .or_else(|| candidate)
     }
 
+    pub fn raw_backup(
+        &self,
+        conversation_id: &str,
+        start_time_ms: Option<i64>,
+        end_time_ms: Option<i64>,
+    ) -> Result<Option<super::model::RawBackup>> {
+        let start_sec = start_time_ms.map(|value| value.div_euclid(1000));
+        let end_sec = end_time_ms.map(|value| value.div_euclid(1000));
+        for shard in &self.shards {
+            let Some(table) = shard.table_for_user(conversation_id) else {
+                continue;
+            };
+            let mut rows = shard.raw_rows(&table)?;
+            rows.retain(|row| {
+                start_sec.is_none_or(|start| row.create_time >= start)
+                    && end_sec.is_none_or(|end| row.create_time <= end)
+            });
+            let name2id = shard
+                .name2id
+                .iter()
+                .map(|(id, user)| (*id, user.clone()))
+                .collect();
+            return Ok(Some(super::model::RawBackup {
+                table: table.clone(),
+                shard: shard.path.clone(),
+                table_sql: shard.table_sql(&table),
+                rows,
+                name2id,
+                session: None,
+            }));
+        }
+        Ok(None)
+    }
+
     pub fn load_messages(
         &self,
         conversation_id: &str,
@@ -393,6 +511,16 @@ impl Store {
             ));
         }
         Ok(out)
+    }
+}
+
+fn raw_sql_value(value: ValueRef<'_>) -> super::model::RawSqlValue {
+    match value {
+        ValueRef::Null => super::model::RawSqlValue::Null,
+        ValueRef::Integer(value) => super::model::RawSqlValue::Integer(value),
+        ValueRef::Real(value) => super::model::RawSqlValue::Real(value),
+        ValueRef::Text(value) => super::model::RawSqlValue::Text(String::from_utf8_lossy(value).to_string()),
+        ValueRef::Blob(value) => super::model::RawSqlValue::Blob(value.to_vec()),
     }
 }
 

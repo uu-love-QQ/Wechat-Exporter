@@ -259,7 +259,7 @@ pub struct ExportArgs {
     )]
     pub conversation_ids: Vec<String>,
 
-    /// 导出格式 (可重复传入，或传入 'all'，支持: json, markdown, chatlab-json, chatlab-jsonl, html, txt, xlsx, arkme-json, sql, sqlite, weclone)
+    /// 导出格式 (可重复传入，或传入 'all'，支持: json, markdown, chatlab-json, chatlab-jsonl, html, txt, xlsx, arkme-json, sql, sqlite, weclone；--backup 会自动加入 sqlite)
     #[arg(
         long = "format",
         short = 'f',
@@ -311,6 +311,10 @@ pub struct ExportArgs {
     /// 导出完成后自动上传到已配置的 WebDAV
     #[arg(long = "upload", action = ArgAction::SetTrue, help_heading = "导出")]
     pub upload: bool,
+
+    /// 在 SQLite 导出中写入 WCDB 原始字段，供 recovery 按会话部分恢复
+    #[arg(long = "backup", action = ArgAction::SetTrue, help_heading = "导出")]
+    pub backup: bool,
 
     /// 不打印进度条
     #[arg(long = "silent", action = ArgAction::SetTrue, help_heading = "其他")]
@@ -774,6 +778,7 @@ pub struct ValidatedCli {
     pub from_json: Option<PathBuf>,
     pub silent: bool,
     pub upload: bool,
+    pub backup: bool,
 }
 
 struct CommonValidated {
@@ -852,6 +857,7 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         from_json: None,
         silent: false,
         upload: false,
+        backup: false,
     }
 }
 
@@ -958,7 +964,14 @@ fn validate_export_args(args: ExportArgs) -> Result<ValidatedCli> {
             bail!("export time range is inverted");
         }
     }
-    let formats = parse_formats(&args.formats)?;
+    let mut formats = if args.backup && args.formats.is_empty() {
+        vec![Format::Sqlite]
+    } else {
+        parse_formats(&args.formats)?
+    };
+    if args.backup && !formats.contains(&Format::Sqlite) {
+        formats.push(Format::Sqlite);
+    }
     let image_key = parse_image_key(args.image_key.as_deref())?;
     if (!args.formats.is_empty()
         || !args.conversation_ids.is_empty()
@@ -998,6 +1011,7 @@ fn validate_export_args(args: ExportArgs) -> Result<ValidatedCli> {
     options.report = args.report;
     options.silent = args.silent;
     options.upload = args.upload;
+    options.backup = args.backup;
     Ok(options)
 }
 
@@ -1048,6 +1062,7 @@ impl Command {
                 from_json: None,
                 silent: false,
                 upload: false,
+                backup: false,
             }),
             Command::Init(args) => {
                 let common = args.common.validate()?;
@@ -1098,7 +1113,8 @@ impl Command {
                         || args.export.include_media
                         || args.export.keep_output
                         || args.export.report
-                        || args.export.upload;
+                        || args.export.upload
+                        || args.export.backup;
                     if has_export_option {
                         bail!("export options require --export");
                     }
@@ -1293,6 +1309,7 @@ impl Command {
                         from_json: None,
                         silent: false,
                         upload: false,
+                        backup: false,
                     });
                 }
                 let Some(output_dir) = args.output_dir else {
@@ -1349,6 +1366,7 @@ impl Command {
                     from_json: None,
                     silent: false,
                     upload: false,
+                    backup: false,
                 })
             }
             Command::Upgrade(args) => {

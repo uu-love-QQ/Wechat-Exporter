@@ -239,6 +239,7 @@ wechat-exporter conversation --export --key <64位Hex密钥> \
 | `-k, --keep-output` | 保留临时输出目录 |
 | `--report` | 生成可视化分析报告 `conversation.report.html` |
 | `--upload` | 导出完成后按配置自动上传到 WebDAV |
+| `--backup` | 在 SQLite 导出中写入 WCDB 原始字段；配合 `recovery` 按会话写回微信数据库 |
 | `--silent` | 不打印进度条，仅保留最终结果/错误 |
 | `--debug` | 详细调试输出 |
 
@@ -377,45 +378,57 @@ wechat-exporter decrypt --key <64位Hex密钥> \
 
 ### recovery
 
-恢复数据。支持两种模式：
+恢复数据。`--backup` 导出只保存选中的会话或时间范围，`recovery` 只恢复备份中存在
+的行，不会清空目标库中的其他聊天记录。
 
-#### 1. 写回微信原始数据库（`decrypt` 备份）
-
-先用 `decrypt` 生成普通 SQLite 备份，恢复时按表逐行写回现有微信加密数据库，
-保留目标数据库的 salt、key 与加密格式；不会新建微信无法识别的数据库文件：
+#### 1. 按会话备份原始 WCDB 行（推荐）
 
 ```bash
-# 1) 备份：输出普通 SQLite 数据库目录
-wechat-exporter decrypt --key <64位Hex密钥> \
-  --source-database /path/to/db_storage --output-dir /path/to/backup
+# 只备份某个会话；--backup 自动使用 sqlite 格式并写入原始字段
+wechat-exporter conversation --export --backup \
+  --key <64位Hex密钥> --conversation-id wxid_xxx \
+  --output-dir /path/to/backup
 
-# 2) 关闭微信后恢复：写回原始 db_storage
+# 关闭微信后，把该会话缺失的消息写回原始加密库
 wechat-exporter recovery --input /path/to/backup \
   --target-database /path/to/db_storage --key <64位Hex密钥> --force
 ```
 
-- `--input`/`--backup`：`decrypt` 生成的备份目录（必须包含 `.db` 文件）；
-- `--target-database`/`--source-database`：现有微信 `db_storage`；
-- 恢复前会把目标数据库复制到 `db_storage` 同级的隐藏目录，并在 JSON 结果中返回路径；
-- 逐库事务恢复所有表；表/列不匹配或写入失败会回滚该库并返回失败信息；
-- `--force` 是写回微信数据库的必需确认开关；建议先退出微信，避免文件锁；
-- 恢复的是数据库内容，不包含 `msg/attach` 等媒体文件。
+- 备份文件为 `conversation.sqlite`，其中 `wcdb_messages` 保存 `local_id`、
+  `server_id`、`local_type`、`sort_seq`、`real_sender_id`、`message_content`、
+  `compress_content`、`packed_info_data` 等原始字段；
+- 可重复传入 `-c` 或使用 `--start-time-ms` / `--end-time-ms` 只备份部分消息；
+- 恢复按 `local_id` / `server_id` 检查，仅插入目标中不存在的消息，保留其他会话
+  和已有新消息；目标消息表不存在时会用备份中的建表 SQL 创建；
+- 恢复前自动备份目标数据库，返回 JSON 包含 `inserted` / `skipped` 数量；
+- `--force` 是写回微信数据库的必需确认开关；建议先退出微信。
 
-#### 2. 离线恢复 SQLite 会话备份
-
-`conversation --export --format sqlite` 生成的 `conversation.sqlite` 是便于查看的
-会话级导出，不包含完整 WCDB 原始行，不能写回微信数据库；它可离线恢复为
-JSON/HTML 等格式：
+#### 2. 完整数据库备份恢复
 
 ```bash
-wechat-exporter recovery --input /path/to/sqlite-backup \
+wechat-exporter decrypt --key <64位Hex密钥> \
+  --source-database /path/to/db_storage --output-dir /path/to/backup
+
+wechat-exporter recovery --input /path/to/backup \
+  --target-database /path/to/db_storage --key <64位Hex密钥> --force
+```
+
+- 适用于完整迁移/灾难恢复，会逐表覆盖目标数据库内容并保留原有 salt/key；
+- `--input`/`--backup` 对应 `decrypt` 生成的含 `.db` 的目录；
+- 恢复前备份目标 `.db` 及 WAL/SHM 到 `db_storage` 同级隐藏目录。
+
+#### 3. 离线恢复会话备份
+
+不带 `--target-database` 时，`recovery` 只把备份转成 JSON/HTML 等格式，不写入微信：
+
+```bash
+wechat-exporter recovery --input /path/to/backup \
   --output-dir /path/to/recovered --format json --format html
 ```
 
-- `--input` 可以是单个 `conversation.sqlite` 或包含多个备份的目录；
 - 默认输出 `conversation.json`，可用 `-f all` 恢复全部格式；
-- 备份中如包含 `media/`，加 `--include-media` 一并复制并保留媒体路径；
-- 输出目录必须尚不存在；根目录会写入 `recovery-report.json` 汇总恢复结果。
+- 加 `--include-media` 可复制备份中的 `media/`；
+- 不修改任何微信数据库。
 
 ### backup
 

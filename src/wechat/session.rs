@@ -1,4 +1,6 @@
 use anyhow::Result;
+use rusqlite::types::ValueRef;
+use serde_json::{Map, Value};
 use std::path::Path;
 
 use super::model::SessionRow;
@@ -80,4 +82,58 @@ pub fn load_sessions(
         out.push(row);
     }
     Ok(out)
+}
+
+/// Read one SessionTable row with all columns as JSON for a raw backup.
+pub fn raw_session(
+    path: Option<&Path>,
+    key: Option<&[u8; 32]>,
+    plaintext: bool,
+    username: &str,
+) -> Result<Option<Value>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+    let db = Db::open(path, key, plaintext)?;
+    let tables = db.tables()?;
+    let Some(table) = tables
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case("SessionTable"))
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let columns = db.columns(&table)?;
+    if !columns.iter().any(|column| column.eq_ignore_ascii_case("username")) {
+        return Ok(None);
+    }
+    let select = columns
+        .iter()
+        .map(|column| quote_ident(column))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {select} FROM {} WHERE username = ?1 LIMIT 1",
+        quote_ident(&table)
+    );
+    let mut statement = db.conn().prepare(&sql)?;
+    let mut rows = statement.query([username])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let mut object = Map::new();
+    for (index, column) in columns.iter().enumerate() {
+        let value = match row.get_ref(index)? {
+            ValueRef::Null => Value::Null,
+            ValueRef::Integer(value) => Value::from(value),
+            ValueRef::Real(value) => Value::from(value),
+            ValueRef::Text(value) => Value::from(String::from_utf8_lossy(value).to_string()),
+            ValueRef::Blob(_) => Value::Null,
+        };
+        object.insert(column.clone(), value);
+    }
+    Ok(Some(Value::Object(object)))
 }

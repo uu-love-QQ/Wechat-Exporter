@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::Format;
 use crate::util::{format_iso_timestamp, format_timestamp, GENERATOR, SCHEMA};
-use crate::wechat::model::{Conversation, ExportMessage};
+use crate::wechat::model::{Conversation, ExportMessage, RawBackup, RawSqlValue};
 
 pub struct ExportContext<'a> {
     pub conversation: &'a Conversation,
@@ -16,6 +16,7 @@ pub struct ExportContext<'a> {
     pub exported_at_ms: i64,
     pub include_media: bool,
     pub avatar_path: Option<String>,
+    pub raw_backup: Option<&'a RawBackup>,
 }
 
 impl<'a> ExportContext<'a> {
@@ -734,6 +735,86 @@ fn write_html(context: &ExportContext<'_>, path: &Path) -> Result<()> {
     fs::write(path, html).with_context(|| format!("failed to write {}", path.display()))
 }
 
+fn raw_sql_value(value: &RawSqlValue) -> rusqlite::types::Value {
+    match value {
+        RawSqlValue::Null => rusqlite::types::Value::Null,
+        RawSqlValue::Integer(value) => rusqlite::types::Value::Integer(*value),
+        RawSqlValue::Real(value) => rusqlite::types::Value::Real(*value),
+        RawSqlValue::Text(value) => rusqlite::types::Value::Text(value.clone()),
+        RawSqlValue::Blob(value) => rusqlite::types::Value::Blob(value.clone()),
+    }
+}
+
+fn write_sqlite_raw(context: &ExportContext<'_>, connection: &rusqlite::Connection) -> Result<()> {
+    let Some(raw) = context.raw_backup else {
+        return Ok(());
+    };
+    connection.execute_batch(
+        "CREATE TABLE wcdb_meta (
+            conversation_id TEXT PRIMARY KEY, table_name TEXT, shard_path TEXT,
+            table_sql TEXT, session_json TEXT
+        );
+        CREATE TABLE wcdb_messages (
+            local_id INTEGER, server_id INTEGER, local_type INTEGER, sort_seq INTEGER,
+            real_sender_id INTEGER, create_time INTEGER, status INTEGER, upload_status INTEGER,
+            download_status INTEGER, server_seq INTEGER, origin_source INTEGER,
+            source, message_content, compress_content, packed_info_data,
+            wcdb_ct_message_content INTEGER, wcdb_ct_source INTEGER, sender_id TEXT
+        );
+        CREATE INDEX wcdb_messages_local_id ON wcdb_messages(local_id);
+        CREATE TABLE wcdb_name2id (real_sender_id INTEGER, user_name TEXT);",
+    )?;
+    connection.execute(
+        "INSERT INTO wcdb_meta (conversation_id,table_name,shard_path,table_sql,session_json)
+         VALUES (?1,?2,?3,?4,?5)",
+        rusqlite::params![
+            context.conversation.id,
+            raw.table,
+            raw.shard.to_string_lossy(),
+            raw.table_sql,
+            raw.session.as_ref().map(serde_json::to_string).transpose()?,
+        ],
+    )?;
+    {
+        let mut insert = connection.prepare(
+            "INSERT INTO wcdb_messages
+             (local_id,server_id,local_type,sort_seq,real_sender_id,create_time,status,
+              upload_status,download_status,server_seq,origin_source,source,message_content,
+              compress_content,packed_info_data,wcdb_ct_message_content,wcdb_ct_source,sender_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+        )?;
+        for row in &raw.rows {
+            insert.execute(rusqlite::params![
+                row.local_id,
+                row.server_id,
+                row.local_type,
+                row.sort_seq,
+                row.real_sender_id,
+                row.create_time,
+                row.status,
+                row.upload_status,
+                row.download_status,
+                row.server_seq,
+                row.origin_source,
+                raw_sql_value(&row.source),
+                raw_sql_value(&row.message_content),
+                raw_sql_value(&row.compress_content),
+                raw_sql_value(&row.packed_info_data),
+                row.wcdb_ct_message_content,
+                row.wcdb_ct_source,
+                row.sender_id,
+            ])?;
+        }
+    }
+    for (id, user) in &raw.name2id {
+        connection.execute(
+            "INSERT INTO wcdb_name2id (real_sender_id,user_name) VALUES (?1,?2)",
+            rusqlite::params![id, user],
+        )?;
+    }
+    Ok(())
+}
+
 fn write_sqlite(context: &ExportContext<'_>, path: &Path) -> Result<()> {
     let connection = rusqlite::Connection::open(path)
         .with_context(|| format!("failed to create {}", path.display()))?;
@@ -825,6 +906,7 @@ fn write_sqlite(context: &ExportContext<'_>, path: &Path) -> Result<()> {
         }
         transaction.commit()?;
     }
+    write_sqlite_raw(context, &connection)?;
     Ok(())
 }
 

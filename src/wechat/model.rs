@@ -159,6 +159,51 @@ pub struct RawMessage {
     pub packed_info: Vec<u8>,
 }
 
+/// A SQLite value preserved exactly enough to round-trip WCDB rows.
+#[derive(Clone, Debug)]
+pub enum RawSqlValue {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+/// One original WCDB message row plus the sender identity needed to remap
+/// `Name2Id` when restoring into another database.
+#[derive(Clone, Debug)]
+pub struct RawWcdbRow {
+    pub local_id: i64,
+    pub server_id: i64,
+    pub local_type: i64,
+    pub sort_seq: i64,
+    pub real_sender_id: i64,
+    pub create_time: i64,
+    pub status: i64,
+    pub upload_status: i64,
+    pub download_status: i64,
+    pub server_seq: i64,
+    pub origin_source: i64,
+    pub source: RawSqlValue,
+    pub message_content: RawSqlValue,
+    pub compress_content: RawSqlValue,
+    pub packed_info_data: RawSqlValue,
+    pub wcdb_ct_message_content: i64,
+    pub wcdb_ct_source: i64,
+    pub sender_id: String,
+}
+
+/// Raw WCDB fields for a single selected conversation.
+#[derive(Clone, Debug)]
+pub struct RawBackup {
+    pub table: String,
+    pub shard: std::path::PathBuf,
+    pub table_sql: Option<String>,
+    pub rows: Vec<RawWcdbRow>,
+    pub name2id: Vec<(i64, String)>,
+    pub session: Option<serde_json::Value>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ExportMessage {
     pub index: usize,

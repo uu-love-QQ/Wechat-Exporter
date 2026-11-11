@@ -755,6 +755,37 @@ fn run_export(
         } else {
             None
         };
+        let raw_backup = if options.backup {
+            store
+                .raw_backup(
+                    &conversation.id,
+                    options.start_time_ms,
+                    options.end_time_ms,
+                )?
+                .map(|mut raw| {
+                    if let Some(root) = &layout.db_storage {
+                        raw.shard = raw
+                            .shard
+                            .strip_prefix(root)
+                            .unwrap_or(&raw.shard)
+                            .to_path_buf();
+                    }
+                    raw
+                })
+        } else {
+            None
+        };
+        let raw_backup = if let Some(mut raw) = raw_backup {
+            raw.session = wechat::session::raw_session(
+                layout.session_db.as_deref(),
+                options.key.as_ref(),
+                options.plaintext,
+                &conversation.id,
+            )?;
+            Some(raw)
+        } else {
+            None
+        };
         let context = ExportContext {
             conversation,
             messages: &messages,
@@ -763,6 +794,7 @@ fn run_export(
             exported_at_ms,
             include_media: options.include_media,
             avatar_path,
+            raw_backup: raw_backup.as_ref(),
         };
         progress.set_phase(format!(
             "写入会话 {}/{} · {}",

@@ -1541,6 +1541,7 @@ pub fn run(
                 exported_at_ms: now_ms(),
                 include_media: false,
                 avatar_path: None,
+                raw_backup: None,
             };
             let path = output_dir.join("dual-report.html");
             write_dual_report(&context, &path)?;
@@ -1913,6 +1914,7 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
                 exported_at_ms: item.exported_at_ms,
                 include_media: false,
                 avatar_path: None,
+                raw_backup: None,
             };
             let path = output_dir.join("dual-report.html");
             write_dual_report(&context, &path)?;

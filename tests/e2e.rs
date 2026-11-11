@@ -599,6 +599,85 @@ fn detects_databases_subcommand() {
 }
 
 #[test]
+fn backs_up_and_restores_one_conversation_raw_rows() {
+    let (temp, source) = fixture();
+    let backup = temp.path().join("raw-backup");
+    let (code, _, stderr) = run_with_key(&[
+        "conversation",
+        "--export",
+        "--backup",
+        "--source-database",
+        source.to_str().unwrap(),
+        "--conversation-id",
+        GROUP,
+        "--output-dir",
+        backup.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let backup_db = rusqlite::Connection::open(backup.join("conversation.sqlite")).unwrap();
+    let raw: Vec<rusqlite::types::Value> = {
+        let mut statement = backup_db
+            .prepare(
+                "SELECT local_id,server_id,local_type,sort_seq,real_sender_id,create_time,
+                        status,upload_status,download_status,server_seq,origin_source,source,
+                        message_content,compress_content,packed_info_data,
+                        wcdb_ct_message_content,wcdb_ct_source,sender_id
+                 FROM wcdb_messages WHERE local_id=1",
+            )
+            .unwrap();
+        let mut rows = statement.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        (0..18).map(|index| row.get(index).unwrap()).collect()
+    };
+    let mut raw = raw;
+    raw[0] = rusqlite::types::Value::Integer(99);
+    raw[1] = rusqlite::types::Value::Integer(9999);
+    raw[12] = rusqlite::types::Value::Blob(b"PARTIAL_RESTORE".to_vec());
+    let placeholders = (1..=18).map(|index| format!("?{index}")).collect::<Vec<_>>().join(",");
+    backup_db
+        .execute(
+            &format!("INSERT INTO wcdb_messages VALUES ({placeholders})"),
+            rusqlite::params_from_iter(raw),
+        )
+        .unwrap();
+
+    let target_root = temp.path().join("partial-target");
+    fs::create_dir_all(&target_root).unwrap();
+    let target = target_root.join("db_storage");
+    copy_tree(&source, &target);
+    let (code, stdout, stderr) = run_with_key(&[
+        "recovery",
+        "--input",
+        backup.to_str().unwrap(),
+        "--target-database",
+        target.to_str().unwrap(),
+        "--force",
+    ]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["restored"][0]["inserted"], 1);
+
+    let verified = temp.path().join("partial-verified");
+    let (code, _, stderr) = run_with_key(&[
+        "decrypt",
+        "--source-database",
+        target.to_str().unwrap(),
+        "--output-dir",
+        verified.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let connection = rusqlite::Connection::open(verified.join("message/message_0.db")).unwrap();
+    let content: Vec<u8> = connection
+        .query_row(
+            "SELECT message_content FROM Msg_9234c5fa4065f721b47403f393822c44 WHERE local_id=99",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(content, b"PARTIAL_RESTORE");
+}
+
+#[test]
 fn restores_plaintext_backup_into_encrypted_target() {
     let (temp, source) = fixture();
     let backup = temp.path().join("decrypt-backup");

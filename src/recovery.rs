@@ -9,7 +9,7 @@ use crate::export::{self, ExportContext};
 use crate::util;
 use crate::wechat::model::{
     ChatRecord, ChatRecordItem, Conversation, ExportMessage, MediaKind, MediaRef, MessageSource,
-    QuoteRef,
+    QuoteRef, RawSqlValue,
 };
 
 fn collect_backups(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
@@ -326,6 +326,7 @@ fn run_offline(options: &ValidatedCli) -> Result<()> {
                 exported_at_ms,
                 include_media: options.include_media,
                 avatar_path: None,
+                raw_backup: None,
             };
             let mut documents = serde_json::Map::new();
             for format in &formats {
@@ -558,6 +559,26 @@ fn run_restore(options: &ValidatedCli) -> Result<()> {
         .recovery_input
         .as_deref()
         .context("recovery input path is missing")?;
+    let mut databases = Vec::new();
+    if input.is_file() {
+        let extension = input.extension().and_then(|value| value.to_str()).unwrap_or("");
+        if extension.eq_ignore_ascii_case("db") {
+            databases.push(input.to_path_buf());
+        }
+    } else {
+        collect_database_files(input, &mut databases)?;
+    }
+    if databases.is_empty() {
+        return run_restore_partial(options);
+    }
+    run_restore_full(options)
+}
+
+fn run_restore_full(options: &ValidatedCli) -> Result<()> {
+    let input = options
+        .recovery_input
+        .as_deref()
+        .context("recovery input path is missing")?;
     let target = options
         .target_database
         .as_deref()
@@ -569,16 +590,6 @@ fn run_restore(options: &ValidatedCli) -> Result<()> {
         .context("target db_storage path is missing")?;
     if !target_root.is_dir() {
         bail!("target database is not a directory: {}", target_root.display());
-    }
-    if input.is_file()
-        && !input
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_some_and(|value| value.eq_ignore_ascii_case("db"))
-    {
-        bail!(
-            "recovery input must be a decrypt backup directory or .db file; conversation.sqlite is an offline export and is not a full database backup"
-        );
     }
     let input_root = if input.is_dir() {
         input.to_path_buf()
@@ -649,4 +660,516 @@ fn run_restore(options: &ValidatedCli) -> Result<()> {
         bail!("{} database(s) could not be restored; target backup: {}", failed.len(), backup_root.display());
     }
     Ok(())
+}
+
+
+fn sql_value(value: rusqlite::types::ValueRef<'_>) -> RawSqlValue {
+    match value {
+        rusqlite::types::ValueRef::Null => RawSqlValue::Null,
+        rusqlite::types::ValueRef::Integer(value) => RawSqlValue::Integer(value),
+        rusqlite::types::ValueRef::Real(value) => RawSqlValue::Real(value),
+        rusqlite::types::ValueRef::Text(value) => {
+            RawSqlValue::Text(String::from_utf8_lossy(value).to_string())
+        }
+        rusqlite::types::ValueRef::Blob(value) => RawSqlValue::Blob(value.to_vec()),
+    }
+}
+
+fn raw_value(value: &RawSqlValue) -> rusqlite::types::Value {
+    match value {
+        RawSqlValue::Null => rusqlite::types::Value::Null,
+        RawSqlValue::Integer(value) => rusqlite::types::Value::Integer(*value),
+        RawSqlValue::Real(value) => rusqlite::types::Value::Real(*value),
+        RawSqlValue::Text(value) => rusqlite::types::Value::Text(value.clone()),
+        RawSqlValue::Blob(value) => rusqlite::types::Value::Blob(value.clone()),
+    }
+}
+
+fn json_value(value: &Value) -> rusqlite::types::Value {
+    match value {
+        Value::Null => rusqlite::types::Value::Null,
+        Value::Bool(value) => rusqlite::types::Value::Integer(if *value { 1 } else { 0 }),
+        Value::Number(value) => value
+            .as_i64()
+            .map(rusqlite::types::Value::Integer)
+            .or_else(|| value.as_f64().map(rusqlite::types::Value::Real))
+            .unwrap_or(rusqlite::types::Value::Null),
+        Value::String(value) => rusqlite::types::Value::Text(value.clone()),
+        _ => rusqlite::types::Value::Null,
+    }
+}
+
+struct RawMeta {
+    conversation_id: String,
+    table: String,
+    shard: PathBuf,
+    table_sql: Option<String>,
+    session: Option<Value>,
+}
+
+struct RawRestoreMessage {
+    local_id: i64,
+    server_id: i64,
+    local_type: i64,
+    sort_seq: i64,
+    real_sender_id: i64,
+    create_time: i64,
+    status: i64,
+    upload_status: i64,
+    download_status: i64,
+    server_seq: i64,
+    origin_source: i64,
+    source: RawSqlValue,
+    message_content: RawSqlValue,
+    compress_content: RawSqlValue,
+    packed_info_data: RawSqlValue,
+    wcdb_ct_message_content: i64,
+    wcdb_ct_source: i64,
+    sender_id: String,
+}
+
+fn read_raw_backup(path: &Path) -> Result<(RawMeta, Vec<RawRestoreMessage>, Vec<(i64, String)>)> {
+    let connection = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("failed to open backup {}", path.display()))?;
+    let has_meta: Option<String> = connection
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='wcdb_meta'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if has_meta.is_none() {
+        bail!(
+            "{} is not a raw WCDB backup; export it with `--backup`",
+            path.display()
+        );
+    }
+    let (conversation_id, table, shard, table_sql, session_json): (
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = connection.query_row(
+        "SELECT conversation_id,table_name,shard_path,table_sql,session_json FROM wcdb_meta LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+    let session = session_json
+        .map(|raw| serde_json::from_str(&raw).context("invalid session_json"))
+        .transpose()?;
+    let mut statement = connection.prepare(
+        "SELECT local_id,server_id,local_type,sort_seq,real_sender_id,create_time,
+                status,upload_status,download_status,server_seq,origin_source,
+                source,message_content,compress_content,packed_info_data,
+                wcdb_ct_message_content,wcdb_ct_source,sender_id
+         FROM wcdb_messages ORDER BY create_time, local_id",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut messages = Vec::new();
+    while let Some(row) = rows.next()? {
+        messages.push(RawRestoreMessage {
+            local_id: row.get(0)?,
+            server_id: row.get(1)?,
+            local_type: row.get(2)?,
+            sort_seq: row.get(3)?,
+            real_sender_id: row.get(4)?,
+            create_time: row.get(5)?,
+            status: row.get(6)?,
+            upload_status: row.get(7)?,
+            download_status: row.get(8)?,
+            server_seq: row.get(9)?,
+            origin_source: row.get(10)?,
+            source: sql_value(row.get_ref(11)?),
+            message_content: sql_value(row.get_ref(12)?),
+            compress_content: sql_value(row.get_ref(13)?),
+            packed_info_data: sql_value(row.get_ref(14)?),
+            wcdb_ct_message_content: row.get(15)?,
+            wcdb_ct_source: row.get(16)?,
+            sender_id: row.get(17)?,
+        });
+    }
+    let mut name2id = Vec::new();
+    if connection
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='wcdb_name2id'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some()
+    {
+        let mut statement = connection.prepare("SELECT real_sender_id,user_name FROM wcdb_name2id")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            name2id.push((row.get(0)?, row.get(1)?));
+        }
+    }
+    Ok((
+        RawMeta {
+            conversation_id,
+            table,
+            shard: PathBuf::from(shard),
+            table_sql,
+            session,
+        },
+        messages,
+        name2id,
+    ))
+}
+
+fn find_target_shard(
+    target_root: &Path,
+    preferred: &Path,
+    table: &str,
+    key: &[u8; 32],
+) -> Result<Option<PathBuf>> {
+    let direct = if preferred.is_absolute() {
+        preferred.to_path_buf()
+    } else {
+        target_root.join(preferred)
+    };
+    if direct.is_file() {
+        return Ok(Some(direct));
+    }
+    let mut databases = Vec::new();
+    collect_database_files(target_root, &mut databases)?;
+    for path in databases {
+        let Ok(db) = Db::open(&path, Some(key), false) else {
+            continue;
+        };
+        if db
+            .tables()?
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(table))
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn ensure_name2id(
+    connection: &rusqlite::Connection,
+    sender_id: &str,
+) -> Result<i64> {
+    if sender_id.is_empty() {
+        return Ok(0);
+    }
+    let table = schema_tables(connection, "main")?
+        .into_iter()
+        .find(|name| name.eq_ignore_ascii_case("Name2Id"));
+    let Some(table) = table else {
+        return Ok(0);
+    };
+    let columns = schema_columns(connection, "main", &table)?;
+    let user_column = columns
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case("user_name") || name.eq_ignore_ascii_case("username"))
+        .cloned()
+        .unwrap_or_else(|| "user_name".to_string());
+    let id: Option<i64> = connection
+        .query_row(
+            &format!(
+                "SELECT rowid FROM {} WHERE {} = ?1 LIMIT 1",
+                quote_ident(&table),
+                quote_ident(&user_column)
+            ),
+            [sender_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = id {
+        return Ok(id);
+    }
+    if columns.iter().any(|name| name.eq_ignore_ascii_case("is_group")) {
+        connection.execute(
+            &format!(
+                "INSERT INTO {} ({}, is_group) VALUES (?1, 0)",
+                quote_ident(&table),
+                quote_ident(&user_column)
+            ),
+            [sender_id],
+        )?;
+    } else {
+        connection.execute(
+            &format!(
+                "INSERT INTO {} ({}) VALUES (?1)",
+                quote_ident(&table),
+                quote_ident(&user_column)
+            ),
+            [sender_id],
+        )?;
+    }
+    Ok(connection.last_insert_rowid())
+}
+
+fn restore_partial_one(
+    backup: &Path,
+    target_root: &Path,
+    session_db: Option<&Path>,
+    key: &[u8; 32],
+) -> Result<(String, usize, usize)> {
+    let (meta, messages, name2id) = read_raw_backup(backup)?;
+    let shard = find_target_shard(target_root, &meta.shard, &meta.table, key)?
+        .with_context(|| format!("target message shard for table {} was not found", meta.table))?;
+    let db = Db::open_for_decrypt(&shard, Some(key), false)
+        .with_context(|| format!("failed to open target shard {}", shard.display()))?;
+    let connection = db.conn();
+    connection.execute_batch("PRAGMA foreign_keys=OFF;")?;
+    connection.execute_batch("BEGIN IMMEDIATE;")?;
+    let result = (|| -> Result<(usize, usize)> {
+        let target_tables = schema_tables(connection, "main")?;
+        if !target_tables.iter().any(|name| name.eq_ignore_ascii_case(&meta.table)) {
+            let Some(table_sql) = &meta.table_sql else {
+                bail!("target table {} is missing and no CREATE SQL was backed up", meta.table);
+            };
+            connection.execute_batch(table_sql)?;
+        }
+        let target_columns = schema_columns(connection, "main", &meta.table)?;
+        for column in [
+            "local_id", "server_id", "local_type", "sort_seq", "real_sender_id",
+            "create_time", "status", "upload_status", "download_status", "server_seq",
+            "origin_source", "source", "message_content", "compress_content",
+            "packed_info_data", "WCDB_CT_message_content", "WCDB_CT_source",
+        ] {
+            if !target_columns.iter().any(|name| name.eq_ignore_ascii_case(column)) {
+                bail!("target table {} is missing column {column}", meta.table);
+            }
+        }
+        for (id, user) in &name2id {
+            if *id > 0 && !user.is_empty() {
+                ensure_name2id(connection, user)?;
+            }
+        }
+        let table_name = quote_ident(&meta.table);
+        let mut inserted = 0usize;
+        let mut skipped = 0usize;
+        for row in &messages {
+            let target_sender = match ensure_name2id(connection, &row.sender_id) {
+                Ok(0) => row.real_sender_id,
+                Ok(id) => id,
+                Err(_) => row.real_sender_id,
+            };
+            let exists: bool = connection.query_row(
+                &format!(
+                    "SELECT 1 FROM {table_name} WHERE local_id = ?1 OR (server_id != 0 AND server_id = ?2) LIMIT 1"
+                ),
+                rusqlite::params![row.local_id, row.server_id],
+                |_| Ok(true),
+            ).optional()?.unwrap_or(false);
+            if exists {
+                skipped += 1;
+                continue;
+            }
+            connection.execute(
+                &format!(
+                    "INSERT INTO {table_name}
+                     (local_id,server_id,local_type,sort_seq,real_sender_id,create_time,status,
+                      upload_status,download_status,server_seq,origin_source,source,message_content,
+                      compress_content,packed_info_data,WCDB_CT_message_content,WCDB_CT_source)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)"
+                ),
+                rusqlite::params![
+                    row.local_id,
+                    row.server_id,
+                    row.local_type,
+                    row.sort_seq,
+                    target_sender,
+                    row.create_time,
+                    row.status,
+                    row.upload_status,
+                    row.download_status,
+                    row.server_seq,
+                    row.origin_source,
+                    raw_value(&row.source),
+                    raw_value(&row.message_content),
+                    raw_value(&row.compress_content),
+                    raw_value(&row.packed_info_data),
+                    row.wcdb_ct_message_content,
+                    row.wcdb_ct_source,
+                ],
+            )?;
+            inserted += 1;
+        }
+        connection.execute_batch("COMMIT;")?;
+        Ok((inserted, skipped))
+    })();
+    if result.is_err() {
+        let _ = connection.execute_batch("ROLLBACK;");
+    }
+    drop(db);
+    let (inserted, skipped) = result?;
+    if let Some(session) = &meta.session {
+        restore_session(session_db, key, &meta.conversation_id, session)?;
+    }
+    Ok((meta.conversation_id, inserted, skipped))
+}
+
+fn restore_session(
+    session_db: Option<&Path>,
+    key: &[u8; 32],
+    conversation_id: &str,
+    session: &Value,
+) -> Result<()> {
+    let Some(path) = session_db else {
+        return Ok(());
+    };
+    if !path.is_file() {
+        return Ok(());
+    }
+    let Some(object) = session.as_object() else {
+        return Ok(());
+    };
+    let db = Db::open_for_decrypt(path, Some(key), false)?;
+    let connection = db.conn();
+    let target_tables = schema_tables(connection, "main")?;
+    let Some(table) = target_tables
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case("SessionTable"))
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let target_columns = schema_columns(connection, "main", &table)?;
+    let exists: Option<i64> = connection
+        .query_row(
+            &format!(
+                "SELECT rowid FROM {} WHERE username = ?1 LIMIT 1",
+                quote_ident(&table)
+            ),
+            [conversation_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if exists.is_some() {
+        return Ok(());
+    }
+    let mut columns = Vec::new();
+    let mut values = Vec::new();
+    for (column, value) in object {
+        if target_columns.iter().any(|name| name.eq_ignore_ascii_case(column)) {
+            columns.push(quote_ident(column));
+            values.push(json_value(value));
+        }
+    }
+    let username_column = target_columns
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case("username"))
+        .cloned();
+    if !columns.iter().any(|column| column.eq_ignore_ascii_case(&quote_ident("username"))) {
+        if let Some(username) = username_column {
+            columns.push(quote_ident(&username));
+            values.push(rusqlite::types::Value::Text(conversation_id.to_string()));
+        }
+    }
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let placeholders = (1..=values.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut statement = connection.prepare(&format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        quote_ident(&table),
+        columns.join(","),
+        placeholders
+    ))?;
+    statement.execute(rusqlite::params_from_iter(values))?;
+    Ok(())
+}
+
+fn run_restore_partial(options: &ValidatedCli) -> Result<()> {
+    let input = options
+        .recovery_input
+        .as_deref()
+        .context("recovery input path is missing")?;
+    let target = options
+        .target_database
+        .as_deref()
+        .context("target database is missing")?;
+    let key = options.key.as_ref().context("database key is missing")?;
+    let layout = crate::wechat::discover::discover(target)?;
+    let target_root = layout
+        .db_storage
+        .context("target db_storage path is missing")?;
+    let mut backups = Vec::new();
+    if input.is_file() {
+        backups.push(input.to_path_buf());
+    } else {
+        for entry in walk_files(input)? {
+            if entry
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("sqlite"))
+            {
+                backups.push(entry);
+            }
+        }
+    }
+    backups.sort();
+    if backups.is_empty() {
+        bail!(
+            "recovery input contains no raw SQLite backup; run `conversation --export --backup` first"
+        );
+    }
+    let target_databases = {
+        let mut files = Vec::new();
+        collect_database_files(&target_root, &mut files)?;
+        files
+    };
+    let backup_root = make_restore_backup(&target_root, &target_databases, options.backup_dir.as_deref())?;
+    let mut restored = Vec::new();
+    let mut failed = Vec::new();
+    for backup in &backups {
+        match restore_partial_one(
+            backup,
+            &target_root,
+            layout.session_db.as_deref(),
+            key,
+        ) {
+            Ok((conversation_id, inserted, skipped)) => restored.push(serde_json::json!({
+                "backup": backup,
+                "conversation_id": conversation_id,
+                "inserted": inserted,
+                "skipped": skipped,
+            })),
+            Err(error) => failed.push(format!("{}: {error:#}", backup.display())),
+        }
+    }
+    let report = serde_json::json!({
+        "schema": util::SCHEMA,
+        "generator": util::GENERATOR,
+        "input": input,
+        "target_database": target_root,
+        "target_backup": backup_root,
+        "restored": restored,
+        "failed": failed,
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if !failed.is_empty() {
+        bail!("{} backup(s) could not be restored; target backup: {}", failed.len(), backup_root.display());
+    }
+    Ok(())
+}
+
+fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    if root.is_file() {
+        out.push(root.to_path_buf());
+        return Ok(out);
+    }
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            out.extend(walk_files(&path)?);
+        } else {
+            out.push(path);
+        }
+    }
+    Ok(out)
 }
