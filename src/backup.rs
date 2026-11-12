@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -59,6 +60,8 @@ impl BackupConfig {
 pub struct UploadSummary {
     pub remote: String,
     pub files: usize,
+    pub parts: usize,
+    pub split: bool,
 }
 
 struct DavClient {
@@ -168,9 +171,124 @@ fn collect_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+fn create_upload_archive(output_dir: &Path, staging: &Path, archive_name: &str) -> Result<PathBuf> {
+    let archive_path = staging.join(archive_name);
+    let file = fs::File::create(&archive_path)
+        .with_context(|| format!("failed to create {}", archive_path.display()))?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let files = collect_files(output_dir)?;
+    for path in files {
+        let relative = path
+            .strip_prefix(output_dir)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative.is_empty() {
+            continue;
+        }
+        writer
+            .start_file(relative, options)
+            .with_context(|| format!("failed to add {} to upload archive", path.display()))?;
+        let mut input = fs::File::open(&path)?;
+        let mut buffer = [0u8; 128 * 1024];
+        loop {
+            let read = input.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            writer.write_all(&buffer[..read])?;
+        }
+    }
+    writer.finish()?;
+    Ok(archive_path)
+}
+
+fn split_archive(
+    archive: &Path,
+    output_dir: &Path,
+    archive_name: &str,
+    part_size: u64,
+) -> Result<Vec<(PathBuf, u64)>> {
+    fs::create_dir_all(output_dir)?;
+    let total = fs::metadata(archive)?.len();
+    if part_size == 0 || total <= part_size {
+        let destination = output_dir.join(archive_name);
+        fs::rename(archive, &destination)
+            .or_else(|_| fs::copy(archive, &destination).map(|_| ()))?;
+        let size = fs::metadata(&destination)?.len();
+        return Ok(vec![(destination, size)]);
+    }
+    let mut input = BufReader::new(fs::File::open(archive)?);
+    let mut parts = Vec::new();
+    let mut index = 1u32;
+    loop {
+        let part_name = format!("{archive_name}.part{index:03}");
+        let path = output_dir.join(&part_name);
+        let mut output = BufWriter::new(fs::File::create(&path)?);
+        let mut remaining = part_size;
+        let mut written = 0u64;
+        let mut buffer = [0u8; 128 * 1024];
+        while remaining > 0 {
+            let take = remaining.min(buffer.len() as u64) as usize;
+            let read = input.read(&mut buffer[..take])?;
+            if read == 0 {
+                break;
+            }
+            output.write_all(&buffer[..read])?;
+            written += read as u64;
+            remaining -= read as u64;
+        }
+        output.flush()?;
+        if written == 0 {
+            let _ = fs::remove_file(&path);
+            break;
+        }
+        parts.push((path, written));
+        index += 1;
+        if written < part_size {
+            break;
+        }
+    }
+    let _ = fs::remove_file(archive);
+    Ok(parts)
+}
+
+fn write_parts_manifest(
+    output_dir: &Path,
+    archive_name: &str,
+    part_size: u64,
+    parts: &[(PathBuf, u64)],
+) -> Result<PathBuf> {
+    let manifest_name = format!("{archive_name}.parts.json");
+    let manifest_path = output_dir.join(&manifest_name);
+    let entries: Vec<serde_json::Value> = parts
+        .iter()
+        .map(|(path, size)| {
+            serde_json::json!({
+                "name": path.file_name().and_then(|value| value.to_str()).unwrap_or(""),
+                "size": size,
+            })
+        })
+        .collect();
+    let manifest = serde_json::json!({
+        "format": "wechat-exporter-split-archive-v1",
+        "archive": archive_name,
+        "part_size": part_size,
+        "parts": entries,
+        "join": "按 parts 顺序拼接所有分卷，再重命名为 archive",
+    });
+    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+    Ok(manifest_path)
+}
+
+/// Upload a directory as one ZIP archive. If `part_size_mb` is nonzero and the
+/// archive is larger, it is split into fixed-size parts plus a parts manifest.
 pub fn upload_directory(
     output_dir: &Path,
     progress: &mut Progress,
+    part_size_mb: u32,
 ) -> Result<UploadSummary> {
     let config = BackupConfig::load().context(
         "WebDAV backup is not configured; run `wechat-exporter backup webdav --url ... --username ... --password ...`",
@@ -184,6 +302,19 @@ pub fn upload_directory(
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .unwrap_or("export");
+    let archive_name = format!("{folder}.zip");
+    let staging = tempfile::tempdir().context("failed to create upload staging directory")?;
+    progress.set_phase("打包上传文件");
+    let archive = create_upload_archive(output_dir, staging.path(), &archive_name)?;
+    let part_size = part_size_mb as u64 * 1024 * 1024;
+    let upload_dir = staging.path().join("upload");
+    fs::create_dir_all(&upload_dir)?;
+    let parts = split_archive(&archive, &upload_dir, &archive_name, part_size)?;
+    let split = parts.len() > 1;
+    if split {
+        write_parts_manifest(&upload_dir, &archive_name, part_size, &parts)?;
+    }
+    let files = collect_files(&upload_dir)?;
     let mut path_parts: Vec<&str> = config
         .remote_path
         .split('/')
@@ -191,38 +322,33 @@ pub fn upload_directory(
         .collect();
     path_parts.push(folder);
     let collection = client.ensure_collection(&config.url, &path_parts)?;
-    let files = collect_files(output_dir)?;
-    progress.set_phase(format!("WebDAV 备份 · {} 个文件", files.len()));
-    progress.steps(0, files.len(), "文件");
+    progress.set_phase(format!(
+        "WebDAV 备份 · 打包为 {} 个{}",
+        files.len(),
+        if split { "分卷" } else { "文件" }
+    ));
+    progress.steps(0, files.len(), if split { "分卷" } else { "文件" });
     struct Task {
         path: PathBuf,
         url: String,
     }
     let mut tasks = Vec::with_capacity(files.len());
-    let mut parents: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let manifest_name = format!("{archive_name}.parts.json");
+    let mut manifest_task: Option<Task> = None;
     for path in &files {
-        let relative = path
-            .strip_prefix(output_dir)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
-        if parts.is_empty() {
-            continue;
-        }
-        let (parent_parts, file_name) = parts.split_at(parts.len() - 1);
-        let parent_key = parent_parts.join("/");
-        let parent_url = if let Some(url) = parents.get(&parent_key) {
-            url.clone()
-        } else {
-            let url = client.ensure_collection(&collection, parent_parts)?;
-            parents.insert(parent_key, url.clone());
-            url
-        };
-        tasks.push(Task {
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("archive");
+        let task = Task {
             path: path.clone(),
-            url: format!("{}/{}", parent_url, encode_segment(file_name.first().copied().unwrap_or("file"))),
-        });
+            url: format!("{}/{}", collection, encode_segment(name)),
+        };
+        if split && name == manifest_name {
+            manifest_task = Some(task);
+        } else {
+            tasks.push(task);
+        }
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let completed = std::sync::atomic::AtomicUsize::new(0);
@@ -266,7 +392,7 @@ pub fn upload_directory(
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                         + 1;
                     if let Ok(mut progress) = progress.lock() {
-                        progress.steps(done, tasks.len(), "文件");
+                        progress.steps(done, tasks.len(), if split { "分卷" } else { "文件" });
                     }
                 }
             });
@@ -280,9 +406,18 @@ pub fn upload_directory(
             .unwrap_or_else(|| "WebDAV upload failed".to_string());
         bail!(message);
     }
+    if let Some(task) = manifest_task {
+        let bytes = fs::read(&task.path)
+            .with_context(|| format!("failed to read {}", task.path.display()))?;
+        client
+            .put(&task.url, &bytes)
+            .with_context(|| format!("failed to upload manifest {}", task.path.display()))?;
+    }
     Ok(UploadSummary {
         remote: collection,
         files: files.len(),
+        parts: parts.len(),
+        split,
     })
 }
 
@@ -354,6 +489,34 @@ pub fn run(action: &BackupCommand) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archives_and_splits_upload_parts() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let output = temp.path().join("export");
+        std::fs::create_dir_all(output.join("media")).unwrap();
+        std::fs::write(output.join("conversation.json"), vec![b'a'; 8192]).unwrap();
+        std::fs::write(output.join("media").join("image.png"), vec![b'b'; 8192]).unwrap();
+        let staging = tempfile::TempDir::new().unwrap();
+        let archive = create_upload_archive(&output, staging.path(), "export.zip").unwrap();
+        let original = std::fs::read(&archive).unwrap();
+        let parts_dir = staging.path().join("parts");
+        let parts = split_archive(&archive, &parts_dir, "export.zip", 128).unwrap();
+        assert!(parts.len() > 1, "archive should be split");
+        assert!(parts.iter().all(|(_, size)| *size <= 128));
+        let manifest_path = write_parts_manifest(&parts_dir, "export.zip", 128, &parts).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest["parts"].as_array().unwrap().len(), parts.len());
+        let mut joined = Vec::new();
+        for (path, _) in &parts {
+            joined.extend(std::fs::read(path).unwrap());
+        }
+        assert_eq!(joined, original);
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(joined)).unwrap();
+        assert!(zip.by_name("conversation.json").is_ok());
+        assert!(zip.by_name("media/image.png").is_ok());
+    }
 
     #[test]
     fn joins_and_encodes_remote_paths() {

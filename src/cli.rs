@@ -312,6 +312,10 @@ pub struct ExportArgs {
     #[arg(long = "upload", action = ArgAction::SetTrue, help_heading = "导出")]
     pub upload: bool,
 
+    /// 上传压缩包分卷大小（MB）；0 表示不分卷，缺省 100 MB
+    #[arg(long = "upload-part-size", value_name = "MB", default_value_t = 100, help_heading = "导出")]
+    pub upload_part_size: u32,
+
     /// 生成 backup.zip：包含 backup.db、HTML、图片/语音/表情等媒体；仅选定会话/时间范围
     #[arg(long = "backup", action = ArgAction::SetTrue, help_heading = "备份")]
     pub backup: bool,
@@ -782,6 +786,7 @@ pub struct ValidatedCli {
     pub from_json: Option<PathBuf>,
     pub silent: bool,
     pub upload: bool,
+    pub upload_part_size: u32,
     pub backup: bool,
 }
 
@@ -861,6 +866,7 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         from_json: None,
         silent: false,
         upload: false,
+        upload_part_size: 100,
         backup: false,
     }
 }
@@ -998,6 +1004,9 @@ fn validate_export_args(args: ExportArgs) -> Result<ValidatedCli> {
             bail!("output directory is an existing file, not a directory");
         }
     }
+    if args.upload_part_size > 4096 {
+        bail!("--upload-part-size must be 0..=4096 MB");
+    }
     let common = args.common.validate()?;
     let mut options = validated(common, Mode::Export);
     options.formats = formats;
@@ -1011,6 +1020,7 @@ fn validate_export_args(args: ExportArgs) -> Result<ValidatedCli> {
     options.report = args.report;
     options.silent = args.silent;
     options.upload = args.upload;
+    options.upload_part_size = args.upload_part_size;
     options.backup = args.backup;
     Ok(options)
 }
@@ -1062,6 +1072,7 @@ impl Command {
                 from_json: None,
                 silent: false,
                 upload: false,
+                upload_part_size: 100,
                 backup: false,
             }),
             Command::Init(args) => {
@@ -1310,6 +1321,7 @@ impl Command {
                         from_json: None,
                         silent: false,
                         upload: false,
+                        upload_part_size: 100,
                         backup: false,
                     });
                 }
@@ -1367,6 +1379,7 @@ impl Command {
                     from_json: None,
                     silent: false,
                     upload: false,
+                    upload_part_size: 100,
                     backup: false,
                 })
             }

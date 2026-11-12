@@ -802,13 +802,19 @@ fn run_export_backup(
     let upload = if options.upload {
         let mut progress = Progress::new(options.silent);
         progress.set_phase("上传 WebDAV 备份");
-        let summary = backup::upload_directory(output_dir, &mut progress)
+        let summary = backup::upload_directory(output_dir, &mut progress, options.upload_part_size)
             .with_context(|| format!("backup archive created at {} but WebDAV upload failed", output_dir.display()))?;
         progress.finish();
-        println!("[+] WebDAV 备份完成: {} ({} 个文件)", summary.remote, summary.files);
+        if summary.split {
+            println!("[+] WebDAV 备份完成: {} ({} 个分卷)", summary.remote, summary.parts);
+        } else {
+            println!("[+] WebDAV 备份完成: {} ({} 个文件)", summary.remote, summary.files);
+        }
         Some(serde_json::json!({
             "remote": summary.remote,
             "files": summary.files,
+            "parts": summary.parts,
+            "split": summary.split,
         }))
     } else {
         None
@@ -1060,7 +1066,7 @@ fn run_export(
     let upload_summary = if options.upload {
         progress.set_phase("上传 WebDAV 备份");
         Some(
-            backup::upload_directory(&output_dir, &mut progress).with_context(|| {
+            backup::upload_directory(&output_dir, &mut progress, options.upload_part_size).with_context(|| {
                 format!(
                     "export completed at {} but WebDAV upload failed",
                     output_dir.display()
@@ -1072,10 +1078,17 @@ fn run_export(
     };
     progress.finish();
     if let Some(summary) = &upload_summary {
-        println!(
-            "[+] WebDAV 备份完成: {} ({} 个文件)",
-            summary.remote, summary.files
-        );
+        if summary.split {
+            println!(
+                "[+] WebDAV 备份完成: {} ({} 个分卷)",
+                summary.remote, summary.parts
+            );
+        } else {
+            println!(
+                "[+] WebDAV 备份完成: {} ({} 个文件)",
+                summary.remote, summary.files
+            );
+        }
     }
     let result = serde_json::json!({
         "schema": util::SCHEMA,
@@ -1093,6 +1106,8 @@ fn run_export(
         "upload": upload_summary.as_ref().map(|summary| serde_json::json!({
             "remote": summary.remote,
             "files": summary.files,
+            "parts": summary.parts,
+            "split": summary.split,
         })),
     });
     println!("WeChat chat records exported to {}", output_dir.display());

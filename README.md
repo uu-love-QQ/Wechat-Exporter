@@ -238,7 +238,8 @@ wechat-exporter conversation --export --key <64位Hex密钥> \
 | `-o, --output-dir <DIR>` | 绝对路径输出目录，必须尚不存在 |
 | `-k, --keep-output` | 保留临时输出目录 |
 | `--report` | 生成可视化分析报告 `conversation.report.html` |
-| `--upload` | 导出完成后按配置自动上传到 WebDAV |
+| `--upload` | 导出完成后打包为 ZIP 上传到 WebDAV |
+| `--upload-part-size <MB>` | 上传分卷大小，缺省 100 MB；`0` 表示不分卷 |
 | `--backup` | 生成 `backup.zip`：`backup.db` + HTML + 图片/语音/表情等媒体，配合 `recovery` 写回微信数据库 |
 | `--silent` | 不打印进度条，仅保留最终结果/错误 |
 | `--debug` | 详细调试输出 |
@@ -444,8 +445,9 @@ wechat-exporter recovery --input /path/to/backup \
 
 ### backup
 
-配置 WebDAV 后，`conversation --export --upload` 会把整个输出目录上传到
-`<url>/<remote_path>/<输出目录名>/`。
+配置 WebDAV 后，`conversation --export --upload` 会把整个输出目录打包成一个
+ZIP，再上传到 `<url>/<remote_path>/<输出目录名>/`。默认按 **100 MB** 分卷，
+适合有单文件大小限制的 WebDAV。
 
 ```bash
 # 保存 WebDAV 配置（当前目录 .wechat-exporter-backup.json）
@@ -457,14 +459,43 @@ wechat-exporter backup show    # 查看配置，密码隐藏
 wechat-exporter backup test    # PROPFIND 测试连接
 wechat-exporter backup clear   # 删除配置
 
-# 导出后自动备份
+# 导出后自动打包并上传；默认 100 MB 分卷
 wechat-exporter conversation --export --key <64位Hex> \
   --conversation-id 123456789@chatroom --format all --include-media \
   --output-dir /path/to/out --upload
+
+# 指定分卷大小，例如 20 MB；0 表示不分卷
+wechat-exporter conversation --export --key <64位Hex> \
+  --conversation-id 123456789@chatroom --format all --include-media \
+  --output-dir /path/to/out --upload --upload-part-size 20
 ```
 
-上传包含 HTML、报告、JSON、媒体文件等全部输出；目录不存在时自动
-`MKCOL` 创建，文件使用并发上传。密码保存在本地配置文件中（Unix 下权限 0600）。
+上传内容：
+
+```text
+out.zip                       # 不超过分卷大小时
+out.zip.part001               # 超过分卷大小时
+out.zip.part002
+out.zip.parts.json            # 分卷清单，含顺序和大小
+```
+
+本地的 `out/` 目录不会删除；远端目录不存在时自动 `MKCOL` 创建，分卷并发上传。
+密码保存在本地配置文件中（Unix 下权限 0600）。
+
+合并分卷（Linux/macOS）：
+
+```bash
+cat out.zip.part* > out.zip
+unzip out.zip
+```
+
+Windows PowerShell：
+
+```powershell
+Get-Content .\out.zip.part* -AsByteStream | Set-Content .\out.zip -AsByteStream
+```
+
+必须按 `part001`、`part002` 的顺序拼接；`out.zip.parts.json` 可用于校验顺序和大小。
 
 ### upgrade
 
