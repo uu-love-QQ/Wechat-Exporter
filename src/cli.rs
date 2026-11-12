@@ -374,7 +374,7 @@ pub enum ReportKind {
 }
 
 #[derive(Args, Debug)]
-#[command(after_help = "示例:\n  wechat-exporter report private -o /abs/report --key <KEY>\n  wechat-exporter report annual -o /abs/report --year 2026\n  wechat-exporter report dual -o /abs/report -c wxid_xxx --from-json conversation.json")]
+#[command(after_help = "示例:\n  wechat-exporter report private -o /abs/report --key <KEY>\n  wechat-exporter report annual -o /abs/report --year 2026\n  wechat-exporter report annual -o /abs/report --year 2026 --png\n  wechat-exporter report dual -o /abs/report -c wxid_xxx --from-json conversation.json")]
 pub struct ReportArgs {
     #[command(flatten)]
     pub common: CommonArgs,
@@ -409,6 +409,14 @@ pub struct ReportArgs {
     /// 从已导出的 conversation.json、export-report.json 或导出目录加载，跳过数据库
     #[arg(long = "from-json", value_name = "PATH", help_heading = "报告")]
     pub from_json: Option<PathBuf>,
+
+    /// 同时导出年度报告 PNG（需要 Chrome/Edge/Chromium）
+    #[arg(long = "png", action = ArgAction::SetTrue, help_heading = "报告")]
+    pub png: bool,
+
+    /// 指定 Chrome/Edge/Chromium 可执行文件，供 --png 使用
+    #[arg(long = "browser", value_name = "PATH", help_heading = "报告")]
+    pub browser: Option<PathBuf>,
 
     /// 不打印进度条
     #[arg(long = "silent", action = ArgAction::SetTrue, help_heading = "其他")]
@@ -785,6 +793,8 @@ pub struct ValidatedCli {
     pub debug: bool,
     pub report: bool,
     pub report_year: i32,
+    pub report_png: bool,
+    pub browser: Option<PathBuf>,
     pub moments_posts: bool,
     pub moments_limit: u32,
     pub moments_offset: u32,
@@ -865,6 +875,8 @@ fn validated(common: CommonValidated, mode: Mode) -> ValidatedCli {
         debug: common.debug,
         report: false,
         report_year: 0,
+        report_png: false,
+        browser: None,
         moments_posts: false,
         moments_limit: 50,
         moments_offset: 0,
@@ -1071,6 +1083,8 @@ impl Command {
                 debug: args.debug,
                 report: false,
                 report_year: 0,
+                report_png: false,
+                browser: None,
                 moments_posts: false,
                 moments_limit: 50,
                 moments_offset: 0,
@@ -1320,6 +1334,8 @@ impl Command {
                         debug: false,
                         report: false,
                         report_year: 0,
+                        report_png: false,
+                        browser: None,
                         moments_posts: false,
                         moments_limit: 50,
                         moments_offset: 0,
@@ -1378,6 +1394,8 @@ impl Command {
                     debug: false,
                     report: false,
                     report_year: 0,
+                    report_png: false,
+                    browser: None,
                     moments_posts: false,
                     moments_limit: 50,
                     moments_offset: 0,
@@ -1422,6 +1440,9 @@ impl Command {
                 Ok(options)
             }
             Command::Report(args) => {
+                if args.png && args.kind != ReportKind::Annual {
+                    bail!("--png is only supported for annual reports");
+                }
                 if !args.output_dir.is_absolute() {
                     bail!("report output directory must be an absolute path");
                 }
@@ -1491,6 +1512,8 @@ impl Command {
                 options.conversation_ids = args.conversation_id.into_iter().collect();
                 options.report_year = year;
                 options.from_json = args.from_json;
+                options.report_png = args.png;
+                options.browser = args.browser;
                 options.silent = args.silent;
                 Ok(options)
             }

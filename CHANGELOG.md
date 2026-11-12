@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1
+
+- 年度报告支持 `--png`，自动调用本机 Chrome/Edge/Chromium 生成完整长图；
+- 新增 `--browser` 和 `WECHAT_EXPORTER_BROWSER` 指定浏览器；
+- PNG 自动裁剪底部空白；
+- 仅年度报告允许 `--png`，其他报告类型会给出明确错误。
+
 ## 1.0.0
 
 首个稳定版本。

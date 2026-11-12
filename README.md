@@ -6,7 +6,7 @@
 
 ## 版本与变更
 
-当前稳定版本：**1.0.0**。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+当前稳定版本：**1.0.1**。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 一、双端构建产物
 
@@ -302,6 +302,10 @@ wechat-exporter report dual --key <64位Hex> \
 # 年度报告：指定年份；--year 0 生成跨年度长期报告
 wechat-exporter report annual --key <64位Hex> --year 2024 --output-dir /path/to/report
 
+# 年度报告同时导出 PNG（需要 Chrome/Edge/Chromium）
+wechat-exporter report annual --key <64位Hex> --year 2024 \
+  --output-dir /path/to/report --png
+
 # 直接从已导出的 JSON 生成（无需数据库和密钥）
 wechat-exporter report private --from-json /path/to/export --output-dir /path/to/report
 wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json \
@@ -314,6 +318,7 @@ wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json 
 | `group` | `group-report.html` | 群成员名册/明细、发言排行、活跃时段、媒体 |
 | `dual` | `dual-report.html` | 双方对话比例、趋势、时段、类型、高频词 |
 | `annual` | `annual-report.html` | 年度/长期汇总、月度趋势、好友与群聊排行、最活跃日期 |
+| `annual --png` | `annual-report.html` + `annual-report.png` | 额外生成完整年度报告长图 |
 
 | 参数 | 说明 |
 |---|---|
@@ -321,6 +326,8 @@ wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json 
 | `-c, --conversation-id <ID>` | `group` / `dual` 必填 |
 | `--year <YYYY>` | `group` / `dual` / `annual` 的年份；缺省或 `0` 为全部历史 |
 | `--from-json <PATH>` | 从 `conversation.json`、`export-report.json` 或导出目录读取，跳过数据库 |
+| `--png` | 仅年度报告：额外生成 `annual-report.png`，需要本机 Chrome/Edge/Chromium |
+| `--browser <PATH>` | 指定 Chrome/Edge/Chromium 可执行文件，供 `--png` 使用 |
 | `--silent` | 不打印进度条 |
 | `-s, --source-database` / `-K, --key` / `--key-file` | 与其他子命令相同 |
 
@@ -329,6 +336,10 @@ wechat-exporter report dual --from-json /path/to/export/Alice/conversation.json 
 
 导出与报告执行时会在终端显示进度条：消息 `已处理/总数`、附件 `已处理/总数`，
 报告还会显示当前扫描会话与阶段。`--silent` 可关闭进度条，保留最终 JSON/错误输出。
+
+`--png` 使用无头 Chrome/Edge/Chromium 渲染自包含 HTML，并把截图裁剪到实际内容高度；
+默认宽度 1600px。浏览器自动查找，找不到时可用 `--browser` 指定路径；也可以用环境变量
+`WECHAT_EXPORTER_BROWSER`。
 
 导出格式、媒体附件、报告会话读取和 WebDAV 文件上传使用并行任务；
 SQLite 读取按 worker 独立打开只读连接，媒体落盘使用内容寻址并加写锁。

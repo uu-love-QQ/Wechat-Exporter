@@ -4,6 +4,7 @@ use chrono::{Datelike, Local, NaiveDate, TimeZone, Timelike};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::{ReportKind, ValidatedCli};
@@ -1391,6 +1392,181 @@ fn payload_dual(context: &ExportContext<'_>) -> serde_json::Value {
     )
 }
 
+fn resolve_browser(explicit: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        if path.is_file() {
+            return Ok(path.to_path_buf());
+        }
+        if let Some(found) = find_in_path(&path.to_string_lossy()) {
+            return Ok(found);
+        }
+        bail!("browser executable not found: {}", path.display());
+    }
+    if let Some(value) = std::env::var_os("WECHAT_EXPORTER_BROWSER") {
+        let path = PathBuf::from(value);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut candidates = Vec::new();
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(&local).join("Google/Chrome/Application/chrome.exe"));
+            candidates.push(PathBuf::from(&local).join("Microsoft/Edge/Application/msedge.exe"));
+        }
+        for base in ["C:/Program Files", "C:/Program Files (x86)"] {
+            candidates.push(PathBuf::from(base).join("Google/Chrome/Application/chrome.exe"));
+            candidates.push(PathBuf::from(base).join("Microsoft/Edge/Application/msedge.exe"));
+        }
+        for candidate in candidates {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        for candidate in [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ] {
+            let path = PathBuf::from(candidate);
+            if path.is_file() {
+                return Ok(path);
+            }
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        for name in [
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "microsoft-edge",
+            "microsoft-edge-stable",
+            "brave-browser",
+        ] {
+            if let Some(path) = find_in_path(name) {
+                return Ok(path);
+            }
+        }
+    }
+    bail!("未找到 Chrome/Edge/Chromium；请安装浏览器，或用 --browser <PATH> 指定可执行文件")
+}
+
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            let candidate = directory.join(format!("{name}.exe"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Render the self-contained report HTML with a headless Chromium-family
+/// browser. Chrome's `--screenshot` captures the configured viewport; a tall
+/// viewport is used so the annual report's long page is included.
+fn write_report_png(html: &Path, png: &Path, browser: Option<&Path>) -> Result<()> {
+    let browser = resolve_browser(browser)?;
+    if png.exists() {
+        fs::remove_file(png).with_context(|| format!("failed to remove {}", png.display()))?;
+    }
+    if let Some(parent) = png.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let url = url::Url::from_file_path(html)
+        .map_err(|_| anyhow::anyhow!("failed to convert {} to file URL", html.display()))?;
+    let profile = tempfile::tempdir().context("failed to create browser profile directory")?;
+    let output = Command::new(&browser)
+        .arg("--headless=new")
+        .arg("--disable-gpu")
+        .arg("--disable-dev-shm-usage")
+        .arg("--hide-scrollbars")
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-extensions")
+        .arg("--allow-file-access-from-files")
+        .arg("--force-device-scale-factor=1")
+        .arg("--run-all-compositor-stages-before-draw")
+        .arg("--virtual-time-budget=10000")
+        .arg("--window-size=1600,30000")
+        .arg(format!("--screenshot={}", png.display()))
+        .arg(format!("--user-data-dir={}", profile.path().display()))
+        .arg(url.as_str())
+        .output()
+        .with_context(|| format!("failed to launch browser {}", browser.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "headless browser failed to render {}: {}{}",
+            html.display(),
+            output.status,
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", stderr.trim())
+            }
+        );
+    }
+    let size = fs::metadata(png)
+        .with_context(|| format!("browser did not create {}", png.display()))?
+        .len();
+    if size == 0 {
+        bail!("browser created an empty PNG: {}", png.display());
+    }
+    trim_png_bottom(png)?;
+    Ok(())
+}
+
+/// Chrome screenshots the whole viewport, leaving a large blank area below
+/// the annual report. Trim trailing rows that are identical to the page
+/// background so the PNG height matches the actual report.
+fn trim_png_bottom(path: &Path) -> Result<()> {
+    let image = image::open(path)
+        .with_context(|| format!("failed to decode screenshot {}", path.display()))?;
+    let rgb = image.to_rgb8();
+    let (width, height) = rgb.dimensions();
+    if width == 0 || height <= 1 {
+        return Ok(());
+    }
+    let background = *rgb.get_pixel(0, 0);
+    let mut content_bottom = 0u32;
+    for y in (0..height).rev() {
+        let mut differs = false;
+        for x in 0..width {
+            if *rgb.get_pixel(x, y) != background {
+                differs = true;
+                break;
+            }
+        }
+        if differs {
+            content_bottom = (y + 1).min(height);
+            break;
+        }
+    }
+    if content_bottom == 0 || content_bottom >= height {
+        return Ok(());
+    }
+    let content_bottom = (content_bottom + 32).min(height);
+    let cropped = image::imageops::crop_imm(&rgb, 0, 0, width, content_bottom).to_image();
+    cropped
+        .save(path)
+        .with_context(|| format!("failed to write cropped screenshot {}", path.display()))?;
+    Ok(())
+}
+
 fn write_payload(payload: &serde_json::Value, path: &Path) -> Result<()> {
     const TEMPLATE: &str = include_str!("export/report_template.html");
     let data = serde_json::to_string(payload).context("serialize report payload")?;
@@ -1559,12 +1735,21 @@ pub fn run(
     progress.set_phase("生成报告");
     let path = output_dir.join(file_name);
     write_payload(&payload, &path)?;
+    let png = if options.report_png {
+        let png_path = output_dir.join("annual-report.png");
+        progress.set_phase("渲染 PNG");
+        write_report_png(&path, &png_path, options.browser.as_deref())?;
+        Some(png_path)
+    } else {
+        None
+    };
     progress.finish();
     let result = serde_json::json!({
         "type": report_type,
         "year": year,
         "conversation_id": conversation_id,
         "report": path,
+        "png": png,
     });
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
@@ -1891,8 +2076,16 @@ pub fn run_from_json(kind: ReportKind, options: &ValidatedCli, path: &Path) -> R
             }
             let path = output_dir.join("annual-report.html");
             write_payload(&payload_annual(options.report_year, &stats, &HashMap::new()), &path)?;
+            let png = if options.report_png {
+                let png_path = output_dir.join("annual-report.png");
+                progress.set_phase("渲染 PNG");
+                write_report_png(&path, &png_path, options.browser.as_deref())?;
+                Some(png_path)
+            } else {
+                None
+            };
             progress.finish();
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"annual","year":options.report_year,"report":path}))?);
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"annual","year":options.report_year,"report":path,"png":png}))?);
         }
         ReportKind::Dual => {
             let item = select_loaded(&loaded, options.conversation_ids.first(), false)?;
