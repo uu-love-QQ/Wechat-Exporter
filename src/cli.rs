@@ -53,6 +53,7 @@ wechat-exporter: 微信 4.x WCDB (SQLCipher 4) 数据库解密、检索与多格
 
   密钥可通过命令行参数、密钥文件或 stdin 传入；缺省数据库路径时自动检索。
   分析报告示例：wechat-exporter report private --output-dir /path/to/report
+  数据库字段与 Python 示例：docs/WCDB.md 和 docs/databases/README.md
 "#
 )]
 pub struct Cli {
@@ -182,6 +183,7 @@ pub enum ContactKind {
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "示例:\n  wechat-exporter contact --key <KEY> --kind friend -q 张\n  wechat-exporter contact --key <KEY> --kind group --page-size 20")]
 pub struct ContactArgs {
     #[command(flatten)]
     pub common: CommonArgs,
@@ -214,6 +216,7 @@ pub struct ContactArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "示例:\n  wechat-exporter search 你好 --key <KEY> --ascending\n  wechat-exporter search hello --key <KEY> --page-size 20 --cursor <BASE64>")]
 pub struct SearchArgs {
     /// 要检索的关键词 (最多 512 字节，可匹配 zstd 压缩文本)
     #[arg(value_name = "TEXT")]
@@ -286,7 +289,7 @@ pub struct ExportArgs {
     #[arg(long = "end-time-ms", value_name = "MS", help_heading = "导出")]
     pub end_time_ms: Option<i64>,
 
-    /// 导出的绝对路径目标文件夹 (必须尚不存在)
+    /// 导出的绝对路径目标文件夹（不存在时自动创建）
     #[arg(
         long = "output-dir",
         short = 'o',
@@ -308,7 +311,7 @@ pub struct ExportArgs {
     #[arg(long = "report", action = ArgAction::SetTrue, help_heading = "导出")]
     pub report: bool,
 
-    /// 导出完成后自动上传到已配置的 WebDAV
+    /// 导出完成后打包为 ZIP 上传到 WebDAV；超过分卷大小时自动分卷
     #[arg(long = "upload", action = ArgAction::SetTrue, help_heading = "导出")]
     pub upload: bool,
 
@@ -326,6 +329,7 @@ pub struct ExportArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "示例:\n  wechat-exporter conversation --key <KEY>\n  wechat-exporter conversation --export --key <KEY> -c wxid_xxx -f html -o /abs/out\n  wechat-exporter conversation --export --backup --key <KEY> -c wxid_xxx -o /abs/backup\n  wechat-exporter conversation --export --upload --upload-part-size 20 -c wxid_xxx -f all -o /abs/out")]
 pub struct ConversationArgs {
     #[command(flatten)]
     pub export: ExportArgs,
@@ -370,6 +374,7 @@ pub enum ReportKind {
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "示例:\n  wechat-exporter report private -o /abs/report --key <KEY>\n  wechat-exporter report annual -o /abs/report --year 2026\n  wechat-exporter report dual -o /abs/report -c wxid_xxx --from-json conversation.json")]
 pub struct ReportArgs {
     #[command(flatten)]
     pub common: CommonArgs,
@@ -436,11 +441,14 @@ pub enum FavoriteType {
     MiniProgram,
     /// 名片
     Card,
+    /// 视频号
+    VideoChannel,
     /// 其他
     Other,
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "示例:\n  wechat-exporter decrypt --key <KEY> -s /path/to/db_storage -o /abs/decrypted\n  wechat-exporter decrypt --key <KEY> --silent -o /abs/decrypted")]
 pub struct DecryptArgs {
     #[command(flatten)]
     pub common: CommonArgs,
@@ -465,6 +473,7 @@ pub struct DecryptArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "示例:\n  wechat-exporter favorite --key <KEY>\n  wechat-exporter favorite --type article -q 微信 --limit 20\n  wechat-exporter favorite --type voice -o /abs/out")]
 pub struct FavoriteArgs {
     #[command(flatten)]
     pub common: CommonArgs,
@@ -505,6 +514,7 @@ pub struct FavoriteArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "示例:\n  wechat-exporter moments --year 2026 --key <KEY>\n  wechat-exporter moments --year 2026 --posts --limit 20 -o /abs/out")]
 pub struct MomentsArgs {
     #[command(flatten)]
     pub common: CommonArgs,
@@ -576,12 +586,14 @@ pub struct WebdavArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "示例:\n  wechat-exporter backup webdav --url https://dav.example.com/root --username u --password p --remote-path wechat-exports\n  wechat-exporter backup test\n  wechat-exporter backup show")]
 pub struct BackupArgs {
     #[command(subcommand)]
     pub command: BackupCommand,
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "示例（完整库）:\n  wechat-exporter recovery -i /abs/backup -t /path/to/db_storage --key <KEY> --force\n示例（单会话 backup.zip）:\n  wechat-exporter recovery -i backup.zip -t /path/to/db_storage --key <KEY> --force\n示例（离线转换）:\n  wechat-exporter recovery -i backup.zip -o /abs/recovered -f html")]
 pub struct RecoveryArgs {
     /// backup.zip，或 decrypt 生成的普通 SQLite 备份文件/目录
     #[arg(
@@ -639,6 +651,7 @@ pub struct RecoveryArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "示例:\n  wechat-exporter upgrade\n  wechat-exporter upgrade --version v1.0.0\n  wechat-exporter upgrade --prefix https://ghfast.top/")]
 pub struct UpgradeArgs {
     /// 目标版本号，缺省 latest
     #[arg(long = "version", value_name = "VERSION", default_value = "latest")]

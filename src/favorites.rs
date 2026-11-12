@@ -20,6 +20,7 @@ fn type_code(kind: FavoriteType) -> Option<i64> {
         FavoriteType::Note => Some(16),
         FavoriteType::MiniProgram => Some(17),
         FavoriteType::Card => Some(19),
+        FavoriteType::VideoChannel => Some(20),
         FavoriteType::Other => None,
     }
 }
@@ -37,6 +38,7 @@ fn type_label(code: i64) -> &'static str {
         16 => "笔记",
         17 => "小程序",
         19 => "名片",
+        20 => "视频号",
         _ => "其他",
     }
 }
@@ -212,6 +214,7 @@ fn favorite_type_name(kind: FavoriteType) -> &'static str {
         FavoriteType::Note => "note",
         FavoriteType::MiniProgram => "mini-program",
         FavoriteType::Card => "card",
+        FavoriteType::VideoChannel => "video-channel",
         FavoriteType::Other => "other",
     }
 }

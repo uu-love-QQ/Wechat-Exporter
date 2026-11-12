@@ -4,6 +4,10 @@
 基于标准 SQLCipher 4 密码学算法与内存扫描技术直接解密微信本地存储，独立运行于 **Windows** 与 **Linux** 两端。
 ---
 
+## 版本与变更
+
+当前稳定版本：**1.0.0**。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 一、双端构建产物
 
 项目中已配置好交叉编译工具链并生成了独立 Release 二进制：
@@ -235,7 +239,7 @@ wechat-exporter conversation --export --key <64位Hex密钥> \
 | `-f, --format <NAME>` | 格式或 `all`，可重复指定 |
 | `-m, --include-media` | 提取媒体到 `media/` |
 | `--start-time-ms <MS>` / `--end-time-ms <MS>` | 时间范围（Unix 毫秒） |
-| `-o, --output-dir <DIR>` | 绝对路径输出目录，必须尚不存在 |
+| `-o, --output-dir <DIR>` | 绝对路径输出目录；不存在时自动创建 |
 | `-k, --keep-output` | 保留临时输出目录 |
 | `--report` | 生成可视化分析报告 `conversation.report.html` |
 | `--upload` | 导出完成后打包为 ZIP 上传到 WebDAV |
@@ -255,7 +259,7 @@ wechat-exporter favorite -q 关键词 --limit 20 --offset 0
 wechat-exporter favorite --full
 ```
 
-- `--type`：`all` / `text` / `image` / `voice` / `video` / `article` / `file` / `chat-record` / `location` / `note` / `mini-program` / `card` / `other`；
+- `--type`：`all` / `text` / `image` / `voice` / `video` / `article` / `file` / `chat-record` / `location` / `note` / `mini-program` / `card` / `video-channel` / `other`；
 - `-q, --query`：搜索收藏内容、来源或聊天名；
 - `--limit/-n`：1–1000，缺省 50；
 - `--offset`：分页偏移；
